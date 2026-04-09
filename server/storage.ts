@@ -151,10 +151,8 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(requests).where(eq(requests.expertId, expertId)).orderBy(desc(requests.id)).all();
   }
   getAllRequests(): ExpertRequest[] {
-  getAllTransactions(): CreditTransaction[] {
-    return db.select().from(creditTransactions).all();
-  }
     return db.select().from(requests).orderBy(desc(requests.id)).all();
+  }
   getAllTransactions(): CreditTransaction[] {
     return db.select().from(creditTransactions).all();
   }
