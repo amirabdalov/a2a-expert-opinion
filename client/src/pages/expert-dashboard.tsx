@@ -1,0 +1,1753 @@
+import { useState, useRef, useEffect } from "react";
+import { useLocation } from "wouter";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
+import {
+  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
+  SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
+  SidebarHeader,
+} from "@/components/ui/sidebar";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
+import { useSSE } from "@/hooks/use-sse";
+import { InfoTooltip } from "@/components/info-tooltip";
+import { NotificationBell } from "@/components/notification-bell";
+import { OnboardingTour, EXPERT_TOUR_STEPS } from "@/components/onboarding-tour";
+import { FloatingHelp } from "@/components/floating-help";
+import {
+  LayoutDashboard, Inbox, PlayCircle, History, DollarSign, UserCircle, LogOut,
+  Clock, CheckCircle, Star, Award, Send, MessageSquare, Coins, TrendingUp,
+  Search, Wrench, Paperclip, FileText, ArrowLeft, AlertCircle, User, Wallet,
+  Lightbulb, Home, Printer, Download, Receipt, Share2, Moon, Sun,
+  Bold, Italic, List as ListIcon, ListOrdered, Heading, Eye,
+} from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import type { Request as ExpertRequest, Expert, ExpertReview, Message, CreditTransaction } from "@shared/schema";
+
+type ExpertView = "overview" | "queue" | "active" | "completed" | "earnings" | "profile" | "review-detail";
+
+// ─── Mobile Bottom Tab Bar ───
+function MobileBottomTabs({ view, setView }: { view: ExpertView; setView: (v: ExpertView) => void }) {
+  const tabs = [
+    { id: "overview" as const, icon: Home, label: "Home" },
+    { id: "queue" as const, icon: Inbox, label: "Queue" },
+    { id: "active" as const, icon: PlayCircle, label: "Active" },
+    { id: "profile" as const, icon: UserCircle, label: "Profile" },
+  ];
+  return (
+    <div className="md:hidden fixed bottom-0 left-0 right-0 bg-background border-t z-50 px-2 pb-[env(safe-area-inset-bottom)]" data-testid="mobile-bottom-tabs">
+      <div className="flex justify-around">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setView(tab.id)}
+            className={`flex flex-col items-center py-2 px-3 text-[10px] transition-colors ${
+              view === tab.id ? "text-primary" : "text-muted-foreground"
+            }`}
+            data-testid={`mobile-tab-${tab.id}`}
+          >
+            <tab.icon className="h-5 w-5 mb-0.5" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function serviceTypeBadge(t: string) {
+  switch (t) {
+    case "rate": return "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400";
+    case "review": return "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400";
+    case "custom": return "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400";
+    default: return "bg-gray-100 text-gray-800";
+  }
+}
+
+function statusColor(s: string) {
+  switch (s) {
+    case "pending": return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400";
+    case "in_progress": return "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400";
+    case "completed": return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400";
+    default: return "bg-gray-100 text-gray-800";
+  }
+}
+
+function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView: (v: ExpertView) => void; onLogout: () => void }) {
+  const items = [
+    { id: "overview" as const, icon: LayoutDashboard, label: "Overview" },
+    { id: "queue" as const, icon: Inbox, label: "Available Queue" },
+    { id: "active" as const, icon: PlayCircle, label: "My Active" },
+    { id: "completed" as const, icon: History, label: "Completed" },
+    { id: "earnings" as const, icon: DollarSign, label: "Earnings" },
+    { id: "profile" as const, icon: UserCircle, label: "Profile" },
+  ];
+  return (
+    <Sidebar>
+      <SidebarHeader className="p-4">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 bg-green-600 rounded flex items-center justify-center">
+            <Award className="h-4 w-4 text-white" />
+          </div>
+          <span className="font-semibold text-sm text-sidebar-foreground">Expert Portal</span>
+        </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {items.map((item) => (
+                <SidebarMenuItem key={item.id}>
+                  <SidebarMenuButton onClick={() => setView(item.id)} isActive={view === item.id} data-testid={`expert-nav-${item.id}`}>
+                    <item.icon className="h-4 w-4" /><span>{item.label}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup className="mt-auto">
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={onLogout} data-testid="expert-nav-logout">
+                  <LogOut className="h-4 w-4" /><span>Log Out</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
+  );
+}
+
+// ─── Expert Overview ───
+function ExpertOverview({ expert, userId }: { expert: Expert; userId: number }) {
+  const { data: creditData } = useQuery<{ credits: number; transactions: CreditTransaction[] }>({ queryKey: ["/api/credits", userId] });
+  const { data: myReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expert.id] });
+  const { data: pendingReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/pending"] });
+
+  const active = myReviews?.filter((r) => r.status === "in_progress").length ?? 0;
+  const completed = myReviews?.filter((r) => r.status === "completed").length ?? 0;
+  const earnings = creditData?.transactions?.filter((t) => t.type === "earning").reduce((sum, t) => sum + t.amount, 0) ?? 0;
+
+  return (
+    <div className="p-6 space-y-6" data-testid="expert-view-overview">
+      <h1 className="text-xl font-bold">Expert Dashboard</h1>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">{earnings}</p><p className="text-xs text-muted-foreground">Credits Earned <InfoTooltip text="Total credits earned from completed reviews" /></p></div></div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><PlayCircle className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Reviews</p></div></div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Inbox className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{pendingReviews?.length ?? 0}</p><p className="text-xs text-muted-foreground">Pending Queue <InfoTooltip text="Requests waiting for an expert to claim them" /></p></div></div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Star className="h-8 w-8 text-amber-500" /><div><p className="text-2xl font-bold">{(expert.rating / 10).toFixed(1)}</p><p className="text-xs text-muted-foreground">Avg Rating <InfoTooltip text="Your average score from client feedback. Higher ratings get more requests" /> ({expert.totalReviews} reviews)</p></div></div></CardContent></Card>
+      </div>
+
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-base">Completed: {completed}</CardTitle></CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-5 w-5 text-green-500" />
+            <p className="text-sm text-muted-foreground">You've earned {earnings} credits from {completed} completed reviews.</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Estimated payout helper ───
+function getEstimatedPayout(serviceType: string, tier: string): { min: number; max: number; time: string } {
+  const payouts: Record<string, Record<string, { min: number; max: number; time: string }>> = {
+    rate: { standard: { min: 2, max: 10, time: "5-15 min" }, pro: { min: 15, max: 50, time: "15-30 min" }, guru: { min: 100, max: 300, time: "30-90 min" } },
+    review: { standard: { min: 10, max: 50, time: "15-30 min" }, pro: { min: 50, max: 200, time: "30-60 min" }, guru: { min: 300, max: 1000, time: "1-3 hours" } },
+    custom: { standard: { min: 5, max: 25, time: "10-20 min" }, pro: { min: 25, max: 100, time: "20-45 min" }, guru: { min: 150, max: 500, time: "45-120 min" } },
+  };
+  const servicePayouts = payouts[serviceType] || payouts.custom;
+  return servicePayouts[tier] || servicePayouts.standard || { min: 5, max: 25, time: "10-30 min" };
+}
+
+// ─── Available Queue ───
+function AvailableQueue({ expertId, setView, setSelectedReview }: { expertId: number; setView: (v: ExpertView) => void; setSelectedReview: (id: number) => void }) {
+  const { data: pendingReviews, isLoading } = useQuery<ExpertReview[]>({
+    queryKey: ["/api/reviews/pending", `?expertId=${expertId}`],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/reviews/pending?expertId=${expertId}`);
+      return res.json();
+    },
+  });
+  const { toast } = useToast();
+  const [skippedRequests, setSkippedRequests] = useState<number[]>([]);
+
+  const claimMutation = useMutation({
+    mutationFn: async (reviewId: number) => {
+      const res = await apiRequest("POST", `/api/reviews/${reviewId}/claim`, { expertId });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
+      toast({ title: "Review claimed!" });
+      setSelectedReview(data.id);
+      setView("review-detail");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleSkip = (requestId: number) => {
+    setSkippedRequests((prev) => [...prev, requestId]);
+    toast({ title: "Request hidden", description: "You won't see it again this session." });
+  };
+
+  // Filter out skipped reviews
+  const filteredReviews = pendingReviews?.filter((r) => !skippedRequests.includes(r.requestId));
+
+  return (
+    <div className="p-4 md:p-6" data-testid="expert-view-queue">
+      <h1 className="text-lg md:text-xl font-bold mb-4 md:mb-6">Available Reviews</h1>
+      {isLoading ? <ExpertQueueSkeleton /> : (
+        <div className="space-y-3 md:space-y-4">
+          {(!filteredReviews || filteredReviews.length === 0) ? (
+            <Card><CardContent className="p-8 text-center">
+              <Inbox className="h-8 w-8 mx-auto mb-2 text-muted-foreground/40" />
+              <p className="text-sm font-medium">No matching requests right now</p>
+              <p className="text-xs text-muted-foreground mt-1">No requests in your categories right now. Check back soon!</p>
+            </CardContent></Card>
+          ) : (
+            <PendingReviewCards reviews={filteredReviews} onClaim={(id) => claimMutation.mutate(id)} isPending={claimMutation.isPending} onSkip={handleSkip} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PendingReviewCards({ reviews, onClaim, isPending, onSkip }: { reviews: ExpertReview[]; onClaim: (id: number) => void; isPending: boolean; onSkip?: (requestId: number) => void }) {
+  const grouped = reviews.reduce<Record<number, ExpertReview[]>>((acc, rev) => {
+    if (!acc[rev.requestId]) acc[rev.requestId] = [];
+    acc[rev.requestId].push(rev);
+    return acc;
+  }, {});
+
+  return (
+    <>
+      {Object.entries(grouped).map(([reqIdStr, revs]) => (
+        <PendingRequestGroup key={reqIdStr} requestId={parseInt(reqIdStr)} reviews={revs} onClaim={onClaim} isPending={isPending} onSkip={onSkip} />
+      ))}
+    </>
+  );
+}
+
+function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }: { requestId: number; reviews: ExpertReview[]; onClaim: (id: number) => void; isPending: boolean; onSkip?: (requestId: number) => void }) {
+  const { data: request } = useQuery<ExpertRequest>({ queryKey: ["/api/requests", requestId] });
+  const { data: allReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/request", requestId] });
+
+  if (!request) return null;
+
+  const completedCount = allReviews?.filter((r) => r.status === "completed").length ?? 0;
+  const totalCount = allReviews?.length ?? 0;
+  const claimableReview = reviews[0];
+  const payout = getEstimatedPayout(request.serviceType, request.tier || "standard");
+
+  return (
+    <Card data-testid={`queue-request-${requestId}`}>
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <h3 className="text-sm font-semibold">{request.title}</h3>
+              <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
+              <Badge variant="secondary" className="text-xs capitalize">{request.category}</Badge>
+            </div>
+            <p className="text-sm text-muted-foreground line-clamp-2 mb-2">{request.description}</p>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
+              <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{request.createdAt ? new Date(request.createdAt).toLocaleDateString() : "—"}</span>
+              <span className="flex items-center gap-1 text-green-600 font-semibold" data-testid={`payout-${requestId}`}>
+                <DollarSign className="h-3 w-3" />Est. payout: ${payout.min}–${payout.max}
+              </span>
+              <span className="flex items-center gap-1" data-testid={`time-${requestId}`}>
+                <Clock className="h-3 w-3" />{payout.time}
+              </span>
+              {request.serviceType === "rate" && (
+                <span className="flex items-center gap-1"><User className="h-3 w-3" />{completedCount}/{totalCount} responded</span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-2 ml-3">
+            <Button size="sm" onClick={() => onClaim(claimableReview.id)} disabled={isPending} data-testid={`button-claim-review-${claimableReview.id}`}>
+              Claim
+            </Button>
+            {onSkip && (
+              <button
+                onClick={() => onSkip(requestId)}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                data-testid={`button-skip-${requestId}`}
+              >
+                Not interested
+              </button>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── My Active ───
+function MyActive({ expertId, setView, setSelectedReview }: { expertId: number; setView: (v: ExpertView) => void; setSelectedReview: (id: number) => void }) {
+  const { data: allReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expertId] });
+  const active = allReviews?.filter((r) => r.status === "in_progress") ?? [];
+
+  return (
+    <div className="p-6" data-testid="expert-view-active">
+      <h1 className="text-xl font-bold mb-6">My Active Reviews</h1>
+      {active.length === 0 ? (
+        <Card><CardContent className="p-8 text-center"><p className="text-sm text-muted-foreground">No active reviews. Check the queue for new ones.</p></CardContent></Card>
+      ) : (
+        <div className="space-y-3">
+          {active.map((rev) => (
+            <ActiveReviewCard key={rev.id} review={rev} onClick={() => { setSelectedReview(rev.id); setView("review-detail"); }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActiveReviewCard({ review, onClick }: { review: ExpertReview; onClick: () => void }) {
+  const { data: request } = useQuery<ExpertRequest>({ queryKey: ["/api/requests", review.requestId] });
+  if (!request) return null;
+
+  return (
+    <Card className="cursor-pointer hover:shadow-md transition" onClick={onClick} data-testid={`active-review-${review.id}`}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="text-sm font-semibold">{request.title}</h3>
+              <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">{request.category} · {request.tier} · {request.creditsCost} credits</p>
+          </div>
+          <Badge className="bg-blue-100 text-blue-800 text-xs">In Progress</Badge>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Rich Text Toolbar (change #8) ───
+function MarkdownToolbar({ textareaRef, value, onChange }: { textareaRef: React.RefObject<HTMLTextAreaElement | null>; value: string; onChange: (v: string) => void }) {
+  function insertMarkdown(prefix: string, suffix: string = '') {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const selected = value.substring(start, end);
+    const before = value.substring(0, start);
+    const after = value.substring(end);
+    const newText = before + prefix + (selected || 'text') + suffix + after;
+    onChange(newText);
+    setTimeout(() => {
+      ta.focus();
+      ta.selectionStart = start + prefix.length;
+      ta.selectionEnd = start + prefix.length + (selected.length || 4);
+    }, 10);
+  }
+
+  return (
+    <div className="flex items-center gap-1 p-1.5 border border-b-0 rounded-t-lg bg-muted/30" data-testid="markdown-toolbar">
+      <button type="button" onClick={() => insertMarkdown('**', '**')} className="p-1.5 rounded hover:bg-muted transition" title="Bold" data-testid="toolbar-bold"><Bold className="h-3.5 w-3.5" /></button>
+      <button type="button" onClick={() => insertMarkdown('*', '*')} className="p-1.5 rounded hover:bg-muted transition" title="Italic" data-testid="toolbar-italic"><Italic className="h-3.5 w-3.5" /></button>
+      <button type="button" onClick={() => insertMarkdown('## ')} className="p-1.5 rounded hover:bg-muted transition" title="Heading" data-testid="toolbar-heading"><Heading className="h-3.5 w-3.5" /></button>
+      <div className="w-px h-4 bg-border mx-1" />
+      <button type="button" onClick={() => insertMarkdown('- ')} className="p-1.5 rounded hover:bg-muted transition" title="Bullet list" data-testid="toolbar-bullet"><ListIcon className="h-3.5 w-3.5" /></button>
+      <button type="button" onClick={() => insertMarkdown('1. ')} className="p-1.5 rounded hover:bg-muted transition" title="Numbered list" data-testid="toolbar-numbered"><ListOrdered className="h-3.5 w-3.5" /></button>
+    </div>
+  );
+}
+
+// ─── Expert Response Templates (change #9) ───
+const EXPERT_RESPONSE_TEMPLATES = [
+  { label: 'Sense Check Template', content: 'Rating: /10\n\nWhat\'s correct:\n- \n\nWhat\'s incorrect:\n- \n\nRecommendation:\n' },
+  { label: 'Detailed Review Template', content: '## Summary\n\n## What\'s Correct\n- \n\n## What\'s Wrong\n- \n\n## Missing Context\n- \n\n## Recommendations\n- \n\n## What Was at Stake\n' },
+  { label: 'Custom Task Template', content: '## Executive Summary\n\n## Analysis\n\n## Key Findings\n\n## Recommendations\n\n## Next Steps\n' },
+];
+
+function ExpertTemplateDropdown({ onSelect, hasContent }: { onSelect: (content: string) => void; hasContent: boolean }) {
+  const { toast } = useToast();
+  const [confirmTemplate, setConfirmTemplate] = useState<string | null>(null);
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" data-testid="button-expert-templates">
+            <FileText className="h-3.5 w-3.5 mr-1.5" /> Templates
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {EXPERT_RESPONSE_TEMPLATES.map((tpl) => (
+            <DropdownMenuItem
+              key={tpl.label}
+              onClick={() => {
+                if (hasContent) {
+                  setConfirmTemplate(tpl.content);
+                } else {
+                  onSelect(tpl.content);
+                }
+              }}
+              data-testid={`expert-template-${tpl.label.replace(/\s+/g, '-').toLowerCase()}`}
+            >
+              {tpl.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Dialog open={confirmTemplate !== null} onOpenChange={() => setConfirmTemplate(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Replace content?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This will replace your current text with the template.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmTemplate(null)}>Cancel</Button>
+            <Button onClick={() => { if (confirmTemplate) onSelect(confirmTemplate); setConfirmTemplate(null); }}>Replace</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// Skeleton loaders for expert (change #7/#12)
+function ExpertQueueSkeleton() {
+  return (
+    <div className="p-6 space-y-4" data-testid="skeleton-queue">
+      <div className="h-6 w-40 bg-muted animate-pulse rounded" />
+      {[1,2,3].map(i => <div key={i} className="h-32 bg-muted animate-pulse rounded-lg" />)}
+    </div>
+  );
+}
+
+function ExpertEarningsSkeleton() {
+  return (
+    <div className="p-6 space-y-6" data-testid="skeleton-earnings">
+      <div className="h-6 w-32 bg-muted animate-pulse rounded" />
+      <div className="grid sm:grid-cols-3 gap-4">
+        {[1,2,3].map(i => <div key={i} className="h-24 bg-muted animate-pulse rounded-lg" />)}
+      </div>
+      <div className="h-48 bg-muted animate-pulse rounded-lg" />
+    </div>
+  );
+}
+
+// ─── Review Detail (Expert — type-specific) ───
+function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; expertId: number; setView: (v: ExpertView) => void }) {
+  const { data: myReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expertId] });
+  const currentReview = myReviews?.find((r) => r.id === reviewId);
+
+  const { data: request } = useQuery<ExpertRequest>({
+    queryKey: ["/api/requests", currentReview?.requestId],
+    enabled: !!currentReview?.requestId,
+  });
+
+  const [ratingValue, setRatingValue] = useState(5);
+  const [ratingComment, setRatingComment] = useState("");
+  const [correctPoints, setCorrectPoints] = useState("");
+  const [incorrectPoints, setIncorrectPoints] = useState("");
+  const [suggestions, setSuggestions] = useState("");
+  const [deliverable, setDeliverable] = useState("");
+
+  // Refs for markdown toolbar
+  const ratingCommentRef = useRef<HTMLTextAreaElement>(null);
+  const correctPointsRef = useRef<HTMLTextAreaElement>(null);
+  const incorrectPointsRef = useRef<HTMLTextAreaElement>(null);
+  const suggestionsRef = useRef<HTMLTextAreaElement>(null);
+  const deliverableRef = useRef<HTMLTextAreaElement>(null);
+
+  // Current active field for templates
+  const [activeField, setActiveField] = useState<string>("deliverable");
+  const handleTemplateSelect = (content: string) => {
+    if (activeField === "correctPoints") setCorrectPoints(content);
+    else if (activeField === "incorrectPoints") setIncorrectPoints(content);
+    else if (activeField === "suggestions") setSuggestions(content);
+    else if (activeField === "deliverable") setDeliverable(content);
+    else if (activeField === "ratingComment") setRatingComment(content);
+  };
+  const getActiveContent = () => {
+    if (activeField === "correctPoints") return correctPoints;
+    if (activeField === "incorrectPoints") return incorrectPoints;
+    if (activeField === "suggestions") return suggestions;
+    if (activeField === "deliverable") return deliverable;
+    if (activeField === "ratingComment") return ratingComment;
+    return "";
+  };
+
+  const { toast } = useToast();
+
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, any> = {};
+      if (request?.serviceType === "rate") {
+        body.rating = ratingValue;
+        body.ratingComment = ratingComment || null;
+      } else if (request?.serviceType === "review") {
+        body.correctPoints = correctPoints || null;
+        body.incorrectPoints = incorrectPoints || null;
+        body.suggestions = suggestions || null;
+      } else if (request?.serviceType === "custom") {
+        body.deliverable = deliverable || null;
+      }
+      const res = await apiRequest("PATCH", `/api/reviews/${reviewId}`, body);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Review submitted!" });
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/request", currentReview?.requestId] });
+      if (currentReview?.requestId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/requests", currentReview.requestId] });
+      }
+      setView("active");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  if (!currentReview || !request) return <div className="p-6"><p className="text-sm text-muted-foreground">Loading...</p></div>;
+
+  const parsedAttachments: Array<{ name: string; content: string }> = (() => {
+    try { return JSON.parse(request.attachments || "[]"); } catch { return []; }
+  })();
+
+  const isCompleted = currentReview.status === "completed";
+
+  return (
+    <div className="p-4 md:p-6 max-w-3xl md:mx-0" data-testid="expert-view-review-detail">
+      <div className="flex items-center gap-2 md:gap-3 mb-1">
+        <Button variant="ghost" size="sm" onClick={() => setView("active")} data-testid="button-back-to-active">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="text-lg md:text-xl font-bold truncate">{request.title}</h1>
+        <Badge className={`text-xs shrink-0 ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
+      </div>
+      <p className="text-sm text-muted-foreground mb-4 ml-9 md:ml-10">{request.category} · {request.tier} tier · {request.creditsCost} credits</p>
+
+      {request.aiResponse && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2"><CardTitle className="text-sm">{request.serviceType === "custom" ? "Task Description" : "AI Response to Evaluate"}</CardTitle></CardHeader>
+          <CardContent><p className="text-sm whitespace-pre-wrap font-mono bg-muted/30 p-3 rounded text-xs">{request.aiResponse}</p></CardContent>
+        </Card>
+      )}
+
+      {request.description && request.description !== request.aiResponse && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Client's Question</CardTitle></CardHeader>
+          <CardContent><p className="text-sm">{request.description}</p></CardContent>
+        </Card>
+      )}
+
+      {parsedAttachments.length > 0 && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {parsedAttachments.map((a, i) => (
+                <details key={i} className="border rounded p-2">
+                  <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
+                    <FileText className="h-3 w-3" /> {a.name}
+                  </summary>
+                  <pre className="mt-2 text-xs bg-muted/30 p-2 rounded whitespace-pre-wrap">{a.content}</pre>
+                </details>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {request.instructions && (
+        <Card className="mb-4 border-amber-200 bg-amber-50/50 dark:bg-amber-900/10 dark:border-amber-900/30">
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-amber-700 dark:text-amber-400">Client Instructions</CardTitle></CardHeader>
+          <CardContent><p className="text-sm">{request.instructions}</p></CardContent>
+        </Card>
+      )}
+
+      {/* Type-specific input / completed display */}
+      {!isCompleted && request.serviceType === "rate" && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2"><Star className="h-4 w-4 text-amber-500" /> Your Rating</CardTitle>
+              <ExpertTemplateDropdown onSelect={handleTemplateSelect} hasContent={!!getActiveContent()} />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <Label className="text-sm">Score: {ratingValue}/10</Label>
+                <span className="text-2xl font-bold text-amber-600">{ratingValue}</span>
+              </div>
+              <Slider value={[ratingValue]} onValueChange={([v]) => setRatingValue(v)} min={1} max={10} step={1} className="mb-4" data-testid="slider-rating" />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>1 — Poor</span><span>5 — Average</span><span>10 — Excellent</span>
+              </div>
+            </div>
+            <div>
+              <Label className="text-sm">Comment (optional)</Label>
+              <MarkdownToolbar textareaRef={ratingCommentRef} value={ratingComment} onChange={setRatingComment} />
+              <Textarea ref={ratingCommentRef} value={ratingComment} onChange={(e) => setRatingComment(e.target.value)} onFocus={() => setActiveField("ratingComment")} placeholder="Brief explanation for your rating..." rows={3} className="rounded-t-none" data-testid="input-rating-comment" />
+            </div>
+            <Button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending} className="mt-4" data-testid="button-submit-review">
+              <Send className="mr-2 h-4 w-4" /> {submitMutation.isPending ? "Submitting..." : "Submit Rating"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isCompleted && request.serviceType === "review" && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2"><Search className="h-4 w-4 text-blue-500" /> Your Review</CardTitle>
+              <ExpertTemplateDropdown onSelect={handleTemplateSelect} hasContent={!!getActiveContent()} />
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label className="text-sm flex items-center gap-2 mb-1"><CheckCircle className="h-3 w-3 text-green-600" /> What's Correct</Label>
+              <MarkdownToolbar textareaRef={correctPointsRef} value={correctPoints} onChange={setCorrectPoints} />
+              <Textarea ref={correctPointsRef} value={correctPoints} onChange={(e) => setCorrectPoints(e.target.value)} onFocus={() => setActiveField("correctPoints")} placeholder="List what the AI got right..." rows={4} className="border-green-200 focus:ring-green-500 rounded-t-none" data-testid="input-correct-points" />
+            </div>
+            <div>
+              <Label className="text-sm flex items-center gap-2 mb-1"><AlertCircle className="h-3 w-3 text-red-600" /> What's Wrong</Label>
+              <MarkdownToolbar textareaRef={incorrectPointsRef} value={incorrectPoints} onChange={setIncorrectPoints} />
+              <Textarea ref={incorrectPointsRef} value={incorrectPoints} onChange={(e) => setIncorrectPoints(e.target.value)} onFocus={() => setActiveField("incorrectPoints")} placeholder="List what the AI got wrong..." rows={4} className="border-red-200 focus:ring-red-500 rounded-t-none" data-testid="input-incorrect-points" />
+            </div>
+            <div>
+              <Label className="text-sm flex items-center gap-2 mb-1"><MessageSquare className="h-3 w-3 text-blue-600" /> Suggestions</Label>
+              <MarkdownToolbar textareaRef={suggestionsRef} value={suggestions} onChange={setSuggestions} />
+              <Textarea ref={suggestionsRef} value={suggestions} onChange={(e) => setSuggestions(e.target.value)} onFocus={() => setActiveField("suggestions")} placeholder="Your recommendations and improvements..." rows={4} className="border-blue-200 focus:ring-blue-500 rounded-t-none" data-testid="input-suggestions" />
+            </div>
+            <Button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending || (!correctPoints && !incorrectPoints && !suggestions)} data-testid="button-submit-review">
+              <Send className="mr-2 h-4 w-4" /> {submitMutation.isPending ? "Submitting..." : "Submit Review"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isCompleted && request.serviceType === "custom" && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2"><Wrench className="h-4 w-4 text-purple-500" /> Your Deliverable</CardTitle>
+              <ExpertTemplateDropdown onSelect={(content) => setDeliverable(content)} hasContent={!!deliverable} />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <MarkdownToolbar textareaRef={deliverableRef} value={deliverable} onChange={setDeliverable} />
+            <Textarea ref={deliverableRef} value={deliverable} onChange={(e) => setDeliverable(e.target.value)} onFocus={() => setActiveField("deliverable")} placeholder="Write your complete deliverable here..." rows={12} className="mb-4 font-mono text-xs rounded-t-none" data-testid="input-deliverable" />
+            <Button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending || !deliverable.trim()} data-testid="button-submit-review">
+              <Send className="mr-2 h-4 w-4" /> {submitMutation.isPending ? "Submitting..." : "Submit Deliverable"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {isCompleted && request.serviceType === "rate" && (
+        <Card className="border-green-200 bg-green-50 dark:bg-green-900/10">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircle className="h-4 w-4 text-green-600" />
+              <p className="text-sm font-semibold text-green-800 dark:text-green-400">Your Rating: {currentReview.rating}/10</p>
+            </div>
+            {currentReview.ratingComment && <p className="text-sm">{currentReview.ratingComment}</p>}
+          </CardContent>
+        </Card>
+      )}
+
+      {isCompleted && request.serviceType === "review" && (
+        <div className="space-y-3">
+          {currentReview.correctPoints && (
+            <Card className="border-green-200 bg-green-50/50 dark:bg-green-900/10">
+              <CardHeader className="pb-2"><CardTitle className="text-sm text-green-700 dark:text-green-400 flex items-center gap-2"><CheckCircle className="h-4 w-4" /> What's Correct</CardTitle></CardHeader>
+              <CardContent><p className="text-sm whitespace-pre-wrap">{currentReview.correctPoints}</p></CardContent>
+            </Card>
+          )}
+          {currentReview.incorrectPoints && (
+            <Card className="border-red-200 bg-red-50/50 dark:bg-red-900/10">
+              <CardHeader className="pb-2"><CardTitle className="text-sm text-red-700 dark:text-red-400 flex items-center gap-2"><AlertCircle className="h-4 w-4" /> What's Wrong</CardTitle></CardHeader>
+              <CardContent><p className="text-sm whitespace-pre-wrap">{currentReview.incorrectPoints}</p></CardContent>
+            </Card>
+          )}
+          {currentReview.suggestions && (
+            <Card className="border-blue-200 bg-blue-50/50 dark:bg-blue-900/10">
+              <CardHeader className="pb-2"><CardTitle className="text-sm text-blue-700 dark:text-blue-400 flex items-center gap-2"><MessageSquare className="h-4 w-4" /> Suggestions</CardTitle></CardHeader>
+              <CardContent><p className="text-sm whitespace-pre-wrap">{currentReview.suggestions}</p></CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {isCompleted && request.serviceType === "custom" && (
+        <Card className="border-purple-200 bg-purple-50/50 dark:bg-purple-900/10">
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-purple-700 dark:text-purple-400 flex items-center gap-2"><Wrench className="h-4 w-4" /> Your Deliverable</CardTitle></CardHeader>
+          <CardContent><p className="text-sm whitespace-pre-wrap">{currentReview.deliverable}</p></CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── Completed History ───
+function CompletedHistory({ expertId, setView, setSelectedReview }: { expertId: number; setView: (v: ExpertView) => void; setSelectedReview: (id: number) => void }) {
+  const { data: allReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expertId] });
+  const completed = allReviews?.filter((r) => r.status === "completed") ?? [];
+
+  return (
+    <div className="p-6" data-testid="expert-view-completed">
+      <h1 className="text-xl font-bold mb-6">Completed History</h1>
+      {completed.length === 0 ? (
+        <Card><CardContent className="p-8 text-center"><p className="text-sm text-muted-foreground">No completed reviews yet</p></CardContent></Card>
+      ) : (
+        <div className="space-y-3">
+          {completed.map((rev) => (
+            <CompletedReviewCard key={rev.id} review={rev} onClick={() => { setSelectedReview(rev.id); setView("review-detail"); }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClick: () => void }) {
+  const { data: request } = useQuery<ExpertRequest>({ queryKey: ["/api/requests", review.requestId] });
+  if (!request) return null;
+
+  return (
+    <Card className="cursor-pointer hover:shadow-md transition" onClick={onClick} data-testid={`completed-review-${review.id}`}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="text-sm font-semibold">{request.title}</h3>
+              <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">{request.category} · Completed {review.completedAt ? new Date(review.completedAt).toLocaleDateString() : ""}</p>
+          </div>
+          <div className="text-right">
+            {request.serviceType === "rate" && review.rating && (
+              <span className="text-lg font-bold text-amber-600">{review.rating}/10</span>
+            )}
+            <Badge className="bg-green-100 text-green-800 text-xs">Completed</Badge>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Normalize any legacy/seed tier value → Standard / Pro / Guru ───
+function normalizeTier(raw: string | null | undefined): string {
+  if (!raw) return "Standard";
+  const t = raw.toLowerCase().replace(/[^a-z]/g, "");
+  if (t === "guru" || t === "ultimate") return "Guru";
+  if (t === "pro" || t === "advanced" || t === "specialist") return "Pro";
+  return "Standard";
+}
+
+// ─── Invoice types ───
+interface InvoiceLineItem {
+  reviewId: number;
+  requestId: number;
+  title: string;
+  serviceType: string;
+  category: string;
+  creditsCost: number;
+  completedAt: string;
+  amountCents: number;
+}
+
+interface InvoiceData {
+  invoice: { invoiceNumber: string; createdAt: string };
+  expert: { id: number; name: string; email: string; category: string; tier: string };
+  lineItems: InvoiceLineItem[];
+  totalAmountCents: number;
+  platformFeeRate: number;
+  platformFeeCents: number;
+  netPayoutCents: number;
+}
+
+// ─── Invoice Rendered Component ───
+function InvoiceDocument({ data, userId }: { data: InvoiceData; userId: number }) {
+  return (
+    <div id="invoice-print-area" className="bg-white text-slate-900 p-8 max-w-[700px] mx-auto text-sm" data-testid="invoice-document">
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #invoice-print-area, #invoice-print-area * { visibility: visible !important; }
+          #invoice-print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 40px; font-size: 11px; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      {/* Header */}
+      <div className="flex items-start justify-between mb-8 border-b pb-6">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 mb-1">Expert Payout Statement</h1>
+          <p className="text-xs text-slate-500">Generated by A2A Expert Opinion Platform</p>
+        </div>
+        <div className="text-right">
+          <div className="inline-flex items-center gap-2 mb-1">
+            <div className="w-8 h-8 bg-[#0F3DD1] rounded flex items-center justify-center">
+              <span className="text-white font-bold text-xs">A2A</span>
+            </div>
+            <span className="font-bold text-sm text-slate-800">A2A Global Inc.</span>
+          </div>
+          <p className="text-[10px] text-slate-400 mt-1">Merchant / Remitter</p>
+        </div>
+      </div>
+
+      {/* Statement info + Expert details (two columns) */}
+      <div className="grid grid-cols-2 gap-6 mb-8">
+        <div>
+          <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Statement Information</h3>
+          <table className="text-xs w-full">
+            <tbody>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 text-slate-500 w-40">Statement Number</td>
+                <td className="py-1.5 font-mono font-semibold">{data.invoice.invoiceNumber}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 text-slate-500">Statement Date</td>
+                <td className="py-1.5">{new Date(data.invoice.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 text-slate-500">Expert ID</td>
+                <td className="py-1.5 font-mono">EX-{String(data.expert.id).padStart(6, "0")}</td>
+              </tr>
+              <tr>
+                <td className="py-1.5 text-slate-500">A2A Account Number</td>
+                <td className="py-1.5 font-mono">ACC-{String(userId).padStart(6, "0")}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Expert Details</h3>
+          <table className="text-xs w-full">
+            <tbody>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 text-slate-500 w-24">Name</td>
+                <td className="py-1.5 font-semibold">{data.expert.name}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 text-slate-500">Email</td>
+                <td className="py-1.5">{data.expert.email}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 text-slate-500">Category</td>
+                <td className="py-1.5 capitalize">{data.expert.category}</td>
+              </tr>
+              <tr>
+                <td className="py-1.5 text-slate-500">Tier</td>
+                <td className="py-1.5 font-semibold">{normalizeTier(data.expert.tier)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Line Items */}
+      <div className="mb-6">
+        <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Services Rendered</h3>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-slate-50 border-y border-slate-200">
+              <th className="text-left py-2 px-3 font-semibold text-slate-600">Description</th>
+              <th className="text-left py-2 px-3 font-semibold text-slate-600">Date Completed</th>
+              <th className="text-right py-2 px-3 font-semibold text-slate-600">Credits</th>
+              <th className="text-right py-2 px-3 font-semibold text-slate-600">Amount USD</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.lineItems.map((item, idx) => (
+              <tr key={idx} className="border-b border-slate-100">
+                <td className="py-2 px-3">{item.title} — {item.serviceType} review</td>
+                <td className="py-2 px-3 text-slate-500">{new Date(item.completedAt).toLocaleDateString()}</td>
+                <td className="py-2 px-3 text-right">{item.creditsCost}</td>
+                <td className="py-2 px-3 text-right font-mono">${(item.amountCents / 100).toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Totals */}
+      <div className="border-t-2 border-slate-300 pt-3 mb-8">
+        <div className="flex justify-end">
+          <div className="w-64">
+            <div className="flex justify-between py-1.5 text-xs">
+              <span className="text-slate-500">Subtotal</span>
+              <span className="font-mono">${(data.totalAmountCents / 100).toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between py-1.5 text-xs">
+              <span className="text-slate-500">Platform Fee ({data.platformFeeRate}%)</span>
+              <span className="font-mono text-red-600">-${(data.platformFeeCents / 100).toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between py-2 text-sm font-bold border-t border-slate-200 mt-1">
+              <span>Net Payout</span>
+              <span className="text-green-700 font-mono">${(data.netPayoutCents / 100).toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="border-t pt-4 text-[10px] text-slate-400 text-center space-y-1">
+        <p>© 2026 A2A Global Inc. All rights reserved. https://a2a.global/</p>
+        <p>File number 10050200, Newark, Delaware, United States.</p>
+        <p>For any questions, please contact billing@a2a.global</p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Withdrawal History ───
+function WithdrawalHistory({ expertId }: { expertId?: number }) {
+  const { data: invoices } = useQuery<any[]>({
+    queryKey: ["/api/experts", expertId, "invoices"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/experts/${expertId}/invoices`);
+      return res.json();
+    },
+    enabled: !!expertId,
+  });
+
+  if (!invoices || invoices.length === 0) return null;
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-base font-semibold mb-4">Withdrawal History</h2>
+      <div className="border rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50">
+            <tr>
+              <th className="text-left p-3 font-medium text-xs">Date</th>
+              <th className="text-left p-3 font-medium text-xs">Invoice #</th>
+              <th className="text-right p-3 font-medium text-xs">Gross</th>
+              <th className="text-right p-3 font-medium text-xs">Net Payout</th>
+              <th className="text-right p-3 font-medium text-xs">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {invoices.map((inv: any) => (
+              <tr key={inv.id} className="border-t">
+                <td className="p-3 text-xs text-muted-foreground">{new Date(inv.createdAt).toLocaleDateString()}</td>
+                <td className="p-3 text-sm font-mono">{inv.invoiceNumber}</td>
+                <td className="p-3 text-right text-sm">${(inv.totalAmount / 100).toFixed(2)}</td>
+                <td className="p-3 text-right text-sm font-medium text-green-600">${(inv.netPayout / 100).toFixed(2)}</td>
+                <td className="p-3 text-right">
+                  <Badge variant={inv.status === "paid" ? "default" : "secondary"} className={`text-[10px] ${inv.status === "paid" ? "bg-green-100 text-green-700" : ""}`}>
+                    {inv.status === "pending" ? "Pending" : inv.status === "paid" ? "Paid" : inv.status}
+                  </Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Earnings (with Withdrawal + Invoice Dialog) ───
+function Earnings({ userId }: { userId: number }) {
+  const { data } = useQuery<{ credits: number; transactions: CreditTransaction[] }>({ queryKey: ["/api/credits", userId] });
+  const [showWithdrawDialog, setShowWithdrawDialog] = useState(false);
+  const [showInvoiceDialog, setShowInvoiceDialog] = useState(false);
+  const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
+  const [withdrawAmount, setWithdrawAmount] = useState(0);
+  const { toast } = useToast();
+
+  // Get expert for invoice data
+  const { data: expert } = useQuery<Expert>({
+    queryKey: ["/api/experts/user", userId],
+    enabled: !!userId,
+  });
+
+  const earningsTxs = data?.transactions?.filter((t) => t.type === "earning") ?? [];
+  const totalEarned = earningsTxs.reduce((sum, t) => sum + t.amount, 0);
+  const balance = data?.credits ?? 0;
+
+  const generateInvoiceMutation = useMutation({
+    mutationFn: async () => {
+      if (!expert) throw new Error("Expert not found");
+      const res = await apiRequest("POST", `/api/experts/${expert.id}/generate-invoice`);
+      return res.json();
+    },
+    onSuccess: (result: InvoiceData) => {
+      setInvoiceData(result);
+      setShowWithdrawDialog(false);
+      setShowInvoiceDialog(true);
+      queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
+      toast({ title: "Invoice generated", description: `Statement ${result.invoice.invoiceNumber} created.` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  async function handleDownloadPDF() {
+    if (!invoiceData) return;
+    const { default: jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const d = invoiceData;
+    const margin = 20;
+    let y = 20;
+
+    // Header
+    doc.setFillColor(15, 61, 209);
+    doc.rect(margin, y, 12, 12, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.text("A2A", margin + 6, y + 7.5, { align: "center" });
+
+    doc.setTextColor(30, 30, 30);
+    doc.setFontSize(16);
+    doc.text("Expert Payout Statement", margin + 16, y + 6);
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(120, 120, 120);
+    doc.text("Generated by A2A Expert Opinion Platform", margin + 16, y + 11);
+
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(30, 30, 30);
+    doc.text("A2A Global Inc.", 190, y + 4, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(120, 120, 120);
+    doc.text("Merchant / Remitter", 190, y + 8, { align: "right" });
+
+    y += 16;
+    doc.setDrawColor(200, 200, 200);
+    doc.line(margin, y, 190, y);
+    y += 8;
+
+    // Statement Info
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(100, 100, 100);
+    doc.text("STATEMENT INFORMATION", margin, y);
+    doc.text("EXPERT DETAILS", 110, y);
+    y += 5;
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(60, 60, 60);
+    const infoRows = [
+      ["Statement Number", d.invoice.invoiceNumber],
+      ["Statement Date", new Date(d.invoice.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })],
+      ["Expert ID", `EX-${String(d.expert.id).padStart(6, "0")}`],
+      ["Account Number", `ACC-${String(userId).padStart(6, "0")}`],
+    ];
+    const expertRows = [
+      ["Name", d.expert.name],
+      ["Email", d.expert.email],
+      ["Category", d.expert.category],
+      ["Tier", normalizeTier(d.expert.tier)],
+    ];
+    doc.setFontSize(8);
+    infoRows.forEach(([label, val], i) => {
+      doc.setTextColor(130, 130, 130);
+      doc.text(label, margin, y + i * 5);
+      doc.setTextColor(30, 30, 30);
+      doc.setFont("helvetica", "bold");
+      doc.text(val, margin + 38, y + i * 5);
+      doc.setFont("helvetica", "normal");
+    });
+    expertRows.forEach(([label, val], i) => {
+      doc.setTextColor(130, 130, 130);
+      doc.text(label, 110, y + i * 5);
+      doc.setTextColor(30, 30, 30);
+      doc.setFont("helvetica", "bold");
+      doc.text(val, 135, y + i * 5);
+      doc.setFont("helvetica", "normal");
+    });
+    y += 28;
+
+    // Line Items table
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(100, 100, 100);
+    doc.setFontSize(8);
+    doc.text("SERVICES RENDERED", margin, y);
+    y += 4;
+    doc.setFillColor(245, 245, 250);
+    doc.rect(margin, y, 170, 6, "F");
+    doc.setTextColor(80, 80, 80);
+    doc.setFontSize(7);
+    doc.text("Description", margin + 2, y + 4);
+    doc.text("Date", 115, y + 4);
+    doc.text("Credits", 145, y + 4, { align: "right" });
+    doc.text("Amount USD", 188, y + 4, { align: "right" });
+    y += 8;
+
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(40, 40, 40);
+    d.lineItems.forEach((item: any) => {
+      const desc = `${item.title} — ${item.serviceType} review`;
+      const truncated = desc.length > 55 ? desc.slice(0, 55) + "..." : desc;
+      doc.text(truncated, margin + 2, y);
+      doc.text(item.completedAt ? new Date(item.completedAt).toLocaleDateString() : "-", 115, y);
+      doc.text(String(item.creditsCost), 145, y, { align: "right" });
+      doc.text(`$${(item.amountCents / 100).toFixed(2)}`, 188, y, { align: "right" });
+      y += 5;
+    });
+
+    y += 2;
+    doc.line(margin, y, 190, y);
+    y += 5;
+
+    // Totals
+    doc.setFontSize(8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Subtotal", 145, y, { align: "right" });
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(30, 30, 30);
+    doc.text(`$${(d.totalAmountCents / 100).toFixed(2)}`, 188, y, { align: "right" });
+    y += 5;
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(180, 60, 60);
+    doc.text(`Platform Fee (${d.platformFeeRate}%)`, 145, y, { align: "right" });
+    doc.text(`-$${(d.platformFeeCents / 100).toFixed(2)}`, 188, y, { align: "right" });
+    y += 6;
+    doc.setFillColor(240, 249, 240);
+    doc.rect(120, y - 4, 70, 8, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(20, 120, 20);
+    doc.text("Net Payout", 145, y + 1, { align: "right" });
+    doc.text(`$${(d.netPayoutCents / 100).toFixed(2)}`, 188, y + 1, { align: "right" });
+    y += 12;
+
+    // Payment method
+    doc.setFontSize(7);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(100, 100, 100);
+    doc.text("Payment Method: Bank Transfer via Mercury", margin, y);
+    doc.text("Status: Pending Approval", margin, y + 4);
+    y += 12;
+
+    // Footer
+    doc.line(margin, y, 190, y);
+    y += 4;
+    doc.setFontSize(6);
+    doc.setTextColor(150, 150, 150);
+    doc.text("\u00a9 2026 A2A Global Inc. All rights reserved. https://a2a.global/", margin, y);
+    doc.text("File number 10050200, Newark, Delaware, United States.", margin, y + 3);
+    doc.text("For any questions, please contact billing@a2a.global", margin, y + 6);
+
+    doc.save(`${d.invoice.invoiceNumber}.pdf`);
+  }
+
+  // Mercury payout after invoice
+  const processPayoutMutation = useMutation({
+    mutationFn: async () => {
+      if (!invoiceData || !expert) throw new Error("No invoice data");
+      const res = await apiRequest("POST", `/api/wallet/withdraw`, {
+        userId,
+        expertId: expert.id,
+        amountCents: invoiceData.netPayoutCents,
+        invoiceId: invoiceData.invoice.id,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
+      toast({ title: "Payout requested", description: "Your withdrawal has been submitted. Funds will be sent via Mercury within 2-3 business days." });
+      setShowInvoiceDialog(false);
+      setInvoiceData(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Payout error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="p-6" data-testid="expert-view-earnings">
+      <h1 className="text-xl font-bold mb-6">Earnings</h1>
+
+      <div className="grid sm:grid-cols-3 gap-4 mb-8">
+        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold text-green-600">{totalEarned}</p><p className="text-xs text-muted-foreground">Total Earned</p></CardContent></Card>
+        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold">{balance}</p><p className="text-xs text-muted-foreground">Balance</p></CardContent></Card>
+        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold">{earningsTxs.length}</p><p className="text-xs text-muted-foreground">Completed Reviews</p></CardContent></Card>
+      </div>
+
+      {/* Withdraw Funds section */}
+      <Card className="mb-8">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Wallet className="h-4 w-4" /> Withdraw Funds
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">Current balance: <span className="font-bold">{balance} credits</span></p>
+              <p className="text-xs text-muted-foreground">Estimated value: ${balance.toFixed(2)} (at $1/credit)</p>
+            </div>
+            <Button onClick={() => { setWithdrawAmount(balance); setShowWithdrawDialog(true); }} disabled={balance <= 0} data-testid="button-withdraw">
+              <Wallet className="mr-2 h-4 w-4" /> Withdraw
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Withdrawal Dialog */}
+      <Dialog open={showWithdrawDialog} onOpenChange={setShowWithdrawDialog}>
+        <DialogContent data-testid="dialog-withdrawal">
+          <DialogHeader>
+            <DialogTitle>Withdraw Funds</DialogTitle>
+            <DialogDescription>Request a withdrawal and generate a payout statement.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label className="text-sm">Amount (credits)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={balance}
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(Math.min(balance, Math.max(0, parseInt(e.target.value) || 0)))}
+                className="mt-1"
+                data-testid="input-withdraw-amount"
+              />
+              <p className="text-xs text-muted-foreground mt-1">= ${withdrawAmount.toFixed(2)}</p>
+            </div>
+            <div>
+              <Label className="text-sm">Payment Method</Label>
+              <div className="mt-1 p-3 bg-muted/50 rounded-lg flex items-center gap-2">
+                <DollarSign className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm">Bank Transfer (Mercury)</span>
+              </div>
+            </div>
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800/30">
+              <p className="text-xs text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
+                <Receipt className="h-3.5 w-3.5" />
+                A payout statement will be generated with all uninvoiced completed reviews.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowWithdrawDialog(false)}>Cancel</Button>
+            <Button onClick={() => generateInvoiceMutation.mutate()} disabled={withdrawAmount <= 0 || generateInvoiceMutation.isPending} data-testid="button-confirm-withdraw">
+              <Receipt className="mr-2 h-4 w-4" />
+              {generateInvoiceMutation.isPending ? "Generating..." : "Generate Statement & Withdraw"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Invoice Dialog */}
+      <Dialog open={showInvoiceDialog} onOpenChange={setShowInvoiceDialog}>
+        <DialogContent className="max-w-[800px] max-h-[90vh] overflow-y-auto" data-testid="dialog-invoice">
+          <DialogHeader className="no-print">
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" /> Expert Payout Statement
+            </DialogTitle>
+            <DialogDescription>
+              {invoiceData?.invoice.invoiceNumber} — Generated {invoiceData ? new Date(invoiceData.invoice.createdAt).toLocaleDateString() : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {invoiceData && <InvoiceDocument data={invoiceData} userId={userId} />}
+          <DialogFooter className="no-print gap-2">
+            <Button variant="outline" onClick={() => setShowInvoiceDialog(false)}>Close</Button>
+            <Button variant="outline" onClick={handleDownloadPDF} data-testid="button-download-pdf">
+              <Printer className="mr-2 h-4 w-4" /> Download PDF
+            </Button>
+            <Button onClick={() => processPayoutMutation.mutate()} disabled={processPayoutMutation.isPending} className="bg-green-600 hover:bg-green-700" data-testid="button-process-payout">
+              <DollarSign className="mr-2 h-4 w-4" />
+              {processPayoutMutation.isPending ? "Processing..." : "Send to Mercury"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Withdrawal History */}
+      <WithdrawalHistory expertId={expert?.id} />
+
+      <h2 className="text-base font-semibold mb-4">Earning History</h2>
+      <div className="border rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50">
+            <tr>
+              <th className="text-left p-3 font-medium text-xs">Date</th>
+              <th className="text-left p-3 font-medium text-xs">Description</th>
+              <th className="text-right p-3 font-medium text-xs">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {earningsTxs.length === 0 ? (
+              <tr><td colSpan={3} className="p-6 text-center text-sm text-muted-foreground">No earnings yet</td></tr>
+            ) : earningsTxs.map((tx) => (
+              <tr key={tx.id} className="border-t">
+                <td className="p-3 text-xs text-muted-foreground">{new Date(tx.createdAt).toLocaleDateString()}</td>
+                <td className="p-3 text-sm">{tx.description}</td>
+                <td className="p-3 text-right text-sm font-medium text-green-600">+{tx.amount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Profile (with Rating Breakdown) ───
+function ExpertProfile({ expert }: { expert: Expert }) {
+  const [bio, setBio] = useState(expert.bio);
+  const [expertise, setExpertise] = useState(expert.expertise);
+  const [credentials, setCredentials] = useState(expert.credentials);
+  const [availability, setAvailability] = useState(expert.availability === 1);
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/experts/${expert.id}`, {
+        bio, expertise, credentials, availability: availability ? 1 : 0,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/experts/user", expert.userId] });
+      toast({ title: "Profile updated!" });
+    },
+  });
+
+  const ratingDisplay = (expert.rating / 10).toFixed(1);
+  const totalReviews = expert.totalReviews;
+
+  // Mock rating breakdown (since we don't store per-star data)
+  const breakdown = [
+    { stars: 5, count: Math.round(totalReviews * 0.55) },
+    { stars: 4, count: Math.round(totalReviews * 0.25) },
+    { stars: 3, count: Math.round(totalReviews * 0.12) },
+    { stars: 2, count: Math.round(totalReviews * 0.05) },
+    { stars: 1, count: Math.round(totalReviews * 0.03) },
+  ];
+  const maxCount = Math.max(...breakdown.map((b) => b.count), 1);
+
+  const improvementTips = [
+    "Respond within the expected timeframe for your tier",
+    "Provide specific, actionable feedback with clear reasoning",
+    "Include relevant data, benchmarks, or citations",
+    "Structure your response with clear sections",
+    "Address all parts of the client's question",
+    "Proofread for accuracy and clarity",
+  ];
+
+  const tierName = normalizeTier(expert.rateTier);
+  const tierStyles = {
+    Guru: {
+      banner: "bg-gradient-to-r from-amber-500 to-amber-400",
+      badge: "bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700",
+      label: "text-amber-700 dark:text-amber-300",
+      icon: "text-amber-500",
+      glow: "shadow-amber-200 dark:shadow-amber-900/40",
+    },
+    Pro: {
+      banner: "bg-gradient-to-r from-indigo-600 to-indigo-500",
+      badge: "bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-300 dark:border-indigo-700",
+      label: "text-indigo-700 dark:text-indigo-300",
+      icon: "text-indigo-500",
+      glow: "shadow-indigo-200 dark:shadow-indigo-900/40",
+    },
+    Standard: {
+      banner: "bg-gradient-to-r from-blue-600 to-blue-500",
+      badge: "bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700",
+      label: "text-blue-700 dark:text-blue-300",
+      icon: "text-blue-500",
+      glow: "shadow-blue-200 dark:shadow-blue-900/40",
+    },
+  }[tierName] ?? {
+    banner: "bg-gradient-to-r from-blue-600 to-blue-500",
+    badge: "bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700",
+    label: "text-blue-700 dark:text-blue-300",
+    icon: "text-blue-500",
+    glow: "shadow-blue-200 dark:shadow-blue-900/40",
+  };
+
+  return (
+    <div className="p-6 max-w-2xl" data-testid="expert-view-profile">
+      <h1 className="text-xl font-bold mb-4">Expert Profile</h1>
+
+      {/* Tier Banner */}
+      <div className={`rounded-2xl ${tierStyles.badge} ${tierStyles.glow} shadow-lg mb-6 overflow-hidden`} data-testid="card-expert-tier">
+        <div className={`${tierStyles.banner} px-5 py-3 flex items-center gap-3`}>
+          <Award className="h-5 w-5 text-white" />
+          <span className="text-white text-xs font-medium uppercase tracking-widest">Your Tier</span>
+        </div>
+        <div className="px-5 py-4 flex items-center justify-between">
+          <div>
+            <p className={`text-3xl font-extrabold tracking-tight ${tierStyles.label}`} data-testid="text-expert-tier-name">{tierName}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {tierName === "Guru" && "Executive-grade requests · Earn up to $2,000 per review"}
+              {tierName === "Pro" && "Professional-level requests · $360–$3,600 per 12 hours"}
+              {tierName === "Standard" && "Entry-level requests · Quick reviews, earn $2–$180 per 12 hours"}
+            </p>
+          </div>
+          {expert.ratePerMinute && (
+            <div className="text-right">
+              <p className={`text-xl font-bold ${tierStyles.label}`}>${expert.ratePerMinute}<span className="text-sm font-medium">/min</span></p>
+              <p className="text-xs text-muted-foreground">Your rate</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Rating Section */}
+      <Card className="mb-6" data-testid="card-expert-rating">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Star className="h-4 w-4 text-amber-500" /> Your Rating
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-start gap-6">
+            {/* Big rating number */}
+            <div className="text-center shrink-0">
+              <p className="text-4xl font-bold text-amber-600" data-testid="text-expert-rating">{ratingDisplay}</p>
+              <p className="text-xs text-muted-foreground">out of 5.0</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{totalReviews} reviews</p>
+            </div>
+            {/* Breakdown bars */}
+            <div className="flex-1 space-y-1.5">
+              {breakdown.map((b) => (
+                <div key={b.stars} className="flex items-center gap-2">
+                  <span className="text-xs font-medium w-3 text-right">{b.stars}</span>
+                  <Star className="h-3 w-3 text-amber-400 fill-amber-400" />
+                  <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-amber-400 h-full rounded-full transition-all"
+                      style={{ width: `${(b.count / maxCount) * 100}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-muted-foreground w-6 text-right">{b.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* How to improve tips */}
+      <Card className="mb-6 border-blue-200 bg-blue-50/50 dark:bg-blue-900/10 dark:border-blue-800/30" data-testid="card-improvement-tips">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm text-blue-700 dark:text-blue-400 flex items-center gap-2">
+            <Lightbulb className="h-4 w-4" /> How to improve your rating
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ul className="space-y-1.5">
+            {improvementTips.map((tip, i) => (
+              <li key={i} className="text-xs text-blue-800 dark:text-blue-300 flex items-start gap-2">
+                <CheckCircle className="h-3 w-3 text-blue-500 mt-0.5 shrink-0" />
+                {tip}
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+
+      {/* Profile Card */}
+      <Card className="mb-6">
+        <CardContent className="p-4 flex items-center gap-4">
+          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+            <UserCircle className="h-6 w-6 text-primary" />
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold">Expert ID: {expert.id}</p>
+              {expert.verified === 1 && <Badge className="bg-green-100 text-green-800 text-xs"><CheckCircle className="h-3 w-3 mr-1" />Verified</Badge>}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Rating: {ratingDisplay} · {totalReviews} reviews
+              <InfoTooltip text="Your average score from client feedback. Higher ratings get more requests" />
+            </p>
+            {expert.ratePerMinute && (
+              <p className="text-xs text-muted-foreground mt-0.5">Rate: ${expert.ratePerMinute}/min · {normalizeTier(expert.rateTier)}</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Public profile share */}
+      <Card className="mb-6 border-blue-200 dark:border-blue-800/30 bg-blue-50/50 dark:bg-blue-900/10" data-testid="card-share-profile">
+        <CardContent className="p-4">
+          <p className="text-sm font-medium mb-2">Your Public Profile</p>
+          <div className="flex items-center gap-2">
+            <code className="text-xs bg-muted px-2 py-1 rounded flex-1 truncate" data-testid="text-public-profile-url">
+              {window.location.origin + "/#/expert/profile/" + expert.id}
+            </code>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const url = window.location.origin + "/#/expert/profile/" + expert.id;
+                try {
+                  // Fallback for sandboxed iframes where navigator.clipboard is blocked
+                  const textarea = document.createElement("textarea");
+                  textarea.value = url;
+                  textarea.style.position = "fixed";
+                  textarea.style.left = "-9999px";
+                  document.body.appendChild(textarea);
+                  textarea.select();
+                  document.execCommand("copy");
+                  document.body.removeChild(textarea);
+                  toast({ title: "URL copied!", description: "Share this link with clients." });
+                } catch {
+                  // If even execCommand fails, show the URL for manual copy
+                  toast({ title: "Copy this URL", description: url });
+                }
+              }}
+              data-testid="button-share-profile"
+            >
+              <Share2 className="h-3 w-3 mr-1" /> Share Profile
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="space-y-4">
+        <div>
+          <Label className="text-sm">Bio</Label>
+          <Textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={3} className="mt-1" data-testid="input-expert-bio" />
+        </div>
+        <div>
+          <Label className="text-sm">Expertise Areas</Label>
+          <Input value={expertise} onChange={(e) => setExpertise(e.target.value)} className="mt-1" data-testid="input-expert-expertise" />
+        </div>
+        <div>
+          <Label className="text-sm">Credentials</Label>
+          <Input value={credentials} onChange={(e) => setCredentials(e.target.value)} className="mt-1" data-testid="input-expert-credentials" />
+        </div>
+        <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+          <div>
+            <p className="text-sm font-medium">Availability</p>
+            <p className="text-xs text-muted-foreground">Toggle to accept new requests</p>
+          </div>
+          <Switch checked={availability} onCheckedChange={setAvailability} data-testid="switch-availability" />
+        </div>
+        <Button onClick={() => mutation.mutate()} disabled={mutation.isPending} data-testid="button-save-profile">
+          {mutation.isPending ? "Saving..." : "Save Profile"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Expert Overview Skeleton (change #12) ───
+function ExpertOverviewSkeleton() {
+  return (
+    <div className="p-6 space-y-6" data-testid="skeleton-overview">
+      <div className="h-6 w-48 bg-muted animate-pulse rounded" />
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[1,2,3,4].map(i => <div key={i} className="h-20 bg-muted animate-pulse rounded-lg" />)}
+      </div>
+      <div className="h-24 bg-muted animate-pulse rounded-lg" />
+    </div>
+  );
+}
+
+// ─── Main Expert Dashboard ───
+export default function ExpertDashboard() {
+  const { user, logout } = useAuth();
+  const [, setLocation] = useLocation();
+  const [view, setView] = useState<ExpertView>(() => {
+    // Handle notification deep-link: ?view=queue
+    try {
+      const hash = window.location.hash;
+      const qIdx = hash.indexOf('?');
+      if (qIdx !== -1) {
+        const params = new URLSearchParams(hash.slice(qIdx + 1));
+        const v = params.get('view');
+        if (v === 'queue') return 'queue';
+        if (v === 'active') return 'active';
+        if (v === 'earnings') return 'earnings';
+      }
+    } catch {}
+    return "overview";
+  });
+  const [selectedReview, setSelectedReview] = useState<number>(0);
+  const [showTour, setShowTour] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+  }, [darkMode]);
+
+  // SSE real-time notifications
+  useSSE(user?.id);
+
+  const { data: expert, isLoading: expertLoading, error: expertError } = useQuery<Expert>({
+    queryKey: ["/api/experts/user", user?.id],
+    enabled: !!user,
+    retry: 3,
+    retryDelay: 500,
+  });
+
+  // Search data for expert — search Available Queue
+  const { data: pendingReviews } = useQuery<ExpertRequest[]>({
+    queryKey: ["/api/requests"],
+    enabled: !!expert && !!searchQuery,
+  });
+
+  const searchResults = searchQuery.trim().length > 1 && pendingReviews
+    ? pendingReviews.filter(r => r.title?.toLowerCase().includes(searchQuery.toLowerCase()) || r.category?.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 5)
+    : [];
+
+  if (!user) {
+    setLocation("/login");
+    return null;
+  }
+
+  // Show loading while expert data is being fetched
+  if (expertLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Loading expert dashboard...</p>
+      </div>
+    );
+  }
+
+  // Handle error loading expert profile
+  if (expertError || !expert) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center space-y-3">
+          <p className="text-sm text-destructive">Failed to load expert profile.</p>
+          <div className="flex gap-2 justify-center">
+            <Button variant="outline" size="sm" onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/experts/user", user?.id] })}>Try Again</Button>
+            <Button variant="outline" size="sm" onClick={() => { logout(); setLocation("/login"); }}>Back to Login</Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check onboarding status — redirect if not completed (now 3 steps)
+  if (expert.onboardingComplete < 2) {
+    setLocation("/expert/onboarding");
+    return null;
+  }
+
+  function handleLogout() {
+    logout();
+    setLocation("/");
+  }
+
+  const sidebarStyle = { "--sidebar-width": "16rem", "--sidebar-width-icon": "3rem" } as React.CSSProperties;
+
+  return (
+    <SidebarProvider style={sidebarStyle}>
+      <div className="flex h-screen w-full" data-testid="page-expert-dashboard">
+        {/* Desktop sidebar — hidden on mobile */}
+        <div className="hidden md:block">
+          <ExpertSidebar view={view} setView={setView} onLogout={handleLogout} />
+        </div>
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <header className="flex items-center justify-between px-4 py-2 border-b bg-background gap-3">
+            <div className="hidden md:block"><SidebarTrigger data-testid="button-expert-sidebar-toggle" /></div>
+            <div className="md:hidden flex items-center gap-2">
+              <div className="w-7 h-7 bg-green-600 rounded flex items-center justify-center">
+                <Award className="h-4 w-4 text-white" />
+              </div>
+              <span className="font-semibold text-sm">Expert</span>
+            </div>
+            {/* Global search bar (change #11) */}
+            <div className="flex-1 max-w-md relative hidden sm:block">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search requests..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+                className="pl-9 h-9"
+                data-testid="expert-search-input"
+              />
+              {searchFocused && searchResults.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-background border rounded-lg shadow-lg z-50 max-h-64 overflow-auto" data-testid="expert-search-results">
+                  {searchResults.map(r => (
+                    <button key={r.id} className="w-full text-left px-3 py-2 hover:bg-muted text-sm flex items-center gap-2" onClick={() => { setSearchQuery(""); setView("queue"); }}>
+                      <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="truncate">{r.title}</span>
+                      <Badge variant="secondary" className="text-[10px] ml-auto shrink-0">{r.category}</Badge>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {/* Dark mode toggle (change #13) */}
+              <button onClick={() => setDarkMode(d => !d)} className="p-2 rounded-lg hover:bg-muted transition" data-testid="expert-dark-mode-toggle">
+                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+              <NotificationBell userId={user.id} onNavigate={(link) => {
+                // Parse link for in-page navigation
+                if (link.startsWith('/expert?view=')) {
+                  const v = new URLSearchParams(link.split('?')[1]).get('view');
+                  if (v === 'queue') setView('queue');
+                  else if (v === 'active') setView('active');
+                  else if (v === 'earnings') setView('earnings');
+                } else {
+                  setLocation(link);
+                }
+              }} />
+              {expert?.verified === 1 && <Badge className="hidden sm:flex bg-green-100 text-green-800 text-xs"><Award className="h-3 w-3 mr-1" />Verified</Badge>}
+              <span className="text-sm font-medium hidden sm:block">{user.name}</span>
+            </div>
+          </header>
+          <main className="flex-1 overflow-auto pb-16 md:pb-0">
+            {expertLoading ? (
+              <ExpertOverviewSkeleton />
+            ) : !expert ? (
+              <div className="p-6 flex flex-col items-center justify-center gap-3">
+                <AlertCircle className="h-8 w-8 text-muted-foreground/40" />
+                <p className="text-sm text-muted-foreground">Something went wrong loading your profile. Try refreshing.</p>
+                <Button variant="outline" size="sm" onClick={() => window.location.reload()}>Refresh</Button>
+              </div>
+            ) : (
+              <>
+                {view === "overview" && <ExpertOverview expert={expert} userId={user.id} />}
+                {view === "queue" && <AvailableQueue expertId={expert.id} setView={setView} setSelectedReview={setSelectedReview} />}
+                {view === "active" && <MyActive expertId={expert.id} setView={setView} setSelectedReview={setSelectedReview} />}
+                {view === "completed" && <CompletedHistory expertId={expert.id} setView={setView} setSelectedReview={setSelectedReview} />}
+                {view === "earnings" && <Earnings userId={user.id} />}
+                {view === "profile" && <ExpertProfile expert={expert} />}
+                {view === "review-detail" && <ReviewDetail reviewId={selectedReview} expertId={expert.id} setView={setView} />}
+              </>
+            )}
+          </main>
+        </div>
+        {/* Mobile bottom tab bar */}
+        <MobileBottomTabs view={view} setView={setView} />
+        {showTour && <OnboardingTour steps={EXPERT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}
+        <FloatingHelp />
+      </div>
+    </SidebarProvider>
+  );
+}
