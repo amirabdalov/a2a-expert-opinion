@@ -23,6 +23,7 @@ const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
 
 export const db = drizzle(sqlite);
+export { sqlite };
 
 export interface IStorage {
   // Users

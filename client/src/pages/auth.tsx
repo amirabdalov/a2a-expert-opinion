@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { ArrowLeft, Mail, User, Briefcase, Star } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import logoSrc from "@assets/a2a-blue-logo.svg";
 
 type Role = "expert" | "client";
@@ -24,6 +25,7 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const { toast } = useToast();
   const { login } = useAuth();
   const [, setLocation] = useLocation();
@@ -214,20 +216,33 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                 <Button
                   type="submit"
                   className="w-full"
-                  disabled={loading}
+                  disabled={loading || (isRegister && !termsAccepted)}
                   data-testid="button-send-code"
                 >
                   {loading ? "Sending..." : "Send Verification Code"}
                 </Button>
+                {isRegister && !termsAccepted && (
+                  <p className="text-xs text-destructive text-center">Please accept the Terms of Use and Privacy Policy to continue.</p>
+                )}
 
-                {/* Terms */}
+                {/* Terms Acceptance — mandatory checkbox */}
                 {isRegister && (
-                  <p className="text-xs text-muted-foreground text-center leading-relaxed">
-                    By signing up you agree to our{" "}
-                    <a href="/terms-of-use.pdf" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">Terms of Use</a>{" "}
-                    and{" "}
-                    <a href="/privacy-policy.pdf" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">Privacy Policy</a>.
-                  </p>
+                  <div className="flex items-start gap-2">
+                    <Checkbox
+                      id="terms-accept"
+                      checked={termsAccepted}
+                      onCheckedChange={(c: any) => setTermsAccepted(!!c)}
+                      className="mt-0.5"
+                      data-testid="checkbox-terms"
+                    />
+                    <label htmlFor="terms-accept" className="text-xs text-muted-foreground leading-relaxed cursor-pointer">
+                      I have read and accept the{" "}
+                      <a href="/terms-of-use.pdf" target="_blank" rel="noopener noreferrer" className="text-primary underline">Terms of Use</a>{" "}
+                      and{" "}
+                      <a href="/privacy-policy.pdf" target="_blank" rel="noopener noreferrer" className="text-primary underline">Privacy Policy</a>.
+                      <span className="block mt-0.5 text-[10px] text-muted-foreground/70">Your acceptance date, time, and IP address will be recorded for compliance.</span>
+                    </label>
+                  </div>
                 )}
               </form>
             )}

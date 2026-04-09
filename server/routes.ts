@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage, sqlite } from "./storage";
 import { otpRegisterSchema, otpVerifySchema, otpLoginSchema } from "@shared/schema";
 import crypto from "crypto";
 import bcrypt from "bcrypt";
@@ -297,6 +297,15 @@ export async function registerRoutes(
         type: "bonus",
         description: "Welcome bonus — 5 free credits",
       });
+      // Log Terms of Use and Privacy Policy acceptance
+      const ip = req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown";
+      const ua = req.headers["user-agent"] || "unknown";
+      const now = new Date().toISOString();
+      try {
+        sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?)").run(user.id, "terms_of_use", "April 2026", now, ip, ua);
+        sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?)").run(user.id, "privacy_policy", "April 2026", now, ip, ua);
+        console.log(`[LEGAL] Terms accepted by user ${user.id} from ${ip}`);
+      } catch(e) { console.error("[LEGAL] Failed to log acceptance:", e); }
       storage.createNotification({
         userId: user.id,
         title: "Welcome to A2A Expert Opinion!",

@@ -247,3 +247,16 @@ export const otpVerifySchema = z.object({
 export const otpLoginSchema = z.object({
   email: z.string().email(),
 });
+
+export const legalAcceptances = sqliteTable("legal_acceptances", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  documentType: text("document_type").notNull(),
+  documentVersion: text("document_version").notNull().default("April 2026"),
+  acceptedAt: text("accepted_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+});
+
+export type LegalAcceptance = typeof legalAcceptances.$inferSelect;
+export type InsertLegalAcceptance = typeof legalAcceptances.$inferInsert;
