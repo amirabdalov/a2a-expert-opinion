@@ -29,7 +29,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "@/components/ui/select";
 
-type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings";
+type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence";
 
 const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -40,6 +40,7 @@ const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any }> = [
   { id: "withdrawals", label: "Withdrawals", icon: ArrowDownUp },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "settings", label: "Settings", icon: Settings },
+  { id: "intelligence", label: "RL Core & BI", icon: Activity },
 ];
 
 // Generate mock time-series data
@@ -232,6 +233,7 @@ export default function AdminDashboard() {
           {page === "withdrawals" && <WithdrawalsPage />}
           {page === "notifications" && <NotificationsPage />}
           {page === "settings" && <SettingsPage />}
+          {page === "intelligence" && <IntelligencePage />}
         </div>
       </main>
     </div>
@@ -1229,6 +1231,202 @@ function SettingsPage() {
         </Card>
       </div>
       <FloatingHelp />
+    </div>
+  );
+}
+
+// ===== RL CORE & BUSINESS INTELLIGENCE PAGE =====
+function IntelligencePage() {
+  const { data, isLoading } = useQuery<any>({ queryKey: ["/api/admin/rl-metrics"] });
+
+  if (isLoading) return <div className="p-6 text-muted-foreground">Loading RL Core metrics...</div>;
+  if (!data) return <div className="p-6 text-destructive">Failed to load metrics</div>;
+
+  const { rlCore, business, tiers, domains, funnel, abTests, legal } = data;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold">RL Core & Business Intelligence</h2>
+        <p className="text-sm text-muted-foreground">A2A Global Reinforcement Learning Core metrics, CAC analysis, and A/B test results</p>
+      </div>
+
+      {/* RL Core Metrics */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2"><Activity className="w-4 h-4 text-primary" /> Reinforcement Learning Core</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {[
+            { label: "Training Signals", value: rlCore?.totalTrainingSignals || 0, color: "text-primary" },
+            { label: "Avg Expert Rating", value: `${rlCore?.avgExpertRating || 0}/100`, color: "text-emerald-600" },
+            { label: "Match Accuracy", value: `${rlCore?.matchAccuracy || 0}%`, color: "text-amber-600" },
+            { label: "Error Taxonomy Size", value: rlCore?.errorTaxonomySize || 0, color: "text-violet-600" },
+            { label: "Data Points", value: rlCore?.dataPointsCollected || 0, color: "text-rose-600" },
+            { label: "Model Version", value: rlCore?.modelVersion || "v0.1", color: "text-gray-600" },
+          ].map((m, i) => (
+            <Card key={i}><CardContent className="pt-4 pb-3">
+              <p className={`text-xl font-bold ${m.color}`}>{m.value}</p>
+              <p className="text-xs text-muted-foreground">{m.label}</p>
+            </CardContent></Card>
+          ))}
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* Business Metrics / CAC / LTV */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2"><DollarSign className="w-4 h-4 text-emerald-600" /> Unit Economics</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: "CAC", value: `$${business?.cac || 0}`, sub: "Customer Acquisition Cost" },
+            { label: "LTV", value: `$${business?.ltv || 0}`, sub: "Lifetime Value (est.)" },
+            { label: "LTV:CAC", value: business?.ltvCacRatio || "N/A", sub: "Target: >3.0" },
+            { label: "ARPC", value: `$${business?.avgRevenuePerClient || 0}`, sub: "Avg Revenue per Client" },
+            { label: "Total Revenue", value: `$${business?.totalRevenue || 0}`, sub: "All-time credits purchased" },
+            { label: "Total Users", value: business?.totalUsers || 0, sub: `${business?.totalExperts || 0} experts, ${business?.totalClients || 0} clients` },
+            { label: "Active Requests", value: business?.activeRequests || 0, sub: `${business?.completedRequests || 0} completed` },
+            { label: "Total Requests", value: business?.totalRequests || 0, sub: "Expert opinion requests" },
+          ].map((m, i) => (
+            <Card key={i}><CardContent className="pt-4 pb-3">
+              <p className="text-lg font-bold">{m.value}</p>
+              <p className="text-xs font-medium">{m.label}</p>
+              <p className="text-[10px] text-muted-foreground">{m.sub}</p>
+            </CardContent></Card>
+          ))}
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* Expert Tier Distribution */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Expert Tier Distribution</CardTitle></CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {[
+                { tier: "Standard", count: tiers?.standard || 0, color: "bg-gray-400", desc: "Open access" },
+                { tier: "Pro", count: tiers?.pro || 0, color: "bg-primary", desc: "Open access" },
+                { tier: "Guru", count: tiers?.guru || 0, color: "bg-amber-500", desc: "Test required" },
+              ].map((t, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className={`w-3 h-3 rounded-full ${t.color}`} />
+                  <span className="text-sm font-medium w-20">{t.tier}</span>
+                  <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                    <div className={`h-full ${t.color} rounded-full`} style={{ width: `${Math.max(5, (t.count / Math.max(business?.totalExperts || 1, 1)) * 100)}%` }} />
+                  </div>
+                  <span className="text-sm font-mono w-8 text-right">{t.count}</span>
+                  <span className="text-xs text-muted-foreground">{t.desc}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Conversion Funnel</CardTitle></CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {(funnel || []).map((f: any, i: number) => {
+                const maxCount = funnel?.[0]?.count || 1;
+                const pct = Math.round((f.count / maxCount) * 100);
+                return (
+                  <div key={i} className="flex items-center gap-3">
+                    <span className="text-xs w-28 text-muted-foreground">{f.stage}</span>
+                    <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
+                      <div className="h-full bg-primary/80 rounded flex items-center px-2" style={{ width: `${Math.max(5, pct)}%` }}>
+                        <span className="text-[10px] text-white font-medium">{f.count}</span>
+                      </div>
+                    </div>
+                    <span className="text-xs font-mono w-10 text-right">{pct}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Separator />
+
+      {/* A/B Tests */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-violet-600" /> A/B Tests</h3>
+        <div className="grid gap-3">
+          {(abTests || []).map((test: any, i: number) => {
+            const aRate = test.a_visitors > 0 ? ((test.a_conversions / test.a_visitors) * 100).toFixed(1) : "0";
+            const bRate = test.b_visitors > 0 ? ((test.b_conversions / test.b_visitors) * 100).toFixed(1) : "0";
+            const winner = parseFloat(bRate) > parseFloat(aRate) ? "B" : "A";
+            return (
+              <Card key={i}>
+                <CardContent className="pt-4 pb-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium">{test.name}</span>
+                    <Badge variant={test.status === "running" ? "default" : "secondary"} className="text-xs">{test.status}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 text-xs">
+                    <div className={`p-2 rounded ${winner === "A" ? "bg-emerald-50 border border-emerald-200" : "bg-muted"}`}>
+                      <p className="font-medium">A: {test.variant_a}</p>
+                      <p className="text-muted-foreground">{test.a_conversions}/{test.a_visitors} = <span className="font-mono font-bold">{aRate}%</span></p>
+                    </div>
+                    <div className={`p-2 rounded ${winner === "B" ? "bg-emerald-50 border border-emerald-200" : "bg-muted"}`}>
+                      <p className="font-medium">B: {test.variant_b}</p>
+                      <p className="text-muted-foreground">{test.b_conversions}/{test.b_visitors} = <span className="font-mono font-bold">{bRate}%</span></p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* Legal Compliance */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-emerald-600" /> Legal Compliance</h3>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <Card><CardContent className="pt-4 pb-3">
+            <p className="text-lg font-bold">{legal?.termsAcceptances?.c || 0}</p>
+            <p className="text-xs text-muted-foreground">Terms of Use acceptances</p>
+          </CardContent></Card>
+          <Card><CardContent className="pt-4 pb-3">
+            <p className="text-lg font-bold">{legal?.privacyAcceptances?.c || 0}</p>
+            <p className="text-xs text-muted-foreground">Privacy Policy acceptances</p>
+          </CardContent></Card>
+        </div>
+        {legal?.recentAcceptances?.length > 0 && (
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-xs text-muted-foreground">Recent Acceptances</CardTitle></CardHeader>
+            <CardContent>
+              <div className="space-y-1 text-xs">
+                {legal.recentAcceptances.slice(0, 5).map((a: any, i: number) => (
+                  <div key={i} className="flex justify-between text-muted-foreground">
+                    <span>User #{a.user_id} — {a.document_type}</span>
+                    <span>{a.ip_address} — {a.accepted_at?.slice(0, 19)}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Domain Distribution */}
+      {domains?.length > 0 && (
+        <>
+          <Separator />
+          <div>
+            <h3 className="text-sm font-semibold mb-3">Expert Domain Distribution</h3>
+            <div className="flex flex-wrap gap-2">
+              {domains.map((d: any, i: number) => (
+                <Badge key={i} variant="secondary" className="text-xs">{d.name}: {d.count}</Badge>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

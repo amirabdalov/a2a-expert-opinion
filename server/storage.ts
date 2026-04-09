@@ -44,6 +44,7 @@ export interface IStorage {
   getRequestsByUser(userId: number): ExpertRequest[];
   getRequestsByExpert(expertId: number): ExpertRequest[];
   getAllRequests(): ExpertRequest[];
+  getAllTransactions(): CreditTransaction[];
   getPendingRequests(): ExpertRequest[];
   createRequest(request: InsertRequest): ExpertRequest;
   updateRequest(id: number, data: Partial<InsertRequest>): ExpertRequest | undefined;
@@ -150,7 +151,16 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(requests).where(eq(requests.expertId, expertId)).orderBy(desc(requests.id)).all();
   }
   getAllRequests(): ExpertRequest[] {
+  getAllTransactions(): CreditTransaction[] {
+    return db.select().from(creditTransactions).all();
+  }
     return db.select().from(requests).orderBy(desc(requests.id)).all();
+  getAllTransactions(): CreditTransaction[] {
+    return db.select().from(creditTransactions).all();
+  }
+  }
+  getAllTransactions(): CreditTransaction[] {
+    return db.select().from(creditTransactions).all();
   }
   getPendingRequests(): ExpertRequest[] {
     return db.select().from(requests).where(eq(requests.status, "pending")).orderBy(desc(requests.id)).all();
