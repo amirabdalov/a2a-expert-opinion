@@ -156,10 +156,6 @@ export class DatabaseStorage implements IStorage {
   getAllTransactions(): CreditTransaction[] {
     return db.select().from(creditTransactions).all();
   }
-  }
-  getAllTransactions(): CreditTransaction[] {
-    return db.select().from(creditTransactions).all();
-  }
   getPendingRequests(): ExpertRequest[] {
     return db.select().from(requests).where(eq(requests.status, "pending")).orderBy(desc(requests.id)).all();
   }
