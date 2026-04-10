@@ -2122,8 +2122,6 @@ export async function registerRoutes(
     }
   });
 
-  return httpServer;
-
   // ===== RL CORE & BUSINESS INTELLIGENCE =====
 
   app.get("/api/admin/rl-metrics", async (_req, res) => {
@@ -2266,4 +2264,5 @@ export async function registerRoutes(
     }
   });
 
+  return httpServer;
 }
