@@ -22,6 +22,190 @@ import { eq, desc, and } from "drizzle-orm";
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
 
+// Auto-create tables if they don't exist (handles fresh deploys with no GCS backup)
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'client',
+    credits INTEGER NOT NULL DEFAULT 5,
+    company TEXT,
+    account_type TEXT NOT NULL DEFAULT 'individual',
+    wallet_balance INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    tour_completed INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password TEXT NOT NULL,
+    name TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS experts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    bio TEXT NOT NULL DEFAULT '',
+    expertise TEXT NOT NULL DEFAULT '',
+    credentials TEXT NOT NULL DEFAULT '',
+    rating INTEGER NOT NULL DEFAULT 50,
+    total_reviews INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    categories TEXT NOT NULL DEFAULT '[]',
+    availability INTEGER NOT NULL DEFAULT 1,
+    hourly_rate INTEGER,
+    response_time TEXT,
+    education TEXT NOT NULL DEFAULT '',
+    years_experience INTEGER NOT NULL DEFAULT 0,
+    onboarding_complete INTEGER NOT NULL DEFAULT 0,
+    verification_score INTEGER,
+    rate_per_minute TEXT,
+    rate_tier TEXT
+  );
+  CREATE TABLE IF NOT EXISTS verification_tests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    expert_id INTEGER NOT NULL REFERENCES experts(id),
+    category TEXT NOT NULL,
+    answers TEXT NOT NULL DEFAULT '[]',
+    score INTEGER NOT NULL DEFAULT 0,
+    passed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT 'now'
+  );
+  CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    expert_id INTEGER REFERENCES experts(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    tier TEXT NOT NULL DEFAULT 'standard',
+    status TEXT NOT NULL DEFAULT 'pending',
+    credits_cost INTEGER NOT NULL DEFAULT 1,
+    expert_response TEXT,
+    created_at TEXT NOT NULL DEFAULT 'now',
+    deadline TEXT,
+    service_type TEXT NOT NULL DEFAULT 'rate',
+    ai_response TEXT,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    experts_needed INTEGER NOT NULL DEFAULT 1,
+    instructions TEXT,
+    llm_provider TEXT,
+    llm_model TEXT,
+    price_per_minute TEXT,
+    price_tier TEXT,
+    service_category TEXT,
+    client_rating INTEGER,
+    client_rating_comment TEXT,
+    refunded INTEGER DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS expert_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES requests(id),
+    expert_id INTEGER REFERENCES experts(id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    rating INTEGER,
+    rating_comment TEXT,
+    correct_points TEXT,
+    incorrect_points TEXT,
+    suggestions TEXT,
+    deliverable TEXT,
+    created_at TEXT NOT NULL DEFAULT 'now',
+    completed_at TEXT,
+    invoiced INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES requests(id),
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT 'now'
+  );
+  CREATE TABLE IF NOT EXISTS credit_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    amount INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT 'now'
+  );
+  CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    stripe_payment_id TEXT,
+    description TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read INTEGER NOT NULL DEFAULT 0,
+    link TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS request_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    actor_id INTEGER,
+    actor_name TEXT,
+    message TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS withdrawals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    expert_id INTEGER,
+    amount_cents INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    processed_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    expert_id INTEGER NOT NULL,
+    invoice_number TEXT NOT NULL UNIQUE,
+    total_amount INTEGER NOT NULL,
+    platform_fee INTEGER NOT NULL,
+    net_payout INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    line_items TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS legal_acceptances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    document_type TEXT NOT NULL,
+    document_version TEXT NOT NULL DEFAULT 'April 2026',
+    accepted_at TEXT NOT NULL,
+    ip_address TEXT,
+    user_agent TEXT
+  );
+`);
+
+// Auto-seed admin accounts on fresh database
+const adminCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM admins").get() as { cnt: number };
+if (adminCount.cnt === 0) {
+  // bcrypt.hashSync is available synchronously
+  const bcryptLib = require("bcrypt");
+  const hash = bcryptLib.hashSync("A2A$uperAdmin2026!", 10);
+  sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("amir@a2a.global", hash, "Amir (Admin)");
+  sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("oleg@a2a.global", hash, "Oleg (Admin)");
+  console.log("[DB] Admin accounts seeded.");
+}
+console.log("[DB] All tables ensured.");
+
 export const db = drizzle(sqlite);
 export { sqlite };
 
