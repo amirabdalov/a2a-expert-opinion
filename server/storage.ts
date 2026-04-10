@@ -36,7 +36,8 @@ sqlite.exec(`
     account_type TEXT NOT NULL DEFAULT 'individual',
     wallet_balance INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    tour_completed INTEGER NOT NULL DEFAULT 0
+    tour_completed INTEGER NOT NULL DEFAULT 0,
+    photo TEXT
   );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -203,6 +204,13 @@ if (adminCount.cnt === 0) {
   sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("amir@a2a.global", hash, "Amir (Admin)");
   sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("oleg@a2a.global", hash, "Oleg (Admin)");
   console.log("[DB] Admin accounts seeded.");
+}
+// Add photo column to users if it doesn't exist (migration for existing DBs)
+try {
+  sqlite.exec("ALTER TABLE users ADD COLUMN photo TEXT");
+  console.log("[DB] Added photo column to users table.");
+} catch (e: any) {
+  // Column already exists — ignore
 }
 console.log("[DB] All tables ensured.");
 
@@ -435,7 +443,7 @@ export class DatabaseStorage implements IStorage {
 
   getDetailedReviewsByRequest(requestId: number): Array<ExpertReview & { expert?: Expert & { userName: string } }> {
     const reviews = db.select().from(expertReviews).where(eq(expertReviews.requestId, requestId)).orderBy(desc(expertReviews.id)).all();
-    const expertIds = [...new Set(reviews.filter((r) => r.expertId != null).map((r) => r.expertId!))];
+    const expertIds = Array.from(new Set(reviews.filter((r) => r.expertId != null).map((r) => r.expertId!)));
     const expertsMap = new Map<number, Expert & { userName: string }>();
     if (expertIds.length > 0) {
       const expertsData = this.getExpertsByIds(expertIds);

@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import helmet from "helmet";
 import cors from "cors";
+import { startPeriodicBackup, backupDatabase } from "./db-persistence";
 
 const app = express();
 const httpServer = createServer(app);
@@ -114,6 +115,10 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      // BUG-008: Start periodic GCS backup every 60 seconds
+      startPeriodicBackup();
+      // Immediate backup on startup (ensures first backup exists)
+      backupDatabase().catch(() => {});
     },
   );
 })();

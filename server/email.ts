@@ -8,7 +8,7 @@ export async function sendOtpEmail(to: string, name: string, otp: string) {
     subject: `Your A2A Global verification code — ${otp}`,
     html: `<div style="font-family:sans-serif;max-width:460px;margin:0 auto;padding:20px;">
       <div style="text-align:center;padding:20px;border-bottom:2px solid #0F3DD1;">
-        <img src="https://a2a.global/icons/a2a-blue-logo.svg" alt="A2A Global" height="40" />
+        <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="40" style="height:40px;display:block;margin:0 auto;" />
       </div>
       <div style="padding:24px 0;">
         <p>Hi ${name},</p>

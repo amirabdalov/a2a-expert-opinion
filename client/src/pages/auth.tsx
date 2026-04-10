@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -26,9 +26,38 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const [existingEmailLogin, setExistingEmailLogin] = useState(false);
   const { toast } = useToast();
   const { login } = useAuth();
   const [, setLocation] = useLocation();
+
+  // BUG-009: Force light theme
+  useEffect(() => {
+    document.documentElement.classList.remove("dark");
+  }, []);
+
+  // BUG-005: Read URL params for role pre-selection and prefill data
+  const urlPrefill = (() => {
+    try {
+      const hash = window.location.hash;
+      const qIdx = hash.indexOf('?');
+      if (qIdx === -1) return null;
+      const params = new URLSearchParams(hash.slice(qIdx + 1));
+      return {
+        role: params.get('role') as Role | null,
+        request: params.get('request'),
+        prefill: params.get('prefill'),
+      };
+    } catch {
+      return null;
+    }
+  })();
+
+  // Apply URL role param
+  useEffect(() => {
+    if (urlPrefill?.role === 'expert') setRole('expert');
+    else if (urlPrefill?.role === 'client') setRole('client');
+  }, []);
 
   const isRegister = mode === "register";
 
@@ -37,7 +66,15 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     setLoading(true);
     try {
       if (isRegister) {
-        await apiRequest("POST", "/api/auth/register", { name, email, role });
+        const res = await apiRequest("POST", "/api/auth/register", { name, email, role });
+        const data = await res.json();
+        if (data.existing) {
+          // Email already registered — server already sent OTP, switch to OTP step
+          setExistingEmailLogin(true);
+          setStep("otp");
+          toast({ title: "Email already registered", description: "Please type 2FA code – check your email inbox" });
+          return;
+        }
       } else {
         await apiRequest("POST", "/api/auth/login", { email });
       }
@@ -54,14 +91,22 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     e.preventDefault();
     setLoading(true);
     try {
-      const endpoint = isRegister ? "/api/auth/verify-otp" : "/api/auth/verify-login";
+      // If email was already registered (existing user on signup), use login verify endpoint
+      const endpoint = (isRegister && !existingEmailLogin) ? "/api/auth/verify-otp" : "/api/auth/verify-login";
       const res = await apiRequest("POST", endpoint, { email, otp });
       const user = await res.json();
       login(user);
       if (user.role === "expert") {
         setLocation("/expert");
       } else {
-        setLocation("/dashboard");
+        // BUG-005: Preserve prefill param across auth if present
+        const prefill = urlPrefill?.prefill;
+        if (prefill) {
+          // Navigate to dashboard with prefill param in URL hash
+          window.location.hash = `/dashboard?prefill=${encodeURIComponent(prefill)}`;
+        } else {
+          setLocation("/dashboard");
+        }
       }
     } catch (err: any) {
       toast({ title: "Verification failed", description: err.message, variant: "destructive" });
@@ -73,6 +118,7 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   function resetToEmail() {
     setStep("email");
     setOtp("");
+    setExistingEmailLogin(false);
   }
 
   return (

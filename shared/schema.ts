@@ -15,6 +15,7 @@ export const users = sqliteTable("users", {
   walletBalance: integer("wallet_balance").notNull().default(0),
   active: integer("active").notNull().default(1),
   tourCompleted: integer("tour_completed").notNull().default(0),
+  photo: text("photo"),
 });
 
 export const sessions = sqliteTable("sessions", {

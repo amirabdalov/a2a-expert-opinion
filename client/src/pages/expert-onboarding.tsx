@@ -66,15 +66,19 @@ function ProfileStep({ expert, onComplete }: { expert: Expert; onComplete: () =>
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/experts/onboarding/profile", {
-        expertId: expert.id,
-        education,
-        yearsExperience,
-        categories: selectedCategories,
-        bio,
-        expertise,
-      });
-      return res.json();
+      try {
+        const res = await apiRequest("POST", "/api/experts/onboarding/profile", {
+          expertId: expert.id,
+          education,
+          yearsExperience,
+          categories: selectedCategories,
+          bio,
+          expertise,
+        });
+        return res.json();
+      } catch (e) {
+        throw e instanceof Error ? e : new Error(String(e));
+      }
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/experts/user", expert.userId] });
@@ -82,7 +86,7 @@ function ProfileStep({ expert, onComplete }: { expert: Expert; onComplete: () =>
       onComplete();
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Error saving profile", description: err.message, variant: "destructive" });
     },
   });
 
@@ -374,12 +378,16 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/experts/onboarding/rate", {
-        expertId: expert.id,
-        ratePerMinute: rate.toFixed(2),
-        rateTier: currentTier.id,
-      });
-      return res.json();
+      try {
+        const res = await apiRequest("POST", "/api/experts/onboarding/rate", {
+          expertId: expert.id,
+          ratePerMinute: rate.toFixed(2),
+          rateTier: currentTier.id,
+        });
+        return res.json();
+      } catch (e) {
+        throw e instanceof Error ? e : new Error(String(e));
+      }
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/experts/user", expert.userId] });
@@ -391,7 +399,7 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
       }
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Error saving rate", description: err.message, variant: "destructive" });
     },
   });
 
@@ -760,6 +768,11 @@ function ResultStep({ result }: { result: { passed: boolean; message: string } }
 export default function ExpertOnboarding() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+
+  // BUG-009: Force light theme — remove dark class on mount
+  useEffect(() => {
+    document.documentElement.classList.remove("dark");
+  }, []);
 
   const { data: expert, isLoading, error } = useQuery<Expert>({
     queryKey: ["/api/experts/user", user?.id],

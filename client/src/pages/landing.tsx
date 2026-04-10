@@ -51,7 +51,7 @@ function Hero() {
               Get Expert Opinion <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </Link>
-          <Link href="/register">
+          <Link href="/register?role=expert">
             <Button size="lg" variant="outline" className="border-white/40 text-white hover:bg-white/10 px-8 text-base font-semibold" data-testid="button-become-expert">
               Become an Expert
             </Button>
@@ -216,18 +216,13 @@ function Categories() {
 function ExpertReviewCTA({ chatHistory, category }: { chatHistory: Array<{ role: string; content: string }>; category: string }) {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
-  const { toast } = useToast();
-  const [showRegister, setShowRegister] = useState(false);
-  const [regName, setRegName] = useState("");
-  const [regEmail, setRegEmail] = useState("");
-  const [regPassword, setRegPassword] = useState("");
-  const [regLoading, setRegLoading] = useState(false);
 
   const lastAiResponse = chatHistory.filter((m) => m.role === "assistant").pop()?.content || "";
   const lastUserQuestion = chatHistory.filter((m) => m.role === "user").pop()?.content || "";
   const autoTitle = lastUserQuestion.substring(0, 60) + (lastUserQuestion.length > 60 ? "..." : "");
 
   function handleGetExpertReview() {
+    // BUG-004: Set prefill data and navigate correctly
     setPrefillData({
       aiResponse: lastAiResponse,
       category,
@@ -238,26 +233,9 @@ function ExpertReviewCTA({ chatHistory, category }: { chatHistory: Array<{ role:
     if (user) {
       setLocation("/dashboard");
     } else {
-      setShowRegister(true);
-    }
-  }
-
-  async function handleQuickRegister() {
-    if (!regName.trim() || !regEmail.trim() || !regPassword.trim()) return;
-    setRegLoading(true);
-    try {
-      const username = regEmail.split("@")[0] + "_" + Date.now().toString(36);
-      const res = await apiRequest("POST", "/api/auth/register", {
-        name: regName, username, email: regEmail, password: regPassword, isExpert: false,
-      });
-      const data = await res.json();
-      setUser(data);
-      toast({ title: "Account created!", description: "5 free credits added." });
-      setLocation("/dashboard");
-    } catch (err: any) {
-      toast({ title: "Registration failed", description: err.message, variant: "destructive" });
-    } finally {
-      setRegLoading(false);
+      // BUG-004: Navigate to signup with role=client and pass the AI query as URL param
+      const prefillParam = encodeURIComponent(lastUserQuestion.substring(0, 200));
+      window.location.hash = `/register?role=client&prefill=${prefillParam}`;
     }
   }
 
@@ -274,26 +252,13 @@ function ExpertReviewCTA({ chatHistory, category }: { chatHistory: Array<{ role:
           </div>
         </div>
 
-        {!showRegister ? (
-          <Button onClick={handleGetExpertReview} className="w-full bg-gradient-to-br from-[#0F3DD1] to-[#171717] text-white hover:opacity-90" data-testid="button-get-expert-review">
-            <ShieldCheck className="mr-2 h-4 w-4" /> Get Expert Review
-            <ArrowRight className="ml-2 h-4 w-4" />
-          </Button>
-        ) : (
-          <div className="space-y-3 mt-3" data-testid="inline-register-form">
-            <p className="text-xs font-medium text-center">Create a free account to continue</p>
-            <div className="grid gap-2">
-              <Input placeholder="Your name" value={regName} onChange={(e) => setRegName(e.target.value)} data-testid="input-quick-reg-name" />
-              <Input placeholder="Email" type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} data-testid="input-quick-reg-email" />
-              <Input placeholder="Password (6+ chars)" type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleQuickRegister()}
-                data-testid="input-quick-reg-password" />
-            </div>
-            <Button onClick={handleQuickRegister} disabled={regLoading || !regName || !regEmail || regPassword.length < 6} className="w-full bg-gradient-to-br from-[#0F3DD1] to-[#171717] text-white hover:opacity-90" data-testid="button-quick-register">
-              {regLoading ? "Creating account..." : "Create Account & Get Expert Review"}
-            </Button>
-            <p className="text-[10px] text-muted-foreground text-center">5 free credits included — no card required</p>
-          </div>
+        <Button onClick={handleGetExpertReview} className="w-full bg-gradient-to-br from-[#0F3DD1] to-[#171717] text-white hover:opacity-90" data-testid="button-get-expert-review">
+          <ShieldCheck className="mr-2 h-4 w-4" />
+          {user ? "Get Expert Review" : "Create Account & Get Expert Review"}
+          <ArrowRight className="ml-2 h-4 w-4" />
+        </Button>
+        {!user && (
+          <p className="text-[10px] text-muted-foreground text-center mt-2">$5 free credits included — no card required</p>
         )}
       </div>
     </div>
@@ -894,7 +859,7 @@ function FAQ() {
 // ─── Trust ───
 function Trust() {
   const stats = [
-    { value: "10,000+", label: "Access to Verified Experts", icon: Users },
+    { value: "1,000+", label: "Access to Verified Experts", icon: Users },
     { value: "70+", label: "Countries", icon: Globe },
     { value: "98%", label: "Satisfaction Rate", icon: Star },
   ];
@@ -937,7 +902,7 @@ function BecomeExpert() {
             </div>
           ))}
         </div>
-        <Link href="/register">
+        <Link href="/register?role=expert">
           <Button size="lg" className="px-8 bg-gradient-to-br from-[#0F3DD1] to-[#171717] text-white hover:opacity-90" data-testid="button-apply-expert">
             Apply as Expert <ChevronRight className="ml-1 h-4 w-4" />
           </Button>
@@ -977,7 +942,7 @@ function Footer() {
               <div className="space-y-1.5 text-muted-foreground">
                 <Link href="/login" className="block hover:text-primary transition-colors">Client Portal</Link>
                 <Link href="/login" className="block hover:text-primary transition-colors">Expert Portal</Link>
-                <Link href="/register" className="block hover:text-primary transition-colors">Become an Expert</Link>
+                <Link href="/register?role=expert" className="block hover:text-primary transition-colors">Become an Expert</Link>
                 <button onClick={() => scrollTo("section-faq")} className="block hover:text-primary transition-colors cursor-pointer">FAQ</button>
               </div>
             </div>
@@ -1066,6 +1031,13 @@ function LandingNav() {
 
 // ─── Landing Page ───
 export default function LandingPage() {
+  // BUG-015: Remove /#/ from main URL when on root route
+  useEffect(() => {
+    if (window.location.hash === '#/' || window.location.hash === '') {
+      history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+
   return (
     <div className="min-h-screen" data-testid="page-landing">
       <LandingNav />

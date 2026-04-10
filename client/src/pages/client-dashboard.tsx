@@ -34,7 +34,7 @@ import {
   Send, Clock, CheckCircle, AlertCircle, Coins, ArrowRight, ArrowLeft, MessageSquare,
   Star, Search, Wrench, Paperclip, X, FileText, User, DollarSign, RefreshCcw,
   ChevronDown, ChevronUp, ShieldCheck, Briefcase, Timer, FileBarChart, Circle,
-  Moon, Sun, Upload,
+  Upload, Camera, Bot,
 } from "lucide-react";
 import type { Request as ExpertRequest, Message, CreditTransaction, ExpertReview, Expert, RequestEvent } from "@shared/schema";
 
@@ -251,7 +251,7 @@ interface DetailedReview extends ExpertReview {
   expert?: Expert & { userName: string };
 }
 
-type ClientView = "overview" | "new-request" | "my-requests" | "request-detail" | "credits" | "settings";
+type ClientView = "overview" | "new-request" | "my-requests" | "request-detail" | "credits" | "settings" | "chat-ai";
 type ServiceType = "sense_check" | "prompt_calibration" | "full_review" | "other";
 type ExpertTierOverride = "standard" | "pro" | "guru";
 
@@ -322,6 +322,7 @@ function ClientSidebar({ view, setView, onLogout, onResetDraft }: { view: Client
   const items = [
     { id: "overview" as const, icon: LayoutDashboard, label: "Overview" },
     { id: "new-request" as const, icon: PlusCircle, label: "New Request" },
+    { id: "chat-ai" as const, icon: Bot, label: "Chat with AI" },
     { id: "my-requests" as const, icon: List, label: "My Requests" },
     { id: "credits" as const, icon: CreditCard, label: "Credits & Billing" },
     { id: "settings" as const, icon: Settings, label: "Settings" },
@@ -381,7 +382,7 @@ function Overview({ userId, setView, setSelectedRequest }: { userId: number; set
     <div className="p-6 space-y-6" data-testid="view-overview">
       <h1 className="text-xl font-bold">Dashboard</h1>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-primary" /><div><p className="text-2xl font-bold">{credits}</p><p className="text-xs text-muted-foreground">Credits Available</p></div></div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-primary" /><div><p className="text-2xl font-bold">${credits}</p><p className="text-xs text-muted-foreground">$ Credits Available</p></div></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Clock className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Requests</p></div></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center gap-3"><List className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">{total}</p><p className="text-xs text-muted-foreground">Total Submitted</p></div></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center gap-3"><CheckCircle className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">~12h</p><p className="text-xs text-muted-foreground">Avg Response</p></div></div></CardContent></Card>
@@ -455,6 +456,7 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [instructions, setInstructions] = useState("");
+  const [question, setQuestion] = useState("");
   const [llmProvider, setLlmProvider] = useState(prefill ? "groq" : "");
   const [llmModel, setLlmModel] = useState(prefill ? "llama-3.3-70b" : "");
   const [tierOverride, setTierOverride] = useState<ExpertTierOverride | null>(null);
@@ -475,6 +477,7 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
       setCategory(draftData.category || "");
       setAiResponse(draftData.aiResponse || "");
       setInstructions(draftData.instructions || "");
+      setQuestion(draftData.description || "");
       setLlmProvider(draftData.llmProvider || "");
       setLlmModel(draftData.llmModel || "");
       if (draftData.serviceType) setServiceType(draftData.serviceType as ServiceType);
@@ -529,24 +532,24 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
         attachments: JSON.stringify(attachments),
         instructions, llmProvider, llmModel,
         serviceCategory: serviceType,
-        description: aiResponse || instructions || title,
+        description: question || aiResponse || instructions || title,
       });
     }, 500);
-  }, [title, category, serviceType, aiResponse, attachments, instructions, llmProvider, llmModel, saveDraft]);
+  }, [title, category, serviceType, aiResponse, attachments, instructions, llmProvider, llmModel, question, saveDraft]);
 
   useEffect(() => {
-    if (title || aiResponse || instructions || category) {
+    if (title || aiResponse || instructions || category || question) {
       triggerAutoSave();
     }
     return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current); };
-  }, [title, aiResponse, instructions, category, serviceType, llmProvider, llmModel]);
+  }, [title, aiResponse, instructions, category, serviceType, llmProvider, llmModel, question]);
 
   const submitMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/requests", {
         userId,
         title,
-        description: aiResponse || instructions || title,
+        description: question || aiResponse || instructions || title,
         category,
         tier: activeTier,
         serviceType,
@@ -575,24 +578,22 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
     },
   });
 
-  // File upload handlers (change #5)
-  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-  const MAX_FILES = 3;
-  const ACCEPTED_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
+  // File upload handlers (FEAT-012: any format, unlimited files, 50MB total)
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB total
+  const MAX_FILES = Infinity;
 
   function handleFileUpload(files: FileList | null) {
     if (!files) return;
-    const remaining = MAX_FILES - attachments.length;
-    const toProcess = Array.from(files).slice(0, remaining);
-    toProcess.forEach((file) => {
-      if (file.size > MAX_FILE_SIZE) {
-        toast({ title: "File too large", description: `${file.name} exceeds 5MB limit`, variant: "destructive" });
+    // Check total size including existing attachments
+    const existingTotal = attachments.reduce((sum, a) => sum + a.size, 0);
+    const newFiles = Array.from(files);
+    let runningTotal = existingTotal;
+    newFiles.forEach((file) => {
+      if (runningTotal + file.size > MAX_FILE_SIZE) {
+        toast({ title: "Total size limit exceeded", description: `Adding ${file.name} would exceed the 50MB total limit`, variant: "destructive" });
         return;
       }
-      if (!ACCEPTED_TYPES.includes(file.type) && !file.name.endsWith('.txt') && !file.name.endsWith('.docx')) {
-        toast({ title: "Unsupported format", description: `${file.name} is not a supported file type`, variant: "destructive" });
-        return;
-      }
+      runningTotal += file.size;
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1] || reader.result as string;
@@ -760,6 +761,23 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
           </Select>
         </div>
 
+        {/* FEAT-010: My question field */}
+        <div>
+          <div className="flex items-center">
+            <Label className="text-sm">My question *</Label>
+            <InfoTooltip text="Describe exactly what you want the expert to answer or verify" />
+          </div>
+          <Textarea
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="What do you want the expert to answer or verify? Be specific about your concerns..."
+            rows={3}
+            className="mt-1"
+            required
+            data-testid="input-question"
+          />
+        </div>
+
         <div>
           <div className="flex items-center">
             <Label className="text-sm">{aiResponseLabel}</Label>
@@ -803,29 +821,28 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
 
         {/* File Upload - Drag & Drop (change #5) */}
         <div data-testid="file-upload-section">
-          <Label className="text-sm mb-2 block">Attachments ({attachments.length}/{MAX_FILES})</Label>
+          <Label className="text-sm mb-2 block">Attachments ({attachments.length} file{attachments.length !== 1 ? 's' : ''})</Label>
           <div
             onDragEnter={handleDrag}
             onDragOver={handleDrag}
             onDragLeave={handleDrag}
             onDrop={handleDrop}
-            onClick={() => attachments.length < MAX_FILES && fileInputRef.current?.click()}
+            onClick={() => fileInputRef.current?.click()}
             className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all ${
               dragActive
                 ? "border-primary bg-primary/5"
                 : "border-border hover:border-primary/40 hover:bg-muted/30"
-            } ${attachments.length >= MAX_FILES ? "opacity-50 cursor-not-allowed" : ""}`}
+            }`}
             data-testid="dropzone"
           >
             <Paperclip className="h-6 w-6 mx-auto mb-2 text-muted-foreground" />
             <p className="text-sm font-medium">Drop files here or click to upload</p>
-            <p className="text-xs text-muted-foreground mt-1">PDF, images, DOCX, TXT — max 5MB each, up to 3 files</p>
+            <p className="text-xs text-muted-foreground mt-1">Any format accepted — 50MB total limit</p>
           </div>
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.png,.jpg,.jpeg,.gif,.docx,.txt"
             className="hidden"
             onChange={(e) => handleFileUpload(e.target.files)}
             data-testid="input-file-upload"
@@ -955,7 +972,15 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
   });
 
   const nonDraftRequests = requests?.filter((r) => r.status !== "draft" && r.status !== "deleted");
-  const filtered = statusFilter === "all" ? nonDraftRequests : statusFilter === "drafts" ? drafts : nonDraftRequests?.filter((r) => r.status === statusFilter);
+  // FEAT-013: "all" includes drafts too
+  const allIncludingDrafts = [...(nonDraftRequests || []), ...(drafts || [])];
+  const filtered = statusFilter === "all" ? allIncludingDrafts : statusFilter === "drafts" ? drafts : nonDraftRequests?.filter((r) => r.status === statusFilter);
+  // Count helpers for badges
+  const pendingCount = nonDraftRequests?.filter((r) => r.status === "pending").length ?? 0;
+  const inProgressCount = nonDraftRequests?.filter((r) => r.status === "in_progress").length ?? 0;
+  const completedCount = nonDraftRequests?.filter((r) => r.status === "completed").length ?? 0;
+  const draftsCount = drafts?.length ?? 0;
+  const allCount = (nonDraftRequests?.length ?? 0) + draftsCount;
 
   function timeAgo(dateStr: string) {
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -972,9 +997,15 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold">My Requests</h1>
         <div className="flex gap-2 flex-wrap">
-          {["all", "pending", "in_progress", "completed", "drafts"].map((s) => (
-            <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1 text-xs rounded-full ${statusFilter === s ? "bg-primary text-white" : "bg-muted text-muted-foreground"}`} data-testid={`filter-${s}`}>
-              {s === "all" ? "All" : s === "drafts" ? `Drafts${drafts?.length ? ` (${drafts.length})` : ""}` : s.replace("_", " ")}
+          {[
+            { id: "all", label: `All (${allCount})` },
+            { id: "pending", label: `Pending (${pendingCount})` },
+            { id: "in_progress", label: `In Progress (${inProgressCount})` },
+            { id: "completed", label: `Completed (${completedCount})` },
+            { id: "drafts", label: `Drafts (${draftsCount})` },
+          ].map((s) => (
+            <button key={s.id} onClick={() => setStatusFilter(s.id)} className={`px-3 py-1 text-xs rounded-full ${statusFilter === s.id ? "bg-primary text-white" : "bg-muted text-muted-foreground"}`} data-testid={`filter-${s.id}`}>
+              {s.label}
             </button>
           ))}
         </div>
@@ -1057,7 +1088,7 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
                         </span>
                       </div>
                     </td>
-                    <td className="p-3 text-xs">{r.creditsCost}</td>
+                    <td className="p-3 text-xs">${r.creditsCost} credits</td>
                   </tr>
                 ))}
               </tbody>
@@ -1175,7 +1206,7 @@ function ClientRatingSection({ request, userId }: { request: ExpertRequest; user
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Refund processed!", description: `${request.creditsCost} credits refunded.` });
+      toast({ title: "Refund processed!", description: `$${request.creditsCost} credits refunded.` });
       queryClient.invalidateQueries({ queryKey: ["/api/requests", request.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
       setShowRefundDialog(false);
@@ -1269,7 +1300,7 @@ function ClientRatingSection({ request, userId }: { request: ExpertRequest; user
           <DialogHeader>
             <DialogTitle>Confirm Refund Request</DialogTitle>
             <DialogDescription>
-              Are you sure you want to request a refund of {request.creditsCost} credit(s)? This action cannot be undone. You can request up to 2 refunds per month.
+              Are you sure you want to request a refund of ${request.creditsCost} credits? This action cannot be undone. You can request up to 2 refunds per month.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1435,7 +1466,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
         <Badge className={`text-xs ${statusColor(request.status)}`}>{request.status.replace("_", " ")}</Badge>
       </div>
       <p className="text-sm text-muted-foreground mb-4 ml-10">
-        {request.category} · {request.tier} tier · {request.creditsCost} credit(s)
+        {request.category} · {request.tier} tier · ${request.creditsCost} credits
         {request.priceTier && <> · <Badge variant="secondary" className="text-[10px] ml-1">{request.priceTier.replace("_", " ")}</Badge></>}
         {request.pricePerMinute && <> · ${request.pricePerMinute}/min</>}
       </p>
@@ -1909,7 +1940,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
                 <td className="p-3 text-xs text-muted-foreground">{new Date(tx.createdAt).toLocaleDateString()}</td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3"><Badge variant="secondary" className="text-xs capitalize">{tx.type}</Badge></td>
-                <td className={`p-3 text-right text-sm font-medium ${tx.amount > 0 ? "text-green-600" : "text-red-600"}`}>{tx.amount > 0 ? "+" : ""}{tx.amount}</td>
+                <td className={`p-3 text-right text-sm font-medium ${tx.amount > 0 ? "text-green-600" : "text-red-600"}`}>{tx.amount > 0 ? "+" : ""}${Math.abs(tx.amount)} credits</td>
               </tr>
             ))}
           </tbody>
@@ -1920,11 +1951,199 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
 }
 
 // ─── Settings ───
+// ─── FEAT-006: Chat with AI Panel ───
+function ChatAIView({ setView, prefillQuery }: { setView: (v: ClientView) => void; prefillQuery?: string }) {
+  const [message, setMessage] = useState("");
+  const [chatHistory, setChatHistory] = useState<Array<{ role: string; content: string }>>([]);
+  const [loading, setLoading] = useState(false);
+  const [category, setCategory] = useState("finance");
+  const [hasResponse, setHasResponse] = useState(false);
+  const [lastQuery, setLastQuery] = useState("");
+  const { toast } = useToast();
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const categories = [
+    { id: "finance", label: "Finance" },
+    { id: "business", label: "Business & Strategy" },
+    { id: "entrepreneurship", label: "Entrepreneurship" },
+  ];
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatHistory, loading]);
+
+  // Pre-fill from URL param
+  useEffect(() => {
+    if (prefillQuery && prefillQuery.trim()) {
+      setMessage(prefillQuery);
+    }
+  }, [prefillQuery]);
+
+  async function handleSend() {
+    const q = message.trim();
+    if (!q || loading) return;
+    setLastQuery(q);
+    setMessage("");
+    setChatHistory((prev) => [...prev, { role: "user", content: q }]);
+    setLoading(true);
+    try {
+      const res = await apiRequest("POST", "/api/chat", { message: q, category });
+      const data = await res.json();
+      setChatHistory((prev) => [...prev, { role: "assistant", content: data.content ?? data.message ?? "No response" }]);
+      setHasResponse(true);
+    } catch (err: any) {
+      toast({ title: "AI Error", description: err.message, variant: "destructive" });
+      setChatHistory((prev) => [...prev, { role: "assistant", content: "Sorry, I couldn't process that. Please try again." }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleGetExpertReview() {
+    // Navigate to New Request pre-filled with the AI query
+    const hash = `#/dashboard?prefill_category=${encodeURIComponent(category)}&prefill_ai_response=${encodeURIComponent(chatHistory.filter(m => m.role === "assistant").pop()?.content ?? "")}&prefill_title=${encodeURIComponent(lastQuery.substring(0, 60))}`;
+    window.history.replaceState(null, "", window.location.pathname + hash);
+    setView("new-request");
+  }
+
+  return (
+    <div className="p-4 md:p-6 max-w-2xl" data-testid="view-chat-ai">
+      <h1 className="text-xl font-bold mb-2">Chat with AI</h1>
+      <p className="text-sm text-muted-foreground mb-4">Ask any question and get an instant AI analysis. Optionally, escalate to a human expert review.</p>
+
+      {/* Category selector */}
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => setCategory(c.id)}
+            className={`px-3 py-1.5 text-xs font-medium rounded-full transition ${
+              category === c.id ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-muted/80"
+            }`}
+            data-testid={`chat-category-${c.id}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Chat area */}
+      <Card className="mb-4">
+        <CardContent className="p-4">
+          <div className="min-h-[240px] max-h-[400px] overflow-y-auto space-y-3 mb-4">
+            {chatHistory.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center py-10">
+                Ask anything about {categories.find((c) => c.id === category)?.label}...
+              </p>
+            )}
+            {chatHistory.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[85%] rounded-lg px-3.5 py-2.5 text-sm ${
+                  msg.role === "user" ? "bg-primary text-white" : "bg-muted"
+                }`}>
+                  {msg.content}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="bg-muted rounded-lg px-3 py-2 text-sm text-muted-foreground">Analyzing...</div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSend()}
+              placeholder="Type your question..."
+              className="flex-1"
+              data-testid="input-chat-ai-message"
+            />
+            <Button
+              onClick={handleSend}
+              disabled={loading || !message.trim()}
+              size="sm"
+              data-testid="button-chat-ai-send"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground/70 mt-2">
+            AI responses are for informational purposes only and may contain errors. Get an expert to verify.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Get Human Expert Review button */}
+      {hasResponse && (
+        <div className="p-4 bg-gradient-to-r from-primary/10 via-primary/5 to-green-50 border border-primary/20 rounded-xl" data-testid="chat-ai-cta">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
+              <ShieldCheck className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">Want a human expert to review this?</p>
+              <p className="text-xs text-muted-foreground">Get a verified expert to validate accuracy and provide deeper insights.</p>
+            </div>
+          </div>
+          <Button
+            onClick={handleGetExpertReview}
+            className="w-full bg-gradient-to-br from-primary to-slate-800 text-white hover:opacity-90"
+            data-testid="button-get-human-review"
+          >
+            <ShieldCheck className="mr-2 h-4 w-4" /> Get Human Expert Review
+            <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsView({ userId }: { userId: number }) {
   const { user } = useAuth();
   const [name, setName] = useState(user?.name ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  // BUG-008: Load existing photo on mount
+  useEffect(() => {
+    setPhotoUrl(`/api/users/${userId}/photo?t=${Date.now()}`);
+  }, [userId]);
+
+  async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      toast({ title: 'Invalid file type', description: 'Please upload a JPEG, PNG, or WebP image.', variant: 'destructive' });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: 'File too large', description: 'Maximum size is 5MB.', variant: 'destructive' });
+      return;
+    }
+    setPhotoUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('photo', file);
+      const res = await fetch(`/api/users/${userId}/photo`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setPhotoUrl(`/api/users/${userId}/photo?t=${Date.now()}`);
+      toast({ title: 'Photo updated!' });
+    } catch (err: any) {
+      toast({ title: 'Upload failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setPhotoUploading(false);
+    }
+  }
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -1940,6 +2159,47 @@ function SettingsView({ userId }: { userId: number }) {
     <div className="p-6 max-w-xl" data-testid="view-settings">
       <h1 className="text-xl font-bold mb-6">Settings</h1>
       <div className="space-y-4">
+        {/* BUG-008: Profile photo upload */}
+        <div>
+          <Label className="text-sm">Profile Photo</Label>
+          <div className="mt-2 flex items-center gap-4">
+            <div
+              className="relative w-16 h-16 rounded-full bg-muted flex items-center justify-center cursor-pointer group"
+              onClick={() => photoInputRef.current?.click()}
+              title="Click to upload photo"
+              data-testid="settings-avatar-upload"
+            >
+              {photoUrl ? (
+                <img
+                  src={photoUrl}
+                  alt="Profile"
+                  className="w-16 h-16 rounded-full object-cover"
+                  onError={() => setPhotoUrl(null)}
+                />
+              ) : (
+                <User className="h-7 w-7 text-muted-foreground" />
+              )}
+              <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                {photoUploading ? (
+                  <span className="text-white text-[10px]">...</span>
+                ) : (
+                  <Camera className="h-5 w-5 text-white" />
+                )}
+              </div>
+              <input
+                ref={photoInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={handlePhotoChange}
+                data-testid="input-settings-photo"
+              />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Click to upload. JPEG, PNG, or WebP, max 5MB.</p>
+            </div>
+          </div>
+        </div>
         <div>
           <Label className="text-sm">Full Name</Label>
           <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" data-testid="input-settings-name" />
@@ -2041,7 +2301,7 @@ function GlobalSearchBar({ userId, onNavigate }: { userId: number; onNavigate: (
 export default function ClientDashboard() {
   const { user, logout } = useAuth();
   const [, setLocation] = useLocation();
-  const [view, setView] = useState<ClientView>(() => getPrefillData() ? "new_request" : "overview");
+  const [view, setView] = useState<ClientView>(() => getPrefillData() ? "new-request" : "overview");
   const [selectedRequest, setSelectedRequest] = useState<number>(0);
   const [editDraftId, setEditDraftId] = useState<number | undefined>(undefined);
   const [showTour, setShowTour] = useState(true);
@@ -2049,12 +2309,10 @@ export default function ClientDashboard() {
   useEffect(() => {
     if (user?.tourCompleted === 1) setShowTour(false);
   }, [user]);
-  // Dark mode (change #13)
-  const [darkMode, setDarkMode] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
+  // BUG-009: Force light theme — remove dark class
   useEffect(() => {
-    if (darkMode) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
-  }, [darkMode]);
+    document.documentElement.classList.remove('dark');
+  }, []);
 
   // SSE real-time notifications
   useSSE(user?.id);
@@ -2068,6 +2326,7 @@ export default function ClientDashboard() {
   }, [user]);
 
   // Handle notification deep-link: ?request=ID
+  // BUG-005: Also handle ?prefill=<encoded-query> for AI chat → signup → dashboard flow
   useEffect(() => {
     try {
       const hash = window.location.hash;
@@ -2080,6 +2339,15 @@ export default function ClientDashboard() {
         setView('request-detail');
         // Clean the URL
         window.history.replaceState(null, '', window.location.pathname + '#/dashboard');
+        return;
+      }
+      // BUG-005: Check for prefill param from auth redirect
+      const prefillParam = params.get('prefill');
+      if (prefillParam) {
+        // Set as new-request view with URL params handled by NewRequest
+        setView('new-request');
+        window.history.replaceState(null, '', window.location.pathname + '#/dashboard');
+        return;
       }
     } catch {}
   }, []);
@@ -2107,9 +2375,6 @@ export default function ClientDashboard() {
               <GlobalSearchBar userId={user.id} onNavigate={(id) => { setSelectedRequest(id); setView('request-detail'); }} />
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={() => setDarkMode(!darkMode)} className="p-1.5 rounded-lg hover:bg-muted transition" data-testid="button-dark-mode">
-                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
               <NotificationBell userId={user.id} onNavigate={(link) => {
                 // Parse link for in-page navigation (e.g., /dashboard?request=5)
                 if (link.startsWith('/dashboard?request=')) {
@@ -2122,7 +2387,7 @@ export default function ClientDashboard() {
                   setLocation(link);
                 }
               }} />
-              <Badge variant="secondary" className="text-xs"><Coins className="h-3 w-3 mr-1" />{user.credits} credits</Badge>
+              <Badge variant="secondary" className="text-xs"><Coins className="h-3 w-3 mr-1" />${user.credits} credits</Badge>
               <span className="text-sm font-medium">{user.name}</span>
             </div>
           </header>
@@ -2133,6 +2398,7 @@ export default function ClientDashboard() {
             {view === "request-detail" && <RequestDetail requestId={selectedRequest} userId={user.id} setView={setView} />}
             {view === "credits" && <Credits userId={user.id} onContinueDraft={(id) => { setEditDraftId(id); setView("new-request"); }} />}
             {view === "settings" && <SettingsView userId={user.id} />}
+            {view === "chat-ai" && <ChatAIView setView={setView} />}
           </main>
         </div>
         {showTour && <OnboardingTour steps={CLIENT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}

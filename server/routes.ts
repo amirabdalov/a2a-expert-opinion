@@ -10,6 +10,21 @@ import Groq from "groq-sdk";
 import rateLimit from "express-rate-limit";
 import type { Response } from "express";
 import { sendOtpEmail } from "./email";
+import multer from "multer";
+
+// Multer config: memory storage, 5MB limit, images only
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only JPEG, PNG, and WebP images are allowed"));
+    }
+  },
+});
 
 // ─── SSE connections store ───
 const activeConnections = new Map<number, Set<(data: any) => void>>();
@@ -235,8 +250,8 @@ export async function registerRoutes(
 
   // Rate limiting on auth endpoints
   const authLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 10,
+    windowMs: 15 * 60 * 1000, // 15-minute window
+    max: 30,
     message: { error: true, message: "Too many attempts, please try again later", code: "RATE_LIMITED" },
     standardHeaders: true,
     legacyHeaders: false,
@@ -295,7 +310,7 @@ export async function registerRoutes(
         userId: user.id,
         amount: 5,
         type: "bonus",
-        description: "Welcome bonus — 5 free credits",
+        description: "Welcome bonus — $5 free credits",
       });
       // Log Terms of Use and Privacy Policy acceptance
       const ip = req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown";
@@ -309,7 +324,7 @@ export async function registerRoutes(
       storage.createNotification({
         userId: user.id,
         title: "Welcome to A2A Expert Opinion!",
-        message: "You've received 5 free credits to get started. Submit your first request today.",
+        message: "You've received $5 free credits to get started. Submit your first request today.",
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -373,9 +388,14 @@ export async function registerRoutes(
   app.post("/api/auth/login", authLimiter, async (req, res) => {
     try {
       const { email } = otpLoginSchema.parse(req.body);
-      const user = storage.getUserByEmail(email);
+      // Try by email first, then by username (users are stored with username=email)
+      const user = storage.getUserByEmail(email) || storage.getUserByUsername(email);
       if (!user) {
-        return res.status(404).json({ error: true, message: "No account found with this email", code: "USER_NOT_FOUND" });
+        return res.status(404).json({
+          error: true,
+          message: "No account found with this email. Please register first.",
+          code: "USER_NOT_FOUND",
+        });
       }
       if (user.active === 0) {
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
@@ -796,7 +816,7 @@ export async function registerRoutes(
       storage.createNotification({
         userId: user.id,
         title: "Refund Processed",
-        message: `${request.creditsCost} credits have been refunded for "${request.title}".`,
+        message: `$${request.creditsCost} credits have been refunded for "${request.title}".`,
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -901,10 +921,11 @@ export async function registerRoutes(
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
       if (user.credits < cost) return res.status(400).json({ error: true, message: "Insufficient credits" });
 
+      // FEAT-011: Freeze (hold) credits on submit — deduct from wallet but mark as "hold"
       storage.updateUser(userId, { credits: user.credits - cost });
       storage.createTransaction({
-        userId, amount: -cost, type: "debit",
-        description: `Request: ${title}`,
+        userId, amount: -cost, type: "hold",
+        description: `Credits frozen for request: ${title}`,
       });
 
       const request = storage.createRequest({
@@ -976,7 +997,7 @@ export async function registerRoutes(
               notifyUser(exp.userId, {
                 type: "new_request",
                 title: "\ud83d\udcb0 New Request Available!",
-                message: `${title} — ${category} — earn ${cost} credits in ~10 min`,
+                message: `${title} — ${category} — earn $${cost} credits in ~10 min`,
                 requestId: request.id,
               });
             }
@@ -1138,6 +1159,12 @@ export async function registerRoutes(
     });
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
 
+    // FEAT-011: Mark held credits as charged on completion
+    storage.createTransaction({
+      userId: r.userId, amount: r.creditsCost, type: "charged",
+      description: `Credits charged for completed request: ${r.title}`,
+    });
+
     // Lifecycle notification: Request delivered
     storage.createNotification({
       userId: r.userId,
@@ -1190,18 +1217,23 @@ export async function registerRoutes(
   app.post("/api/experts/onboarding/profile", async (req, res) => {
     try {
       const { expertId, education, yearsExperience, categories, bio, expertise } = req.body;
-      const expert = storage.getExpert(expertId);
+      if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
+      const expert = storage.getExpert(Number(expertId));
       if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
-      const updated = storage.updateExpert(expertId, {
-        education: education || "",
-        yearsExperience: yearsExperience || 0,
-        categories: JSON.stringify(categories || []),
-        bio: bio || "",
-        expertise: expertise || "",
-        onboardingComplete: 1,
+      // Validate categories is an array
+      const cats = Array.isArray(categories) ? categories : [];
+      const updated = storage.updateExpert(Number(expertId), {
+        education: (education || "").toString().trim(),
+        yearsExperience: Math.max(0, parseInt(yearsExperience) || 0),
+        categories: JSON.stringify(cats),
+        bio: (bio || "").toString().trim(),
+        expertise: (expertise || "").toString().trim(),
+        onboardingComplete: Math.max(expert.onboardingComplete, 1),
       });
+      if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert profile" });
       return res.json(updated);
     } catch (e: any) {
+      console.error("[ONBOARDING/PROFILE]", e);
       return res.status(400).json({ error: true, message: e.message });
     }
   });
@@ -1227,16 +1259,17 @@ export async function registerRoutes(
   app.post("/api/experts/onboarding/test", async (req, res) => {
     try {
       const { expertId, assignmentId, category, response } = req.body;
-      const expert = storage.getExpert(expertId);
+      if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
+      const expert = storage.getExpert(Number(expertId));
       if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
 
-      const responseText = (response || "").trim();
+      const responseText = (response || "").toString().trim();
       const passed = responseText.length >= 200;
 
       storage.createVerificationTest({
         expertId: expert.id,
-        category: category || "",
-        answers: JSON.stringify({ assignmentId, response: responseText }),
+        category: (category || "").toString(),
+        answers: JSON.stringify({ assignmentId: assignmentId || null, response: responseText }),
         score: passed ? 100 : 0,
         passed: passed ? 1 : 0,
       });
@@ -1252,11 +1285,13 @@ export async function registerRoutes(
 
       return res.json({
         passed,
+        score: passed ? 100 : 0,
         message: passed
           ? "Your response has been submitted and reviewed. Welcome to A2A Expert Opinion!"
           : "Your response must be at least 200 characters. Please provide a more detailed review.",
       });
     } catch (e: any) {
+      console.error("[ONBOARDING/TEST]", e);
       return res.status(400).json({ error: true, message: e.message });
     }
   });
@@ -1356,6 +1391,14 @@ export async function registerRoutes(
       const allCompleted = allReviews.every((r) => r.status === "completed");
       if (allCompleted) {
         storage.updateRequest(review.requestId, { status: "completed" });
+        // FEAT-011: Mark held credits as charged when all reviews are completed
+        const completedRequest = storage.getRequest(review.requestId);
+        if (completedRequest) {
+          storage.createTransaction({
+            userId: completedRequest.userId, amount: completedRequest.creditsCost, type: "charged",
+            description: `Credits charged for completed request: ${completedRequest.title}`,
+          });
+        }
       }
 
       // Credit the expert
@@ -1608,6 +1651,41 @@ export async function registerRoutes(
     return res.json({ success: true });
   });
 
+  // ─── Profile Photo Upload ───
+  app.post("/api/users/:id/photo", photoUpload.single("photo"), async (req, res) => {
+    try {
+      const userId = parseInt(String(req.params.id));
+      const user = storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: true, message: "User not found" });
+      if (!req.file) return res.status(400).json({ error: true, message: "No photo file provided" });
+      // Store as base64 data URI (Cloud Run is ephemeral, so DB storage is safer)
+      const base64 = req.file.buffer.toString("base64");
+      const dataUri = `data:${req.file.mimetype};base64,${base64}`;
+      const updated = storage.updateUser(userId, { photo: dataUri } as any);
+      if (!updated) return res.status(500).json({ error: true, message: "Failed to update user" });
+      const { password: _, ...safeUser } = updated;
+      return res.json(safeUser);
+    } catch (e: any) {
+      return res.status(400).json({ error: true, message: e.message });
+    }
+  });
+
+  // ─── Profile Photo Retrieve ───
+  app.get("/api/users/:id/photo", async (req, res) => {
+    const user = storage.getUser(parseInt(String(req.params.id)));
+    if (!user) return res.status(404).json({ error: true, message: "User not found" });
+    const photo = (user as any).photo;
+    if (!photo) return res.status(404).json({ error: true, message: "No photo uploaded" });
+    // photo is a data URI — parse and return as image
+    const matches = photo.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) return res.status(400).json({ error: true, message: "Invalid photo data" });
+    const mimeType = matches[1];
+    const buffer = Buffer.from(matches[2], "base64");
+    res.set("Content-Type", mimeType);
+    res.set("Cache-Control", "public, max-age=86400");
+    return res.send(buffer);
+  });
+
   // ─── Client Rating ───
   app.post("/api/requests/:id/rate", async (req, res) => {
     try {
@@ -1656,7 +1734,7 @@ export async function registerRoutes(
       storage.createNotification({
         userId: user.id,
         title: "Refund Processed",
-        message: `${request.creditsCost} credits have been refunded for "${request.title}".`,
+        message: `$${request.creditsCost} credits have been refunded for "${request.title}".`,
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -1671,15 +1749,18 @@ export async function registerRoutes(
   app.post("/api/experts/onboarding/rate", async (req, res) => {
     try {
       const { expertId, ratePerMinute, rateTier } = req.body;
-      const expert = storage.getExpert(expertId);
+      if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
+      const expert = storage.getExpert(Number(expertId));
       if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
-      const updated = storage.updateExpert(expertId, {
-        ratePerMinute: ratePerMinute || "0.50",
+      const updated = storage.updateExpert(Number(expertId), {
+        ratePerMinute: ratePerMinute ? String(ratePerMinute) : "0.50",
         rateTier: rateTier || "pro",
         onboardingComplete: Math.max(expert.onboardingComplete, 2),
       });
+      if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert rate" });
       return res.json(updated);
     } catch (e: any) {
+      console.error("[ONBOARDING/RATE]", e);
       return res.status(400).json({ error: true, message: e.message });
     }
   });
@@ -1691,6 +1772,8 @@ export async function registerRoutes(
       const user = storage.getUser(userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
       if (user.credits < amount) return res.status(400).json({ error: true, message: "Insufficient balance" });
+      // BUG-003: Enforce $50 minimum withdrawal
+      if (amount < 50) return res.status(400).json({ error: true, message: "Minimum withdrawal amount is $50" });
 
       storage.updateUser(userId, { credits: user.credits - amount });
       storage.createTransaction({
@@ -1715,9 +1798,10 @@ export async function registerRoutes(
       const user = storage.getUser(expert.userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
 
+      // BUG-002: gracefully handle experts with no completed reviews
       const uninvoicedReviews = storage.getUninvoicedReviewsByExpert(expertId);
 
-      // Build line items from uninvoiced reviews
+      // Build line items from uninvoiced reviews (may be empty for new experts)
       const lineItems = uninvoicedReviews.map((rev) => {
         const request = storage.getRequest(rev.requestId);
         return {
@@ -1737,7 +1821,8 @@ export async function registerRoutes(
       const platformFeeCents = Math.round(totalAmountCents * platformFeeRate / 100);
       const netPayoutCents = totalAmountCents - platformFeeCents;
 
-      const categories = JSON.parse(expert.categories || "[]");
+      let categories: string[] = [];
+      try { categories = JSON.parse(expert.categories || "[]"); } catch {}
 
       return res.json({
         expert: {
@@ -1753,6 +1838,9 @@ export async function registerRoutes(
         platformFeeRate,
         platformFeeCents,
         netPayoutCents,
+        // BUG-002: include whether balance meets minimum
+        meetsMinimum: totalAmountCents >= 5000,
+        minimumCents: 5000,
       });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -1780,8 +1868,10 @@ export async function registerRoutes(
 
       if (pendingInvoice) {
         // Return existing pending invoice with its data
-        const parsedItems = JSON.parse(pendingInvoice.lineItems || "[]");
-        const categories = JSON.parse(expert.categories || "[]");
+        let parsedItems: any[] = [];
+        try { parsedItems = JSON.parse(pendingInvoice.lineItems || "[]"); } catch {}
+        let categories: string[] = [];
+        try { categories = JSON.parse(expert.categories || "[]"); } catch {}
         return res.json({
           invoice: pendingInvoice,
           expert: { id: expert.id, name: user.name, email: user.email, category: categories[0] || "general", tier: normalizeTier(expert.rateTier) },
@@ -1794,7 +1884,7 @@ export async function registerRoutes(
       }
 
       const uninvoicedReviews = storage.getUninvoicedReviewsByExpert(expertId);
-      if (uninvoicedReviews.length === 0) return res.status(400).json({ error: true, message: "No uninvoiced reviews" });
+      if (uninvoicedReviews.length === 0) return res.status(400).json({ error: true, message: "No uninvoiced reviews found. Complete reviews to generate an invoice." });
 
       // Build line items
       const lineItems = uninvoicedReviews.map((rev) => {
@@ -1812,6 +1902,17 @@ export async function registerRoutes(
       });
 
       const totalAmountCents = lineItems.reduce((sum, item) => sum + item.amountCents, 0);
+
+      // BUG-003: Enforce $50 minimum withdrawal threshold
+      if (totalAmountCents < 5000) {
+        return res.status(400).json({
+          error: true,
+          message: `Minimum withdrawal amount is $50. Your current balance is $${(totalAmountCents / 100).toFixed(2)}.`,
+          code: "BELOW_MINIMUM",
+          totalAmountCents,
+        });
+      }
+
       const platformFeeRate = 0;
       const platformFeeCents = 0;
       const netPayoutCents = totalAmountCents;
@@ -1858,7 +1959,8 @@ export async function registerRoutes(
         });
       }
 
-      const categories = JSON.parse(expert.categories || "[]");
+      let categories: string[] = [];
+      try { categories = JSON.parse(expert.categories || "[]"); } catch {}
 
       return res.json({
         invoice,
@@ -2150,9 +2252,9 @@ export async function registerRoutes(
       const avgRating = allExperts.length > 0 ? Math.round(allExperts.reduce((s, e) => s + (e.rating || 50), 0) / allExperts.length) : 0;
       
       // Expert tier distribution
-      const standardExperts = allExperts.filter(e => e.tier === "standard" || !e.tier).length;
-      const proExperts = allExperts.filter(e => e.tier === "pro").length;
-      const guruExperts = allExperts.filter(e => e.tier === "guru").length;
+      const standardExperts = allExperts.filter(e => e.rateTier === "standard" || !e.rateTier).length;
+      const proExperts = allExperts.filter(e => e.rateTier === "pro").length;
+      const guruExperts = allExperts.filter(e => e.rateTier === "guru").length;
 
       // Revenue metrics (from credit transactions)
       const allTransactions = storage.getAllTransactions();
@@ -2169,7 +2271,7 @@ export async function registerRoutes(
       const registeredUsers = totalUsers;
       const verifiedExperts = allExperts.filter(e => e.verified).length;
       const activeExperts = allExperts.filter(e => e.rating > 50).length; // had at least one review
-      const paidClients = [...new Set(purchases.map(t => t.userId))].length;
+      const paidClients = Array.from(new Set(purchases.map(t => t.userId))).length;
       
       // Daily registrations (last 30 days)
       const dailyRegs: Record<string, { experts: number; clients: number }> = {};

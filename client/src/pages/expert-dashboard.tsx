@@ -28,8 +28,8 @@ import {
   LayoutDashboard, Inbox, PlayCircle, History, DollarSign, UserCircle, LogOut,
   Clock, CheckCircle, Star, Award, Send, MessageSquare, Coins, TrendingUp,
   Search, Wrench, Paperclip, FileText, ArrowLeft, AlertCircle, User, Wallet,
-  Lightbulb, Home, Printer, Download, Receipt, Share2, Moon, Sun,
-  Bold, Italic, List as ListIcon, ListOrdered, Heading, Eye,
+  Lightbulb, Home, Printer, Download, Receipt, Share2, Camera,
+  Bold, Italic, List as ListIcon, ListOrdered, Heading,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { Request as ExpertRequest, Expert, ExpertReview, Message, CreditTransaction } from "@shared/schema";
@@ -147,7 +147,7 @@ function ExpertOverview({ expert, userId }: { expert: Expert; userId: number }) 
     <div className="p-6 space-y-6" data-testid="expert-view-overview">
       <h1 className="text-xl font-bold">Expert Dashboard</h1>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">{earnings}</p><p className="text-xs text-muted-foreground">Credits Earned <InfoTooltip text="Total credits earned from completed reviews" /></p></div></div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">${creditData?.credits ?? 0}</p><p className="text-xs text-muted-foreground">$ Credits Balance <InfoTooltip text="Your current available credits balance" /></p></div></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center gap-3"><PlayCircle className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Reviews</p></div></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Inbox className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{pendingReviews?.length ?? 0}</p><p className="text-xs text-muted-foreground">Pending Queue <InfoTooltip text="Requests waiting for an expert to claim them" /></p></div></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Star className="h-8 w-8 text-amber-500" /><div><p className="text-2xl font-bold">{(expert.rating / 10).toFixed(1)}</p><p className="text-xs text-muted-foreground">Avg Rating <InfoTooltip text="Your average score from client feedback. Higher ratings get more requests" /> ({expert.totalReviews} reviews)</p></div></div></CardContent></Card>
@@ -158,7 +158,7 @@ function ExpertOverview({ expert, userId }: { expert: Expert; userId: number }) 
         <CardContent>
           <div className="flex items-center gap-2">
             <TrendingUp className="h-5 w-5 text-green-500" />
-            <p className="text-sm text-muted-foreground">You've earned {earnings} credits from {completed} completed reviews.</p>
+            <p className="text-sm text-muted-foreground">You've earned ${earnings} credits from {completed} completed reviews.</p>
           </div>
         </CardContent>
       </Card>
@@ -339,7 +339,7 @@ function ActiveReviewCard({ review, onClick }: { review: ExpertReview; onClick: 
               <h3 className="text-sm font-semibold">{request.title}</h3>
               <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">{request.category} · {request.tier} · {request.creditsCost} credits</p>
+            <p className="text-xs text-muted-foreground">{request.category} · {request.tier} · ${request.creditsCost} credits</p>
           </div>
           <Badge className="bg-blue-100 text-blue-800 text-xs">In Progress</Badge>
         </div>
@@ -543,7 +543,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         <h1 className="text-lg md:text-xl font-bold truncate">{request.title}</h1>
         <Badge className={`text-xs shrink-0 ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
       </div>
-      <p className="text-sm text-muted-foreground mb-4 ml-9 md:ml-10">{request.category} · {request.tier} tier · {request.creditsCost} credits</p>
+      <p className="text-sm text-muted-foreground mb-4 ml-9 md:ml-10">{request.category} · {request.tier} tier · ${request.creditsCost} credits</p>
 
       {request.aiResponse && (
         <Card className="mb-4">
@@ -1169,7 +1169,7 @@ function Earnings({ userId }: { userId: number }) {
         userId,
         expertId: expert.id,
         amountCents: invoiceData.netPayoutCents,
-        invoiceId: invoiceData.invoice.id,
+        invoiceId: invoiceData.invoice.invoiceNumber,
       });
       return res.json();
     },
@@ -1202,15 +1202,32 @@ function Earnings({ userId }: { userId: number }) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm">Current balance: <span className="font-bold">{balance} credits</span></p>
-              <p className="text-xs text-muted-foreground">Estimated value: ${balance.toFixed(2)} (at $1/credit)</p>
+          {earningsTxs.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2" data-testid="text-no-invoiceable-reviews">
+              No completed reviews to invoice yet
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm">Current balance: <span className="font-bold">${balance} credits</span></p>
+                  <p className="text-xs text-muted-foreground">Estimated value: ${balance.toFixed(2)} (at $1/credit)</p>
+                  {balance < 50 && (
+                    <p className="text-xs text-amber-600 mt-1" data-testid="text-withdrawal-threshold">
+                      Withdrawal available above $50. Current balance: ${balance.toFixed(2)}
+                    </p>
+                  )}
+                </div>
+                <Button
+                  onClick={() => { setWithdrawAmount(balance); setShowWithdrawDialog(true); }}
+                  disabled={balance <= 0}
+                  data-testid="button-withdraw"
+                >
+                  <Wallet className="mr-2 h-4 w-4" /> Withdraw
+                </Button>
+              </div>
             </div>
-            <Button onClick={() => { setWithdrawAmount(balance); setShowWithdrawDialog(true); }} disabled={balance <= 0} data-testid="button-withdraw">
-              <Wallet className="mr-2 h-4 w-4" /> Withdraw
-            </Button>
-          </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1304,7 +1321,7 @@ function Earnings({ userId }: { userId: number }) {
               <tr key={tx.id} className="border-t">
                 <td className="p-3 text-xs text-muted-foreground">{new Date(tx.createdAt).toLocaleDateString()}</td>
                 <td className="p-3 text-sm">{tx.description}</td>
-                <td className="p-3 text-right text-sm font-medium text-green-600">+{tx.amount}</td>
+                <td className="p-3 text-right text-sm font-medium text-green-600">+${tx.amount} credits</td>
               </tr>
             ))}
           </tbody>
@@ -1316,11 +1333,51 @@ function Earnings({ userId }: { userId: number }) {
 
 // ─── Profile (with Rating Breakdown) ───
 function ExpertProfile({ expert }: { expert: Expert }) {
+  const { user } = useAuth();
   const [bio, setBio] = useState(expert.bio);
   const [expertise, setExpertise] = useState(expert.expertise);
   const [credentials, setCredentials] = useState(expert.credentials);
   const [availability, setAvailability] = useState(expert.availability === 1);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  // BUG-008: Load existing photo on mount
+  useEffect(() => {
+    if (user?.id) {
+      setPhotoUrl(`/api/users/${user.id}/photo?t=${Date.now()}`);
+    }
+  }, [user?.id]);
+
+  async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      toast({ title: 'Invalid file type', description: 'Please upload a JPEG, PNG, or WebP image.', variant: 'destructive' });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: 'File too large', description: 'Maximum size is 5MB.', variant: 'destructive' });
+      return;
+    }
+    setPhotoUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('photo', file);
+      const res = await fetch(`/api/users/${user.id}/photo`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setPhotoUrl(`/api/users/${user.id}/photo?t=${Date.now()}`);
+      toast({ title: 'Photo updated!' });
+    } catch (err: any) {
+      toast({ title: 'Upload failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setPhotoUploading(false);
+    }
+  }
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -1473,8 +1530,38 @@ function ExpertProfile({ expert }: { expert: Expert }) {
       {/* Profile Card */}
       <Card className="mb-6">
         <CardContent className="p-4 flex items-center gap-4">
-          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <UserCircle className="h-6 w-6 text-primary" />
+          {/* BUG-008: Clickable photo avatar */}
+          <div
+            className="relative w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center cursor-pointer group shrink-0"
+            onClick={() => photoInputRef.current?.click()}
+            title="Click to upload photo"
+            data-testid="avatar-photo-upload"
+          >
+            {photoUrl ? (
+              <img
+                src={photoUrl}
+                alt="Profile"
+                className="w-16 h-16 rounded-full object-cover"
+                onError={() => setPhotoUrl(null)}
+              />
+            ) : (
+              <UserCircle className="h-8 w-8 text-primary" />
+            )}
+            <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              {photoUploading ? (
+                <span className="text-white text-[10px]">...</span>
+              ) : (
+                <Camera className="h-5 w-5 text-white" />
+              )}
+            </div>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={handlePhotoChange}
+              data-testid="input-photo-upload"
+            />
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2">
@@ -1488,6 +1575,7 @@ function ExpertProfile({ expert }: { expert: Expert }) {
             {expert.ratePerMinute && (
               <p className="text-xs text-muted-foreground mt-0.5">Rate: ${expert.ratePerMinute}/min · {normalizeTier(expert.rateTier)}</p>
             )}
+            <p className="text-xs text-muted-foreground mt-1">Click avatar to update photo</p>
           </div>
         </CardContent>
       </Card>
@@ -1591,13 +1679,13 @@ export default function ExpertDashboard() {
   });
   const [selectedReview, setSelectedReview] = useState<number>(0);
   const [showTour, setShowTour] = useState(true);
-  const [darkMode, setDarkMode] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
 
+  // BUG-009: Force light theme — remove dark class
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", darkMode);
-  }, [darkMode]);
+    document.documentElement.classList.remove("dark");
+  }, []);
 
   // SSE real-time notifications
   useSSE(user?.id);
@@ -1702,10 +1790,6 @@ export default function ExpertDashboard() {
               )}
             </div>
             <div className="flex items-center gap-3">
-              {/* Dark mode toggle (change #13) */}
-              <button onClick={() => setDarkMode(d => !d)} className="p-2 rounded-lg hover:bg-muted transition" data-testid="expert-dark-mode-toggle">
-                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
               <NotificationBell userId={user.id} onNavigate={(link) => {
                 // Parse link for in-page navigation
                 if (link.startsWith('/expert?view=')) {
