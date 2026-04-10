@@ -376,16 +376,26 @@ function Overview({ userId, setView, setSelectedRequest }: { userId: number; set
 
   const credits = creditData?.credits ?? 0;
   const active = requests?.filter((r) => r.status === "in_progress").length ?? 0;
-  const total = requests?.length ?? 0;
+  const completed = requests?.filter((r) => r.status === "completed").length ?? 0;
+  const totalSpent = creditData?.transactions?.filter((t) => t.type === "debit" || t.type === "purchase").reduce((sum, t) => sum + Math.abs(t.amount), 0) ?? 0;
 
   return (
     <div className="p-6 space-y-6" data-testid="view-overview">
       <h1 className="text-xl font-bold">Dashboard</h1>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-primary" /><div><p className="text-2xl font-bold">${credits}</p><p className="text-xs text-muted-foreground">$ Credits Available</p></div></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Clock className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Requests</p></div></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><List className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">{total}</p><p className="text-xs text-muted-foreground">Total Submitted</p></div></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><CheckCircle className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">~12h</p><p className="text-xs text-muted-foreground">Avg Response</p></div></div></CardContent></Card>
+        {/* FIX-6: Clickable overview cards */}
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("credits")} data-testid="card-stat-credits">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-primary" /><div><p className="text-2xl font-bold">${credits}</p><p className="text-xs text-muted-foreground">$ Credits Available</p></div></div></CardContent>
+        </Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("my-requests")} data-testid="card-stat-active">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><Clock className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Requests</p></div></div></CardContent>
+        </Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("my-requests")} data-testid="card-stat-completed">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><CheckCircle className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">{completed}</p><p className="text-xs text-muted-foreground">Completed</p></div></div></CardContent>
+        </Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("credits")} data-testid="card-stat-spent">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><DollarSign className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">${totalSpent.toFixed(0)}</p><p className="text-xs text-muted-foreground">Total Spent</p></div></div></CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -544,6 +554,8 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
     return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current); };
   }, [title, aiResponse, instructions, category, serviceType, llmProvider, llmModel, question]);
 
+  const [uploading, setUploading] = useState(false);
+
   const submitMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/requests", {
@@ -566,11 +578,38 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
       });
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
+      const newRequestId = data.id;
+
+      // FIX-2: Upload files to /api/requests/{requestId}/attachments after request creation
+      const fileAttachments = attachments.filter((a) => a.data && a.type !== "text/plain");
+      if (fileAttachments.length > 0) {
+        setUploading(true);
+        try {
+          for (const att of fileAttachments) {
+            try {
+              // Convert base64 back to blob
+              const byteString = atob(att.data);
+              const ab = new ArrayBuffer(byteString.length);
+              const ia = new Uint8Array(ab);
+              for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+              const blob = new Blob([ab], { type: att.type });
+              const fd = new FormData();
+              fd.append("file", blob, att.name);
+              await fetch(`/api/requests/${newRequestId}/attachments`, { method: "POST", body: fd });
+            } catch {
+              // silent per-file failure — don't block confirmation
+            }
+          }
+        } finally {
+          setUploading(false);
+        }
+      }
+
       queryClient.invalidateQueries({ queryKey: ["/api/requests/user", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/requests/drafts", userId] });
-      setSubmittedRequestId(data.id);
+      setSubmittedRequestId(newRequestId);
       setShowConfirmation(true);
     },
     onError: (err: Error) => {
@@ -932,10 +971,10 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
             className="w-full bg-gradient-to-r from-[#0F3DD1] to-[#171717] text-white"
             size="lg"
             onClick={() => submitMutation.mutate()}
-            disabled={submitMutation.isPending || !canSubmit}
+            disabled={submitMutation.isPending || uploading || !canSubmit}
             data-testid="button-submit-request"
           >
-            {submitMutation.isPending ? "Submitting..." : `Submit Request — $${estimatedPrice.toFixed(2)}`}
+            {uploading ? "Uploading files..." : submitMutation.isPending ? "Submitting..." : `Submit Request — $${estimatedPrice.toFixed(2)}`}
           </Button>
         </CardContent>
       </Card>
@@ -1541,7 +1580,17 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
               {parsedAttachments.map((a, i) => (
                 <details key={i} className="border rounded p-2">
                   <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
-                    <FileText className="h-3 w-3" /> {a.name}
+                    <FileText className="h-3 w-3" />
+                    {/* FIX-2: Clickable download link */}
+                    <a
+                      href={`/api/attachments/${requestId}/${encodeURIComponent(a.name)}`}
+                      target="_blank"
+                      download={a.name}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-blue-600 hover:underline"
+                    >
+                      {a.name}
+                    </a>
                   </summary>
                   <pre className="mt-2 text-xs bg-muted/30 p-2 rounded whitespace-pre-wrap">{a.content}</pre>
                 </details>

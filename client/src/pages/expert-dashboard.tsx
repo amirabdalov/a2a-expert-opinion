@@ -32,6 +32,7 @@ import {
   Bold, Italic, List as ListIcon, ListOrdered, Heading,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Request as ExpertRequest, Expert, ExpertReview, Message, CreditTransaction } from "@shared/schema";
 
 type ExpertView = "overview" | "queue" | "active" | "completed" | "earnings" | "profile" | "review-detail";
@@ -134,7 +135,7 @@ function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView:
 }
 
 // ─── Expert Overview ───
-function ExpertOverview({ expert, userId }: { expert: Expert; userId: number }) {
+function ExpertOverview({ expert, userId, setView }: { expert: Expert; userId: number; setView: (v: ExpertView) => void }) {
   const { data: creditData } = useQuery<{ credits: number; transactions: CreditTransaction[] }>({ queryKey: ["/api/credits", userId] });
   const { data: myReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expert.id] });
   const { data: pendingReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/pending"] });
@@ -147,13 +148,21 @@ function ExpertOverview({ expert, userId }: { expert: Expert; userId: number }) 
     <div className="p-6 space-y-6" data-testid="expert-view-overview">
       <h1 className="text-xl font-bold">Expert Dashboard</h1>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">${creditData?.credits ?? 0}</p><p className="text-xs text-muted-foreground">$ Credits Balance <InfoTooltip text="Your current available credits balance" /></p></div></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><PlayCircle className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Reviews</p></div></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Inbox className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{pendingReviews?.length ?? 0}</p><p className="text-xs text-muted-foreground">Pending Queue <InfoTooltip text="Requests waiting for an expert to claim them" /></p></div></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center gap-3"><Star className="h-8 w-8 text-amber-500" /><div><p className="text-2xl font-bold">{(expert.rating / 10).toFixed(1)}</p><p className="text-xs text-muted-foreground">Avg Rating <InfoTooltip text="Your average score from client feedback. Higher ratings get more requests" /> ({expert.totalReviews} reviews)</p></div></div></CardContent></Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("earnings")} data-testid="card-stat-credits">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">${creditData?.credits ?? 0}</p><p className="text-xs text-muted-foreground">$ Credits Balance <InfoTooltip text="Your current available credits balance" /></p></div></div></CardContent>
+        </Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("active")} data-testid="card-stat-active">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><PlayCircle className="h-8 w-8 text-blue-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Reviews</p></div></div></CardContent>
+        </Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("queue")} data-testid="card-stat-queue">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><Inbox className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{pendingReviews?.length ?? 0}</p><p className="text-xs text-muted-foreground">Pending Queue <InfoTooltip text="Requests waiting for an expert to claim them" /></p></div></div></CardContent>
+        </Card>
+        <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("profile")} data-testid="card-stat-rating">
+          <CardContent className="p-4"><div className="flex items-center gap-3"><Star className="h-8 w-8 text-amber-500" /><div><p className="text-2xl font-bold">{(expert.rating / 10).toFixed(1)}</p><p className="text-xs text-muted-foreground">Avg Rating <InfoTooltip text="Your average score from client feedback. Higher ratings get more requests" /> ({expert.totalReviews} reviews)</p></div></div></CardContent>
+        </Card>
       </div>
 
-      <Card>
+      <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("completed")} data-testid="card-stat-completed">
         <CardHeader className="pb-3"><CardTitle className="text-base">Completed: {completed}</CardTitle></CardHeader>
         <CardContent>
           <div className="flex items-center gap-2">
@@ -261,6 +270,14 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
   const claimableReview = reviews[0];
   const payout = getEstimatedPayout(request.serviceType, request.tier || "standard");
 
+  // FIX-3: Compute expert payout from creditsCost and tier take rate
+  const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
+  const takeRate = TAKE_RATES[(request.tier || "standard").toLowerCase()] ?? 0.50;
+  // Use expertPayout from API if available, otherwise compute client-side
+  const expertPayoutAmount = (request as any).expertPayout != null
+    ? Number((request as any).expertPayout).toFixed(2)
+    : (request.creditsCost * (1 - takeRate)).toFixed(2);
+
   return (
     <Card data-testid={`queue-request-${requestId}`}>
       <CardContent className="p-4">
@@ -275,7 +292,7 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
             <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
               <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{request.createdAt ? new Date(request.createdAt).toLocaleDateString() : "—"}</span>
               <span className="flex items-center gap-1 text-green-600 font-semibold" data-testid={`payout-${requestId}`}>
-                <DollarSign className="h-3 w-3" />Est. payout: ${payout.min}–${payout.max}
+                <DollarSign className="h-3 w-3" />Your payout: ${expertPayoutAmount}
               </span>
               <span className="flex items-center gap-1" data-testid={`time-${requestId}`}>
                 <Clock className="h-3 w-3" />{payout.time}
@@ -502,24 +519,37 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
       if (request?.serviceType === "rate") {
         body.rating = ratingValue;
         body.ratingComment = ratingComment || null;
+        body.deliverable = ratingComment || null;
       } else if (request?.serviceType === "review") {
         body.correctPoints = correctPoints || null;
         body.incorrectPoints = incorrectPoints || null;
         body.suggestions = suggestions || null;
+        body.deliverable = [correctPoints, incorrectPoints, suggestions].filter(Boolean).join("\n\n") || null;
       } else if (request?.serviceType === "custom") {
         body.deliverable = deliverable || null;
+      } else {
+        body.deliverable = deliverable || null;
+      }
+
+      // FIX-1: Try POST /api/expert-reviews/{reviewId}/respond first, fall back to PATCH
+      try {
+        const respondRes = await apiRequest("POST", `/api/expert-reviews/${reviewId}/respond`, { deliverable: body.deliverable });
+        if (respondRes.ok) return respondRes.json();
+      } catch {
+        // fallback to PATCH
       }
       const res = await apiRequest("PATCH", `/api/reviews/${reviewId}`, body);
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Review submitted!" });
+      toast({ title: "Response submitted!", description: "Your response has been sent to the client." });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/request", currentReview?.requestId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/pending"] });
       if (currentReview?.requestId) {
         queryClient.invalidateQueries({ queryKey: ["/api/requests", currentReview.requestId] });
       }
-      setView("active");
+      setView("completed");
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -567,7 +597,17 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
               {parsedAttachments.map((a, i) => (
                 <details key={i} className="border rounded p-2">
                   <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
-                    <FileText className="h-3 w-3" /> {a.name}
+                    <FileText className="h-3 w-3" />
+                    {/* FIX-2: Clickable download link */}
+                    <a
+                      href={`/api/attachments/${currentReview?.requestId}/${encodeURIComponent(a.name)}`}
+                      target="_blank"
+                      download={a.name}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-blue-600 hover:underline"
+                    >
+                      {a.name}
+                    </a>
                   </summary>
                   <pre className="mt-2 text-xs bg-muted/30 p-2 rounded whitespace-pre-wrap">{a.content}</pre>
                 </details>
@@ -1343,6 +1383,59 @@ function ExpertProfile({ expert }: { expert: Expert }) {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
+  // FIX-8: Tier & rate editor state
+  const [editTier, setEditTier] = useState<string>(normalizeTier(expert.rateTier).toLowerCase());
+  const [editRate, setEditRate] = useState<string>(expert.ratePerMinute ? String(expert.ratePerMinute) : "");
+  const [tierSaving, setTierSaving] = useState(false);
+
+  // FIX-8: Fetch available requests by tier
+  const { data: availableRequests } = useQuery<ExpertReview[]>({
+    queryKey: ["/api/reviews/pending", `?expertId=${expert.id}`],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/reviews/pending?expertId=${expert.id}`);
+      return res.json();
+    },
+  });
+
+  // Group available by tier and compute avg payout
+  const tierStats = ["standard", "pro", "guru"].map((tier) => {
+    const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
+    const reqs = availableRequests?.filter((r: any) => {
+      const reqTier = (r.tier || "standard").toLowerCase();
+      return reqTier === tier;
+    }) ?? [];
+    const count = reqs.length;
+    const avgPayout = count > 0
+      ? (reqs.reduce((sum: number, r: any) => sum + (r.creditsCost || 0) * (1 - TAKE_RATES[tier]), 0) / count).toFixed(2)
+      : null;
+    return { tier, count, avgPayout };
+  });
+
+  async function handleSaveTierRate() {
+    setTierSaving(true);
+    try {
+      await apiRequest("POST", "/api/experts/onboarding/rate", {
+        expertId: expert.id,
+        tier: editTier,
+        ratePerMinute: parseFloat(editRate) || 0,
+      });
+      toast({ title: "Tier & rate updated!" });
+    } catch {
+      // fallback: try PATCH expert
+      try {
+        await apiRequest("PATCH", `/api/experts/${expert.id}`, {
+          rateTier: editTier,
+          ratePerMinute: editRate,
+        });
+        toast({ title: "Tier & rate updated!" });
+      } catch (err: any) {
+        toast({ title: "Update failed", description: err.message, variant: "destructive" });
+      }
+    } finally {
+      setTierSaving(false);
+    }
+  }
+
   // BUG-008: Load existing photo on mount
   useEffect(() => {
     if (user?.id) {
@@ -1448,6 +1541,63 @@ function ExpertProfile({ expert }: { expert: Expert }) {
   return (
     <div className="p-6 max-w-2xl" data-testid="expert-view-profile">
       <h1 className="text-xl font-bold mb-4">Expert Profile</h1>
+
+      {/* FIX-8: Tier & Rate Editor */}
+      <Card className="mb-6 border-primary/20" data-testid="card-tier-rate-editor">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Award className="h-4 w-4 text-primary" /> Tier &amp; Rate Settings
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <Label className="text-sm mb-1 block">Your Tier</Label>
+              <Select value={editTier} onValueChange={setEditTier}>
+                <SelectTrigger data-testid="select-expert-tier">
+                  <SelectValue placeholder="Select tier" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="standard">Standard (50% take rate)</SelectItem>
+                  <SelectItem value="pro">Pro (30% take rate)</SelectItem>
+                  <SelectItem value="guru">Guru (15% take rate)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-sm mb-1 block">Rate per minute ($)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={editRate}
+                onChange={(e) => setEditRate(e.target.value)}
+                placeholder="e.g. 5.00"
+                data-testid="input-expert-rate"
+              />
+            </div>
+          </div>
+          <Button onClick={handleSaveTierRate} disabled={tierSaving} size="sm" data-testid="button-save-tier-rate">
+            {tierSaving ? "Saving..." : "Save Tier & Rate"}
+          </Button>
+
+          {/* FIX-8: Available requests by tier info box */}
+          <div className="mt-4 p-3 bg-muted/40 rounded-lg" data-testid="card-available-by-tier">
+            <p className="text-xs font-semibold text-muted-foreground mb-2">Available requests by tier (help you choose):</p>
+            <div className="space-y-1.5">
+              {tierStats.map(({ tier, count, avgPayout }) => (
+                <div key={tier} className="flex items-center justify-between text-xs">
+                  <span className="capitalize font-medium">{tier}:</span>
+                  <span className="text-muted-foreground">
+                    {count} request{count !== 1 ? "s" : ""} available
+                    {avgPayout ? ` · $${avgPayout} avg payout` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Tier Banner */}
       <div className={`rounded-2xl ${tierStyles.badge} ${tierStyles.glow} shadow-lg mb-6 overflow-hidden`} data-testid="card-expert-tier">
@@ -1645,6 +1795,37 @@ function ExpertProfile({ expert }: { expert: Expert }) {
   );
 }
 
+// ─── FIX-7: Expert notification bell wrapper with queue count ───
+function ExpertNotificationBell({ userId, onNavigate, expertId }: { userId: number; onNavigate?: (link: string) => void; expertId: number }) {
+  const { data: pendingData } = useQuery<ExpertReview[]>({
+    queryKey: ["/api/reviews/pending", `?expertId=${expertId}`],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/reviews/pending?expertId=${expertId}`);
+      return res.json();
+    },
+    refetchInterval: 60000,
+  });
+
+  const queueCount = pendingData?.length ?? 0;
+
+  // We render NotificationBell + a queue badge overlay by wrapping in relative div
+  return (
+    <div className="relative" data-testid="expert-notification-wrapper">
+      <NotificationBell userId={userId} onNavigate={onNavigate} />
+      {queueCount > 0 && (
+        <button
+          onClick={() => onNavigate?.('/expert?view=queue')}
+          className="ml-1 hidden sm:inline-flex items-center gap-1 text-[10px] font-medium bg-amber-100 text-amber-800 border border-amber-200 rounded-full px-2 py-0.5 hover:bg-amber-200 transition"
+          data-testid="badge-queue-notification"
+        >
+          <Inbox className="h-3 w-3" />
+          {queueCount} new in queue
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Expert Overview Skeleton (change #12) ───
 function ExpertOverviewSkeleton() {
   return (
@@ -1790,7 +1971,7 @@ export default function ExpertDashboard() {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <NotificationBell userId={user.id} onNavigate={(link) => {
+              <ExpertNotificationBell userId={user.id} expertId={expert.id} onNavigate={(link) => {
                 // Parse link for in-page navigation
                 if (link.startsWith('/expert?view=')) {
                   const v = new URLSearchParams(link.split('?')[1]).get('view');
@@ -1816,7 +1997,7 @@ export default function ExpertDashboard() {
               </div>
             ) : (
               <>
-                {view === "overview" && <ExpertOverview expert={expert} userId={user.id} />}
+                {view === "overview" && <ExpertOverview expert={expert} userId={user.id} setView={setView} />}
                 {view === "queue" && <AvailableQueue expertId={expert.id} setView={setView} setSelectedReview={setSelectedReview} />}
                 {view === "active" && <MyActive expertId={expert.id} setView={setView} setSelectedReview={setSelectedReview} />}
                 {view === "completed" && <CompletedHistory expertId={expert.id} setView={setView} setSelectedReview={setSelectedReview} />}

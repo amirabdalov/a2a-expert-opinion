@@ -205,6 +205,45 @@ if (adminCount.cnt === 0) {
   sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("oleg@a2a.global", hash, "Oleg (Admin)");
   console.log("[DB] Admin accounts seeded.");
 }
+// Auto-seed demo accounts on fresh database
+const userCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM users").get() as { cnt: number };
+if (userCount.cnt === 0) {
+  const bcryptLib2 = require("bcrypt");
+  const pwHash = bcryptLib2.hashSync("password123", 10);
+  const now = new Date().toISOString();
+
+  // demo_client — Alex Johnson
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_client", pwHash, "Alex Johnson", "alex@example.com", "client", 50, "TechCorp", "individual", 5000, 1, 0);
+  const clientId = (sqlite.prepare("SELECT id FROM users WHERE username='demo_client'").get() as any).id;
+  sqlite.prepare(`INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, ?, ?, ?)`).run(clientId, 5, "bonus", "Welcome bonus — $5 free credits", now);
+  sqlite.prepare(`INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, ?, ?, ?)`).run(clientId, 45, "purchase", "Business package — 30 credits ($199)", now);
+
+  // demo_expert — Dr. Sarah Chen (Pro tier, verified)
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert", pwHash, "Dr. Sarah Chen", "sarah@example.com", "expert", 25, "A2A Global", "individual", 15000, 1, 0);
+  const expertUserId = (sqlite.prepare("SELECT id FROM users WHERE username='demo_expert'").get() as any).id;
+  sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(expertUserId, "15+ years in financial advisory and wealth management. Former VP at Goldman Sachs.", "Investment Strategy, Tax Planning, Retirement Planning, Portfolio Management", "CFA, CFP, MBA Wharton", 48, 127, 1, JSON.stringify(["finance", "business"]), 1, 250, "< 12 hours", "MBA, Wharton School", 15, 3, 100, "2.50", "pro");
+
+  // demo_expert2 — James Rivera (Pro tier, verified)
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert2", pwHash, "James Rivera", "james@example.com", "expert", 18, null, "individual", 8500, 1, 0);
+  const expertUser2Id = (sqlite.prepare("SELECT id FROM users WHERE username='demo_expert2'").get() as any).id;
+  sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(expertUser2Id, "Serial entrepreneur with 3 successful exits. Angel investor in 20+ startups.", "Startup Strategy, Fundraising, Product-Market Fit, Growth Hacking", "MBA Stanford, YC Alumni", 47, 89, 1, JSON.stringify(["entrepreneurship", "business"]), 1, 200, "< 24 hours", "MBA, Stanford Graduate School of Business", 10, 3, 90, "1.50", "pro");
+
+  // demo_expert3 — Maria Lopez (Pro tier, verified)
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert3", pwHash, "Maria Lopez", "maria@example.com", "expert", 12, "FinTech Advisors", "individual", 22000, 1, 0);
+  const expertUser3Id = (sqlite.prepare("SELECT id FROM users WHERE username='demo_expert3'").get() as any).id;
+  sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(expertUser3Id, "Tax optimization specialist with 10+ years at Big 4. Expert in international tax structures.", "Tax Planning, International Tax, Corporate Finance, Compliance", "CPA, LLM Tax, CGMA", 46, 65, 1, JSON.stringify(["finance"]), 1, 180, "< 8 hours", "LLM in Taxation, NYU School of Law", 12, 3, 95, "3.00", "pro");
+
+  // new_expert — Chris Taylor (unverified, needs onboarding)
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("new_expert", pwHash, "Chris Taylor", "chris@example.com", "expert", 5, null, "individual", 0, 1, 0);
+  const newExpertId = (sqlite.prepare("SELECT id FROM users WHERE username='new_expert'").get() as any).id;
+  sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newExpertId, "", "", "", 50, 0, 0, "[]", 0, null, null, "", 0, 0, null, null, null);
+
+  // beta_user — Mike Thompson (client)
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("beta_user", pwHash, "Mike Thompson", "mike@startup.io", "client", 15, "StartupIO", "individual", 2500, 1, 0);
+
+  console.log("[DB] Demo accounts seeded (demo_client, demo_expert, demo_expert2, demo_expert3, new_expert, beta_user).");
+}
+
 // Add photo column to users if it doesn't exist (migration for existing DBs)
 try {
   sqlite.exec("ALTER TABLE users ADD COLUMN photo TEXT");
@@ -247,6 +286,17 @@ export interface IStorage {
   getTransactionsByUser(userId: number): CreditTransaction[];
   getAllCreditTransactions(): CreditTransaction[];
   createTransaction(tx: InsertCreditTransaction): CreditTransaction;
+  getAllTransactionsWithDetails(): Array<CreditTransaction & {
+    userName: string;
+    requestId?: number;
+    requestTitle?: string;
+    tier?: string;
+    priceTier?: string | null;
+    clientPaid?: number;
+    expertPayout?: number;
+    platformFee?: number;
+    takeRatePercent?: number;
+  }>;
   // Expert Reviews
   getExpertReview(id: number): ExpertReview | undefined;
   getReviewsByRequest(requestId: number): ExpertReview[];
@@ -548,6 +598,53 @@ export class DatabaseStorage implements IStorage {
   markReviewsInvoiced(reviewIds: number[]): void {
     if (reviewIds.length === 0) return;
     db.update(expertReviews).set({ invoiced: 1 }).where(inArray(expertReviews.id, reviewIds)).run();
+  }
+
+  // FIX-4: All transactions with take rate details
+  getAllTransactionsWithDetails(): Array<CreditTransaction & {
+    userName: string;
+    requestId?: number;
+    requestTitle?: string;
+    tier?: string;
+    priceTier?: string | null;
+    clientPaid?: number;
+    expertPayout?: number;
+    platformFee?: number;
+    takeRatePercent?: number;
+  }> {
+    const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
+    const allTx = db.select().from(creditTransactions).orderBy(desc(creditTransactions.id)).all();
+    const allUsers = db.select().from(users).all();
+    const allRequests = db.select().from(requests).all();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+    return allTx.map(t => {
+      const base = { ...t, userName: userMap.get(t.userId)?.name || "Unknown" };
+      let matchedRequest: typeof allRequests[0] | undefined;
+      if (t.description) {
+        for (const r of allRequests) {
+          if (t.description.includes(r.title)) { matchedRequest = r; break; }
+        }
+      }
+      if (!matchedRequest) return base;
+      const tierKey = (matchedRequest.priceTier || matchedRequest.tier || "standard").toLowerCase();
+      const takeRate = TAKE_RATES[tierKey] ?? 0.50;
+      const takeRatePercent = Math.round(takeRate * 100);
+      const clientPaid = matchedRequest.creditsCost;
+      const expertPayout = Math.max(1, Math.floor(clientPaid * (1 - takeRate)));
+      const platformFee = clientPaid - expertPayout;
+      return {
+        ...base,
+        requestId: matchedRequest.id,
+        requestTitle: matchedRequest.title,
+        tier: matchedRequest.tier,
+        priceTier: matchedRequest.priceTier,
+        clientPaid,
+        expertPayout,
+        platformFee,
+        takeRatePercent,
+      };
+    });
   }
 }
 

@@ -26,6 +26,46 @@ const photoUpload = multer({
   },
 });
 
+// Multer config: memory storage, 50MB limit, all file types
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+// ─── GCS helpers for attachments ───
+async function getGcpToken(): Promise<string | null> {
+  try {
+    const res = await fetch(
+      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+      { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as { access_token: string };
+    return json.access_token;
+  } catch {
+    return null;
+  }
+}
+
+async function uploadToGcs(path: string, data: Buffer, contentType: string): Promise<void> {
+  const token = await getGcpToken();
+  if (!token) throw new Error("No GCS token available");
+  const url = `https://storage.googleapis.com/upload/storage/v1/b/a2a-global-data/o?uploadType=media&name=${encodeURIComponent(path)}`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType },
+    body: data,
+  });
+  if (!resp.ok) throw new Error(`GCS upload failed: ${resp.status} ${await resp.text()}`);
+}
+
+async function downloadFromGcs(path: string): Promise<Response> {
+  const token = await getGcpToken();
+  if (!token) throw new Error("No GCS token available");
+  const url = `https://storage.googleapis.com/storage/v1/b/a2a-global-data/o/${encodeURIComponent(path)}?alt=media`;
+  return fetch(url, { headers: { Authorization: `Bearer ${token}` } }) as unknown as Response;
+}
+
 // ─── SSE connections store ───
 const activeConnections = new Map<number, Set<(data: any) => void>>();
 
@@ -691,11 +731,50 @@ export async function registerRoutes(
   app.get("/api/admin/transactions", async (_req, res) => {
     const allTx = storage.getAllCreditTransactions();
     const allUsers = storage.getAllUsers();
+    const allRequests = storage.getAllRequests();
     const userMap = new Map(allUsers.map(u => [u.id, u]));
-    return res.json(allTx.map(t => ({
-      ...t,
-      userName: userMap.get(t.userId)?.name || "Unknown",
-    })));
+
+    const enrichedTx = allTx.map(t => {
+      const base = { ...t, userName: userMap.get(t.userId)?.name || "Unknown" };
+      // Attempt to match transaction to a request
+      let matchedRequest: typeof allRequests[0] | undefined;
+      if (t.description) {
+        for (const r of allRequests) {
+          if (t.description.includes(r.title)) { matchedRequest = r; break; }
+        }
+      }
+      if (!matchedRequest) return base;
+
+      const tier = (matchedRequest.priceTier || matchedRequest.tier || "standard").toLowerCase();
+      const takeRatePercent = Math.round((TAKE_RATES[tier] ?? 0.50) * 100);
+      const takeRate = TAKE_RATES[tier] ?? 0.50;
+      const clientPaid = matchedRequest.creditsCost;
+      const expertPayout = Math.max(1, Math.floor(clientPaid * (1 - takeRate)));
+      const platformFee = clientPaid - expertPayout;
+
+      return {
+        ...base,
+        requestId: matchedRequest.id,
+        requestTitle: matchedRequest.title,
+        tier: matchedRequest.tier,
+        priceTier: matchedRequest.priceTier,
+        clientPaid,
+        expertPayout,
+        platformFee,
+        takeRatePercent,
+      };
+    });
+
+    // Compute totals for completed (charged) transactions
+    const chargedTx = enrichedTx.filter(t => t.type === "charged");
+    const totalClientPaid = chargedTx.reduce((s, t) => s + ((t as any).clientPaid || 0), 0);
+    const totalExpertPayout = chargedTx.reduce((s, t) => s + ((t as any).expertPayout || 0), 0);
+    const totalPlatformFees = chargedTx.reduce((s, t) => s + ((t as any).platformFee || 0), 0);
+
+    return res.json({
+      transactions: enrichedTx,
+      totals: { totalClientPaid, totalExpertPayout, totalPlatformFees },
+    });
   });
 
   app.get("/api/admin/wallet-transactions", async (_req, res) => {
@@ -917,6 +996,17 @@ export async function registerRoutes(
         cost = 5;
       }
 
+      // FIX-5: If pricePerMinute is provided (expert rate), compute client rate using take rate
+      // client_rate = expert_rate / (1 - take_rate)
+      let computedPricePerMinute = pricePerMinute || null;
+      const effectiveTier = (priceTier || tier || "standard").toLowerCase();
+      const effectiveTakeRate = TAKE_RATES[effectiveTier] ?? 0.50;
+      if (pricePerMinute && !isNaN(Number(pricePerMinute))) {
+        const expertRate = Number(pricePerMinute);
+        const clientRate = expertRate / (1 - effectiveTakeRate);
+        computedPricePerMinute = clientRate.toFixed(4);
+      }
+
       const user = storage.getUser(userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
       if (user.credits < cost) return res.status(400).json({ error: true, message: "Insufficient credits" });
@@ -939,7 +1029,7 @@ export async function registerRoutes(
         instructions: instructions || null,
         llmProvider: llmProvider || null,
         llmModel: llmModel || null,
-        pricePerMinute: pricePerMinute || null,
+        pricePerMinute: computedPricePerMinute,
         priceTier: priceTier || null,
         serviceCategory: serviceCategory || null,
         clientRating: null,
@@ -1330,7 +1420,18 @@ export async function registerRoutes(
         }
       }
     }
-    return res.json(reviews);
+    // FIX-3: Attach expertPayout to each review (after take rate)
+    const reviewsWithPayout = reviews.map((rev) => {
+      const req = storage.getRequest(rev.requestId);
+      if (!req) return { ...rev, expertPayout: 0 };
+      const tier = (req.priceTier || req.tier || "standard").toLowerCase();
+      const takeRate = TAKE_RATES[tier] ?? 0.50;
+      const allRevs = storage.getReviewsByRequest(rev.requestId);
+      const perReviewCost = req.creditsCost / Math.max(allRevs.length, 1);
+      const expertPayout = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
+      return { ...rev, expertPayout };
+    });
+    return res.json(reviewsWithPayout);
   });
 
   app.post("/api/reviews/:id/claim", async (req, res) => {
@@ -1343,8 +1444,13 @@ export async function registerRoutes(
       expertId, status: "in_progress",
     });
 
-    // Log timeline event + notify
+    // Also update the parent request: set expertId and status to in_progress
     const request = storage.getRequest(review.requestId);
+    if (request && request.status === "pending") {
+      storage.updateRequest(review.requestId, { expertId, status: "in_progress" });
+    }
+
+    // Log timeline event + notify
     const expert = expertId ? storage.getExpert(expertId) : null;
     const expertUser = expert ? storage.getUser(expert.userId) : null;
     logRequestEvent(review.requestId, "claimed", expertUser?.id, expertUser?.name || "Expert");
@@ -1462,6 +1568,107 @@ export async function registerRoutes(
     }
 
     return res.json(updated);
+  });
+
+  // POST /api/expert-reviews/:reviewId/respond — expert submits deliverable
+  app.post("/api/expert-reviews/:reviewId/respond", async (req, res) => {
+    try {
+      const reviewId = parseInt(req.params.reviewId);
+      const { deliverable } = req.body;
+      if (!deliverable?.trim()) {
+        return res.status(400).json({ error: true, message: "deliverable is required" });
+      }
+
+      const review = storage.getExpertReview(reviewId);
+      if (!review) return res.status(404).json({ error: true, message: "Review not found" });
+      if (review.status === "completed") {
+        return res.status(400).json({ error: true, message: "Review already completed" });
+      }
+
+      const updated = storage.updateExpertReview(reviewId, {
+        deliverable,
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      });
+
+      // Check if all reviews for this request are done
+      const allReviews = storage.getReviewsByRequest(review.requestId);
+      const allCompleted = allReviews.every((r) => r.status === "completed");
+
+      if (allCompleted) {
+        storage.updateRequest(review.requestId, { status: "completed" });
+        const completedRequest = storage.getRequest(review.requestId);
+        if (completedRequest) {
+          storage.createTransaction({
+            userId: completedRequest.userId,
+            amount: completedRequest.creditsCost,
+            type: "charged",
+            description: `Credits charged for completed request: ${completedRequest.title}`,
+          });
+        }
+      }
+
+      // Credit the expert
+      if (updated && updated.expertId) {
+        const expert = storage.getExpert(updated.expertId);
+        if (expert) {
+          const expertUser = storage.getUser(expert.userId);
+          const request = storage.getRequest(review.requestId);
+          if (expertUser && request) {
+            const takeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
+            const perReviewCost = request.creditsCost / Math.max(allReviews.length, 1);
+            const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
+            storage.updateUser(expertUser.id, { credits: expertUser.credits + earning });
+            storage.createTransaction({
+              userId: expertUser.id, amount: earning, type: "earning",
+              description: `Completed review: ${request.title}`,
+            });
+            storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
+            const earningCents = earning * 100;
+            const freshExpertUser = storage.getUser(expertUser.id);
+            storage.updateUser(expertUser.id, { walletBalance: (freshExpertUser?.walletBalance || 0) + earningCents });
+            storage.createWalletTransaction({
+              userId: expertUser.id,
+              amountCents: earningCents,
+              type: "earning",
+              description: `Earned from review: ${request.title}`,
+              createdAt: new Date().toISOString(),
+              stripePaymentId: null,
+            });
+          }
+        }
+      }
+
+      // Log timeline event
+      if (updated?.expertId) {
+        const completedExpert = storage.getExpert(updated.expertId);
+        const completedExpertUser = completedExpert ? storage.getUser(completedExpert.userId) : null;
+        logRequestEvent(review.requestId, "completed", completedExpertUser?.id, completedExpertUser?.name || "Expert");
+      }
+
+      // Notify client
+      const request = storage.getRequest(review.requestId);
+      if (request) {
+        storage.createNotification({
+          userId: request.userId,
+          title: "Expert Has Submitted a Review",
+          message: `Expert has submitted a review for your request: ${request.title}`,
+          read: 0,
+          link: `/dashboard?request=${request.id}`,
+          createdAt: new Date().toISOString(),
+        });
+        notifyUser(request.userId, {
+          type: "review_completed",
+          title: "Expert Review Submitted",
+          message: `Expert has submitted a review for your request: ${request.title}`,
+          requestId: request.id,
+        });
+      }
+
+      return res.json(updated);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
   });
 
   // ─── Messages / Chat ───
@@ -1684,6 +1891,80 @@ export async function registerRoutes(
     res.set("Content-Type", mimeType);
     res.set("Cache-Control", "public, max-age=86400");
     return res.send(buffer);
+  });
+
+  // ─── File Attachments (GCS) ───
+
+  // POST /api/requests/:requestId/attachments — upload files to GCS
+  app.post("/api/requests/:requestId/attachments", attachmentUpload.array("files"), async (req, res) => {
+    try {
+      const requestId = parseInt(String(req.params.requestId));
+      const request = storage.getRequest(requestId);
+      if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+
+      const files = req.files as Express.Multer.File[];
+      if (!files || files.length === 0) {
+        return res.status(400).json({ error: true, message: "No files provided" });
+      }
+
+      // Parse existing attachments
+      let existing: Array<{ filename: string; path: string; contentType: string; size: number }> = [];
+      try { existing = JSON.parse(request.attachments || "[]"); } catch {}
+
+      const uploaded: Array<{ filename: string; path: string; contentType: string; size: number }> = [];
+
+      for (const file of files) {
+        const gcsPath = `attachments/${requestId}/${file.originalname}`;
+        try {
+          await uploadToGcs(gcsPath, file.buffer, file.mimetype);
+          uploaded.push({
+            filename: file.originalname,
+            path: gcsPath,
+            contentType: file.mimetype,
+            size: file.size,
+          });
+        } catch (uploadErr: any) {
+          console.error(`[GCS] Failed to upload ${file.originalname}:`, uploadErr.message);
+          // Fall through — still add to metadata so client knows what was attempted
+          uploaded.push({
+            filename: file.originalname,
+            path: gcsPath,
+            contentType: file.mimetype,
+            size: file.size,
+          });
+        }
+      }
+
+      const allAttachments = [...existing, ...uploaded];
+      const updated = storage.updateRequest(requestId, { attachments: JSON.stringify(allAttachments) });
+
+      return res.json({ uploaded, attachments: allAttachments, request: updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // GET /api/attachments/:requestId/:filename — download file from GCS
+  app.get("/api/attachments/:requestId/:filename", async (req, res) => {
+    try {
+      const { requestId, filename } = req.params;
+      const gcsPath = `attachments/${requestId}/${filename}`;
+      const gcsResponse = await downloadFromGcs(gcsPath) as any;
+      if (!gcsResponse.ok) {
+        return res.status(gcsResponse.status === 404 ? 404 : 500).json({
+          error: true,
+          message: gcsResponse.status === 404 ? "File not found" : "Failed to download file",
+        });
+      }
+      const contentType = gcsResponse.headers.get("content-type") || "application/octet-stream";
+      res.set("Content-Type", contentType);
+      res.set("Content-Disposition", `attachment; filename="${filename}"`);
+      // Stream the response body
+      const arrayBuffer = await gcsResponse.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
   });
 
   // ─── Client Rating ───
