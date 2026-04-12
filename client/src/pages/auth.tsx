@@ -130,7 +130,17 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     setLoading(true);
     try {
       if (isRegister) {
-        const res = await apiRequest("POST", "/api/auth/register", { name, email, role });
+        // Pass UTM params from URL for acquisition tracking
+        const hashParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
+        const utmSource = hashParams.get('utm_source') || undefined;
+        const utmMedium = hashParams.get('utm_medium') || undefined;
+        const utmCampaign = hashParams.get('utm_campaign') || undefined;
+        const res = await apiRequest("POST", "/api/auth/register", { 
+          name, email, role, 
+          utmSource, utmMedium, utmCampaign, 
+          referrer: document.referrer || undefined,
+          landingPage: window.location.hash.split('?')[0] || undefined
+        });
         const data = await res.json();
         if (data.existing) {
           // Email already registered — server already sent OTP, switch to OTP step

@@ -382,6 +382,15 @@ export async function registerRoutes(
         });
       }
 
+      // Save UTM / acquisition source
+      const { utmSource, utmMedium, utmCampaign, utmContent, referrer, landingPage } = req.body;
+      if (utmSource || utmMedium || referrer) {
+        sqlite.prepare("INSERT INTO registration_sources (user_id, utm_source, utm_medium, utm_campaign, utm_content, referrer, landing_page, created_at) VALUES (?,?,?,?,?,?,?,?)").run(
+          user.id, utmSource || null, utmMedium || null, utmCampaign || null, utmContent || null,
+          referrer || null, landingPage || null, new Date().toISOString()
+        );
+      }
+
       // Generate and send OTP
       const otp = generateOtp();
       otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name });
@@ -562,6 +571,18 @@ export async function registerRoutes(
       }
     }
     return res.json({ ok: true });
+  });
+
+  // ─── TRACKING ───
+
+  app.post("/api/track/pageview", (req, res) => {
+    const { path, utmSource, utmMedium, utmCampaign, utmContent, referrer, sessionId } = req.body;
+    sqlite.prepare("INSERT INTO page_views (path, utm_source, utm_medium, utm_campaign, utm_content, referrer, user_agent, ip_address, session_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(
+      path, utmSource || null, utmMedium || null, utmCampaign || null, utmContent || null,
+      referrer || null, req.headers["user-agent"] || null, req.ip || null, sessionId || null,
+      new Date().toISOString()
+    );
+    res.json({ ok: true });
   });
 
   // ─── ADMIN OPERATIONAL METRICS ───
@@ -2729,6 +2750,115 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[RL-METRICS]", err);
+      res.json({ error: err.message });
+    }
+  });
+
+  // ─── ADMIN ACQUISITION ANALYTICS ───
+
+  app.get("/api/admin/acquisition", (req, res) => {
+    try {
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30*24*60*60*1000).toISOString();
+      const sevenDaysAgo = new Date(now.getTime() - 7*24*60*60*1000).toISOString();
+
+      // Total registrations by source
+      const bySource = sqlite.prepare(`
+        SELECT utm_source, utm_medium, utm_campaign, COUNT(*) as count
+        FROM registration_sources
+        GROUP BY utm_source, utm_medium, utm_campaign
+        ORDER BY count DESC
+      `).all();
+
+      // Registrations from news section
+      const fromNews = sqlite.prepare(`
+        SELECT COUNT(*) as count FROM registration_sources
+        WHERE landing_page LIKE '%/news%' OR utm_campaign LIKE '%news%'
+      `).get() as any;
+
+      // Daily registrations (last 30 days)
+      const dailyRegs = sqlite.prepare(`
+        SELECT DATE(created_at) as date, COUNT(*) as count
+        FROM registration_sources
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date
+      `).all(thirtyDaysAgo);
+
+      // Page views by path (last 7 days)
+      const topPages = sqlite.prepare(`
+        SELECT path, COUNT(*) as views
+        FROM page_views
+        WHERE created_at >= ?
+        GROUP BY path
+        ORDER BY views DESC
+        LIMIT 20
+      `).all(sevenDaysAgo);
+
+      // News section views
+      const newsViews = sqlite.prepare(`
+        SELECT COUNT(*) as count FROM page_views
+        WHERE path LIKE '%/news%' AND created_at >= ?
+      `).get(thirtyDaysAgo) as any;
+
+      // Conversion funnel: views → registrations
+      const totalViews30d = (sqlite.prepare(`
+        SELECT COUNT(*) as count FROM page_views WHERE created_at >= ?
+      `).get(thirtyDaysAgo) as any)?.count || 0;
+
+      const totalRegs30d = (sqlite.prepare(`
+        SELECT COUNT(*) as count FROM registration_sources WHERE created_at >= ?
+      `).get(thirtyDaysAgo) as any)?.count || 0;
+
+      // By role
+      const expertRegs = sqlite.prepare(`
+        SELECT COUNT(*) as count FROM users WHERE role='expert'
+      `).get() as any;
+      const clientRegs = sqlite.prepare(`
+        SELECT COUNT(*) as count FROM users WHERE role='client'
+      `).get() as any;
+
+      // Traffic sources breakdown
+      const organicCount = (sqlite.prepare(`
+        SELECT COUNT(*) as count FROM registration_sources
+        WHERE (utm_source IS NULL OR utm_source = '') AND (referrer IS NULL OR referrer = '' OR referrer LIKE '%a2a.global%')
+      `).get() as any)?.count || 0;
+
+      const referralCount = (sqlite.prepare(`
+        SELECT COUNT(*) as count FROM registration_sources
+        WHERE referrer IS NOT NULL AND referrer != '' AND referrer NOT LIKE '%a2a.global%' AND (utm_source IS NULL OR utm_source = '')
+      `).get() as any)?.count || 0;
+
+      const paidCount = (sqlite.prepare(`
+        SELECT COUNT(*) as count FROM registration_sources
+        WHERE utm_medium IN ('cpc', 'ppc', 'paid', 'ad', 'ads')
+      `).get() as any)?.count || 0;
+
+      const newsCount = fromNews?.count || 0;
+
+      res.json({
+        summary: {
+          totalExperts: expertRegs?.count || 0,
+          totalClients: clientRegs?.count || 0,
+          totalViews30d,
+          totalRegs30d,
+          conversionRate: totalViews30d > 0 ? ((totalRegs30d / totalViews30d) * 100).toFixed(2) + '%' : '0%',
+          fromNews: newsCount,
+        },
+        trafficSources: {
+          organic: organicCount,
+          referral: referralCount,
+          paid: paidCount,
+          news: newsCount,
+          direct: Math.max(0, totalRegs30d - organicCount - referralCount - paidCount - newsCount),
+        },
+        bySource,
+        dailyRegistrations: dailyRegs,
+        topPages,
+        newsViews: newsViews?.count || 0,
+      });
+    } catch (err: any) {
+      console.error("[ACQUISITION]", err);
       res.json({ error: err.message });
     }
   });

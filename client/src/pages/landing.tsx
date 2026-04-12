@@ -948,6 +948,7 @@ function Footer() {
                 <a href="#section-ai-mistakes" onClick={(e) => { e.preventDefault(); scrollTo("section-ai-mistakes"); }} className="block hover:text-primary transition-colors">AI Mistakes</a>
                 <a href="#section-pricing" onClick={(e) => { e.preventDefault(); scrollTo("section-pricing"); }} className="block hover:text-primary transition-colors">Expert Tiers</a>
                 <a href="#section-categories" onClick={(e) => { e.preventDefault(); scrollTo("section-categories"); }} className="block hover:text-primary transition-colors">Categories</a>
+                <Link href="/news" className="block hover:text-primary transition-colors font-semibold text-[#0F3DD1]">News & Insights</Link>
               </div>
             </div>
             <div>
@@ -1053,6 +1054,14 @@ function LandingNav() {
                   >
                     FAQ
                   </a>
+                  <Link href="/news">
+                    <span
+                      className="text-[15px] font-medium text-[#0F3DD1] hover:text-[#0F3DD1]/80 transition-colors cursor-pointer whitespace-nowrap font-semibold"
+                      data-testid="nav-news"
+                    >
+                      News
+                    </span>
+                  </Link>
 
                   {/* Register + Login buttons with hover morph */}
                   <div className="flex items-center gap-2 relative min-w-[200px] justify-end" onMouseLeave={() => setHoveredBtn(null)}>
@@ -1134,10 +1143,20 @@ function LandingNav() {
                 {label as string}
               </button>
             ))}
+            <Link href="/news">
+              <span
+                className={`flex items-center gap-3 py-4 text-xl font-semibold text-[#0F3DD1] hover:text-[#0F3DD1]/80 transition-all duration-300 border-b border-gray-100 cursor-pointer ${mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-4 opacity-0"}`}
+                style={{ transitionDelay: mobileOpen ? "250ms" : "0ms" }}
+                onClick={() => setMobileOpen(false)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
+                News
+              </span>
+            </Link>
             <Link href="/login">
               <span
                 className={`flex items-center gap-3 py-4 text-xl font-medium text-[#686868] hover:text-[#0F3DD1] transition-all duration-300 border-b border-gray-100 cursor-pointer ${mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-4 opacity-0"}`}
-                style={{ transitionDelay: mobileOpen ? "250ms" : "0ms" }}
+                style={{ transitionDelay: mobileOpen ? "300ms" : "0ms" }}
                 onClick={() => setMobileOpen(false)}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>

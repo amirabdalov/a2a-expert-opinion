@@ -29,7 +29,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "@/components/ui/select";
 
-type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence";
+type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence" | "acquisition";
 
 const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -41,6 +41,7 @@ const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any }> = [
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "intelligence", label: "RL Core & BI", icon: Activity },
+  { id: "acquisition", label: "Acquisition", icon: BarChart3 },
 ];
 
 // Fix 12: Build chart data from real API data
@@ -245,8 +246,422 @@ export default function AdminDashboard() {
           {page === "notifications" && <NotificationsPage />}
           {page === "settings" && <SettingsPage />}
           {page === "intelligence" && <IntelligencePage />}
+          {page === "acquisition" && <AcquisitionPanel />}
         </div>
       </main>
+    </div>
+  );
+}
+
+// ─── Acquisition Panel ───
+
+const TRAFFIC_COLORS: Record<string, string> = {
+  organic: "#22c55e",
+  referral: "#3b82f6",
+  paid: "#f97316",
+  news: "#a855f7",
+  direct: "#6b7280",
+};
+
+function AcquisitionPanel() {
+  const [sortCol, setSortCol] = useState<"count" | "source" | "medium" | "campaign">("count");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const { data, isLoading, isError } = useQuery<any>({
+    queryKey: ["/api/admin/acquisition"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/acquisition");
+      return res.json();
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <RefreshCw className="w-6 h-6 text-zinc-500 animate-spin" />
+        <span className="ml-2 text-zinc-400 text-sm">Loading acquisition data...</span>
+      </div>
+    );
+  }
+
+  if (isError || !data) {
+    return (
+      <div className="flex items-center justify-center h-64 text-red-400 text-sm">
+        <XCircle className="w-5 h-5 mr-2" />
+        Failed to load acquisition data.
+      </div>
+    );
+  }
+
+  const { summary = {}, bySource = [], topPages = [], dailyRegs = [], newsViews = 0 } = data;
+
+  // Build traffic sources pie data
+  const trafficSources = [
+    { name: "Organic", value: summary.fromOrganic ?? 0, color: TRAFFIC_COLORS.organic },
+    { name: "Referral", value: summary.fromReferral ?? 0, color: TRAFFIC_COLORS.referral },
+    { name: "Paid", value: summary.fromPaid ?? 0, color: TRAFFIC_COLORS.paid },
+    { name: "News Section", value: summary.fromNews ?? 0, color: TRAFFIC_COLORS.news },
+    { name: "Direct", value: summary.fromDirect ?? 0, color: TRAFFIC_COLORS.direct },
+  ].filter(s => s.value > 0);
+
+  const totalTraffic = trafficSources.reduce((s, x) => s + x.value, 0);
+
+  const newsConversionRate =
+    newsViews > 0 ? ((summary.fromNews ?? 0) / newsViews * 100).toFixed(2) : "0.00";
+
+  // Sorted sources table
+  const sortedBySource = [...(bySource || [])].sort((a: any, b: any) => {
+    const valA = sortCol === "count" ? (a.count ?? 0) : (a[sortCol] ?? "").toString();
+    const valB = sortCol === "count" ? (b.count ?? 0) : (b[sortCol] ?? "").toString();
+    if (typeof valA === "number") {
+      return sortDir === "desc" ? valB - valA : valA - valB;
+    }
+    return sortDir === "desc"
+      ? valB.localeCompare(valA)
+      : valA.localeCompare(valB);
+  });
+
+  const handleSort = (col: "count" | "source" | "medium" | "campaign") => {
+    if (sortCol === col) {
+      setSortDir(d => d === "desc" ? "asc" : "desc");
+    } else {
+      setSortCol(col);
+      setSortDir("desc");
+    }
+  };
+
+  const kpis = [
+    {
+      label: "Total Experts",
+      value: summary.totalExperts ?? 0,
+      target: "Goal: 1,000/day",
+      icon: GraduationCap,
+      color: "text-teal-400",
+      bg: "bg-teal-500/10",
+    },
+    {
+      label: "Total Clients",
+      value: summary.totalClients ?? 0,
+      target: "Goal: 100/day",
+      icon: Users,
+      color: "text-blue-400",
+      bg: "bg-blue-500/10",
+    },
+    {
+      label: "30d Registrations",
+      value: summary.totalRegs30d ?? 0,
+      target: "",
+      icon: TrendingUp,
+      color: "text-violet-400",
+      bg: "bg-violet-500/10",
+    },
+    {
+      label: "Conversion Rate",
+      value: summary.conversionRate ?? "0%",
+      target: "Views → Registrations",
+      icon: BarChart3,
+      color: "text-orange-400",
+      bg: "bg-orange-500/10",
+    },
+  ];
+
+  return (
+    <div className="space-y-6" data-testid="acquisition-panel">
+      <div>
+        <h1 className="text-xl font-bold text-zinc-100">User Acquisition</h1>
+        <p className="text-sm text-zinc-400 mt-1">Traffic sources, registration trends, and conversion analytics.</p>
+      </div>
+
+      {/* Row 1: KPI Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {kpis.map(kpi => {
+          const Icon = kpi.icon;
+          return (
+            <Card key={kpi.label} className="bg-zinc-900 border-zinc-800">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${kpi.bg}`}>
+                    <Icon className={`w-4 h-4 ${kpi.color}`} />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-zinc-100">
+                  {typeof kpi.value === "number" ? kpi.value.toLocaleString() : kpi.value}
+                </div>
+                <div className="text-xs text-zinc-500 mt-0.5">{kpi.label}</div>
+                {kpi.target && (
+                  <div className="text-xs text-zinc-600 mt-1">{kpi.target}</div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Row 2: Traffic Sources Pie Chart + Row 3: Daily Registrations Line Chart */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Traffic Sources Donut */}
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-zinc-300">Traffic Sources (30d)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {trafficSources.length === 0 ? (
+              <div className="flex items-center justify-center h-48 text-zinc-500 text-sm">No data</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <RechartsPieChart>
+                  <Pie
+                    data={trafficSources}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={85}
+                    innerRadius={45}
+                    paddingAngle={2}
+                    label={({ name, value }) =>
+                      totalTraffic > 0
+                        ? `${name} ${((value / totalTraffic) * 100).toFixed(0)}%`
+                        : name
+                    }
+                    labelLine={true}
+                  >
+                    {trafficSources.map((entry, index) => (
+                      <Cell key={index} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value: number, name: string) => [
+                      `${value} (${totalTraffic > 0 ? ((value / totalTraffic) * 100).toFixed(1) : 0}%)`,
+                      name,
+                    ]}
+                    contentStyle={{ backgroundColor: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#e4e4e7" }}
+                  />
+                </RechartsPieChart>
+              </ResponsiveContainer>
+            )}
+            {/* Legend */}
+            <div className="flex flex-wrap gap-3 mt-2">
+              {trafficSources.map(s => (
+                <div key={s.name} className="flex items-center gap-1.5 text-xs text-zinc-400">
+                  <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: s.color }} />
+                  {s.name}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Daily Registrations Line Chart */}
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-zinc-300">Daily Registrations (30d)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(!dailyRegs || dailyRegs.length === 0) ? (
+              <div className="flex items-center justify-center h-48 text-zinc-500 text-sm">No data</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={dailyRegs} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fill: "#71717a", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={{ stroke: "#27272a" }}
+                    interval={Math.max(0, Math.floor(dailyRegs.length / 7) - 1)}
+                    tickFormatter={(v: string) => {
+                      const d = new Date(v);
+                      return `${d.getMonth() + 1}/${d.getDate()}`;
+                    }}
+                  />
+                  <YAxis
+                    tick={{ fill: "#71717a", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={{ stroke: "#27272a" }}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#e4e4e7" }}
+                    labelFormatter={(v: string) => {
+                      const d = new Date(v);
+                      return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="count"
+                    stroke="#14b8a6"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4, fill: "#14b8a6" }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Row 4: News Section Performance */}
+      <Card className="bg-zinc-900 border-zinc-800">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm text-zinc-300 flex items-center gap-2">
+            <PieChart className="w-4 h-4 text-violet-400" />
+            News Section Performance
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <div className="text-2xl font-bold text-zinc-100">{(newsViews || 0).toLocaleString()}</div>
+              <div className="text-xs text-zinc-500 mt-0.5">News Page Views (30d)</div>
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-violet-400">{(summary.fromNews ?? 0).toLocaleString()}</div>
+              <div className="text-xs text-zinc-500 mt-0.5">Registrations from News</div>
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-orange-400">{newsConversionRate}%</div>
+              <div className="text-xs text-zinc-500 mt-0.5">News Conversion Rate</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Row 5: Top Traffic Sources Table */}
+      <Card className="bg-zinc-900 border-zinc-800">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm text-zinc-300">Top Traffic Sources</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {(!sortedBySource || sortedBySource.length === 0) ? (
+            <div className="flex items-center justify-center py-8 text-zinc-500 text-sm">No source data</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800">
+                    {(["source", "medium", "campaign", "count"] as const).map(col => (
+                      <th
+                        key={col}
+                        className="px-4 py-2.5 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide cursor-pointer hover:text-zinc-300 select-none"
+                        onClick={() => handleSort(col)}
+                      >
+                        {col === "count" ? "Registrations" : col.charAt(0).toUpperCase() + col.slice(1)}
+                        {sortCol === col && (
+                          <span className="ml-1">{sortDir === "desc" ? "▼" : "▲"}</span>
+                        )}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedBySource.slice(0, 20).map((row: any, i: number) => (
+                    <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
+                      <td className="px-4 py-2.5 text-zinc-300 font-medium">{row.source || "—"}</td>
+                      <td className="px-4 py-2.5 text-zinc-400">{row.medium || "—"}</td>
+                      <td className="px-4 py-2.5 text-zinc-400">
+                        {row.campaign ? (
+                          <span className={row.campaign?.toLowerCase().includes("news") ? "text-violet-400 font-medium" : ""}>
+                            {row.campaign}
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="font-mono text-teal-400 font-medium">{(row.count ?? 0).toLocaleString()}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Row 6: Top Pages Table */}
+      <Card className="bg-zinc-900 border-zinc-800">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm text-zinc-300">Top Pages (7d)</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {(!topPages || topPages.length === 0) ? (
+            <div className="flex items-center justify-center py-8 text-zinc-500 text-sm">No page data</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800">
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide">Page</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide">Views (7d)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topPages.slice(0, 15).map((row: any, i: number) => (
+                    <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
+                      <td className="px-4 py-2.5 text-zinc-300 font-mono text-xs">{row.page || row.path || "—"}</td>
+                      <td className="px-4 py-2.5">
+                        <span className="font-mono text-blue-400 font-medium">{(row.views ?? row.count ?? 0).toLocaleString()}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Row 7: UTM Campaign Breakdown */}
+      <Card className="bg-zinc-900 border-zinc-800">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm text-zinc-300">Registration Source Breakdown by UTM Campaign</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {(!sortedBySource || sortedBySource.length === 0) ? (
+            <div className="flex items-center justify-center py-8 text-zinc-500 text-sm">No UTM data</div>
+          ) : (
+            <div className="space-y-2">
+              {sortedBySource
+                .filter((row: any) => row.campaign)
+                .slice(0, 15)
+                .map((row: any, i: number) => {
+                  const isNews = (row.campaign ?? "").toLowerCase().includes("news") ||
+                    (row.source ?? "").toLowerCase().includes("news") ||
+                    (row.medium ?? "").toLowerCase().includes("news");
+                  const maxCount = sortedBySource[0]?.count ?? 1;
+                  const pct = Math.max(2, Math.round(((row.count ?? 0) / maxCount) * 100));
+                  return (
+                    <div key={i} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-medium ${isNews ? "text-violet-400" : "text-zinc-300"}`}>
+                            {row.campaign}
+                          </span>
+                          {isNews && (
+                            <Badge className="text-[10px] px-1.5 py-0 bg-violet-500/20 text-violet-400 border-0">News</Badge>
+                          )}
+                          <span className="text-zinc-600">{row.source}{row.medium ? ` / ${row.medium}` : ""}</span>
+                        </div>
+                        <span className="font-mono text-zinc-300">{(row.count ?? 0).toLocaleString()}</span>
+                      </div>
+                      <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${pct}%`,
+                            backgroundColor: isNews ? "#a855f7" : "#14b8a6",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -190,6 +190,8 @@ export const insertAdminSchema = createInsertSchema(admins).omit({ id: true });
 export const insertRequestEventSchema = createInsertSchema(requestEvents).omit({ id: true });
 export const insertWithdrawalSchema = createInsertSchema(withdrawals).omit({ id: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true });
+export const insertPageViewSchema = createInsertSchema(pageViews).omit({ id: true });
+export const insertRegistrationSourceSchema = createInsertSchema(registrationSources).omit({ id: true });
 
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -218,6 +220,10 @@ export type Withdrawal = typeof withdrawals.$inferSelect;
 export type InsertWithdrawal = z.infer<typeof insertWithdrawalSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
+export type PageView = typeof pageViews.$inferSelect;
+export type InsertPageView = z.infer<typeof insertPageViewSchema>;
+export type RegistrationSource = typeof registrationSources.$inferSelect;
+export type InsertRegistrationSource = z.infer<typeof insertRegistrationSourceSchema>;
 
 // Login schema (legacy password-based — kept for reference)
 export const loginSchema = z.object({
@@ -247,6 +253,32 @@ export const otpVerifySchema = z.object({
 
 export const otpLoginSchema = z.object({
   email: z.string().email(),
+});
+
+export const pageViews = sqliteTable("page_views", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  path: text("path").notNull(),
+  utmSource: text("utm_source"),
+  utmMedium: text("utm_medium"),
+  utmCampaign: text("utm_campaign"),
+  utmContent: text("utm_content"),
+  referrer: text("referrer"),
+  userAgent: text("user_agent"),
+  ipAddress: text("ip_address"),
+  sessionId: text("session_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const registrationSources = sqliteTable("registration_sources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  utmSource: text("utm_source"),
+  utmMedium: text("utm_medium"),
+  utmCampaign: text("utm_campaign"),
+  utmContent: text("utm_content"),
+  referrer: text("referrer"),
+  landingPage: text("landing_page"),
+  createdAt: text("created_at").notNull(),
 });
 
 export const legalAcceptances = sqliteTable("legal_acceptances", {

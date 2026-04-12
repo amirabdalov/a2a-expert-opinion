@@ -1,10 +1,20 @@
 import { Switch, Route, Router, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
-import { useEffect } from "react";
+import { useEffect, useCallback, useSyncExternalStore } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+// Custom hash location hook that strips query params from the path
+// so wouter matches /#/register?role=expert to the /register route.
+// Components access params via window.location.hash directly.
+function useCleanHashLocation(): [string, (to: string) => void] {
+  const [rawLocation, setLocation] = useHashLocation();
+  // Strip query params from the path for route matching
+  const cleanPath = rawLocation.split("?")[0];
+  return [cleanPath, setLocation];
+}
 import LandingPage from "@/pages/landing";
 import { LoginPage, RegisterPage } from "@/pages/auth";
 import ClientDashboard from "@/pages/client-dashboard";
@@ -16,6 +26,7 @@ import NotFound from "@/pages/not-found";
 import { TermsPage, PrivacyPage, CookiesPage } from "@/pages/legal";
 import PaymentsPage from "@/pages/payments";
 import ExpertPublicProfile from "@/pages/expert-public-profile";
+import NewsPage from "@/pages/news";
 
 // BUG-3 / Item 18: Redirect /faq to landing page FAQ section
 function FaqRedirect() {
@@ -47,6 +58,7 @@ function AppRouter() {
       <Route path="/cookies" component={CookiesPage} />
       {/* BUG-3: /faq redirects to landing page FAQ section */}
       <Route path="/faq" component={FaqRedirect} />
+      <Route path="/news" component={NewsPage} />
       {/* Payments page removed from public nav for Stripe submission — standby access only */}
       <Route path="/payments-standby" component={PaymentsPage} />
       <Route component={NotFound} />
@@ -58,7 +70,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <Router hook={useHashLocation}>
+        <Router hook={useCleanHashLocation}>
           <AppRouter />
         </Router>
         <Toaster />

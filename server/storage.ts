@@ -38,7 +38,10 @@ sqlite.exec(`
     wallet_balance INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     tour_completed INTEGER NOT NULL DEFAULT 0,
-    photo TEXT
+    photo TEXT,
+    utm_source TEXT,
+    utm_medium TEXT,
+    utm_campaign TEXT
   );
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -194,6 +197,30 @@ sqlite.exec(`
     ip_address TEXT,
     user_agent TEXT
   );
+  CREATE TABLE IF NOT EXISTS page_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    utm_source TEXT,
+    utm_medium TEXT,
+    utm_campaign TEXT,
+    utm_content TEXT,
+    referrer TEXT,
+    user_agent TEXT,
+    ip_address TEXT,
+    session_id TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS registration_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    utm_source TEXT,
+    utm_medium TEXT,
+    utm_campaign TEXT,
+    utm_content TEXT,
+    referrer TEXT,
+    landing_page TEXT,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // Auto-seed admin accounts on fresh database
@@ -260,6 +287,10 @@ try {
 } catch (e: any) {
   // Column already exists — ignore
 }
+// UTM tracking columns migration
+try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_source TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_medium TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_campaign TEXT"); } catch {}
 console.log("[DB] All tables ensured.");
 
 export const db = drizzle(sqlite);
