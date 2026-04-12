@@ -35,7 +35,7 @@ function Hero() {
         <img src={heroMapPath} alt="" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-b from-[#081F6B]/80 via-[#0F3DD1]/70 to-[#0F3DD1]/60" />
       </div>
-      <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 py-14 sm:py-20 text-center">
+      <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 pt-24 sm:pt-28 pb-14 sm:pb-20 text-center">
         <h1 className="font-display text-3xl md:text-4xl lg:text-5xl font-extrabold text-white mb-4 leading-tight tracking-tight drop-shadow-[0_2px_10px_rgba(0,0,0,0.5)]">
           Don't Trust AI? Great.
         </h1>
@@ -977,54 +977,172 @@ function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 }
 
-// ─── Landing Nav ───
+// ─── Landing Nav (Fixed white header with sandwich menu, matching UPI payments style) ───
 function LandingNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const [hoveredBtn, setHoveredBtn] = useState<"register" | "login" | null>(null);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 50);
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? "hidden" : "unset";
+    return () => { document.body.style.overflow = "unset"; };
+  }, [mobileOpen]);
+
   return (
-    <nav className="absolute top-0 left-0 right-0 z-20 px-4 sm:px-6 py-3 sm:py-4">
-      <div className="max-w-5xl mx-auto flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <img src={logoSrc} alt="A2A Global" className="h-6 sm:h-8 brightness-0 invert" />
-          <span className="font-bold text-white text-sm sm:text-base">Expert Opinion</span>
-        </div>
-        {/* Desktop nav */}
-        <div className="hidden lg:flex items-center justify-end flex-1 ml-8">
-          <div className="flex items-center" style={{ gap: '2rem' }}>
-            <button onClick={() => scrollTo("section-how-it-works")} className="text-white/70 hover:text-white text-sm whitespace-nowrap" data-testid="nav-how-it-works">How it Works</button>
-            <button onClick={() => scrollTo("section-pricing")} className="text-white/70 hover:text-white text-sm whitespace-nowrap" data-testid="nav-pricing">Pricing</button>
-            <Link href="/login"><span className="text-white/70 hover:text-white text-sm whitespace-nowrap cursor-pointer" data-testid="button-nav-login">Client Portal</span></Link>
-            <Link href="/login"><span className="text-white/70 hover:text-white text-sm whitespace-nowrap cursor-pointer" data-testid="button-nav-expert-login">Expert Portal</span></Link>
-            <Link href="/login"><Button size="sm" variant="outline" className="border-white/40 text-white hover:bg-white/10 hover:text-white text-sm font-semibold whitespace-nowrap" data-testid="button-nav-login">Login</Button></Link>
-            <Link href="/register"><Button size="sm" className="bg-white text-primary hover:bg-white/90 text-sm font-semibold whitespace-nowrap" data-testid="button-nav-signup">Sign Up Free</Button></Link>
+    <>
+      <nav className="fixed top-0 left-0 right-0 z-50 px-4 md:px-6 lg:px-8 pt-2">
+        <div className="max-w-[1800px] mx-auto">
+          <div className={`w-full transition-all duration-300 rounded-full ${
+            scrolled ? "bg-white/80 backdrop-blur-md shadow-lg" : "bg-white"
+          }`}>
+            <div className="max-w-full px-4 md:px-6 lg:px-8">
+              <div className="flex justify-between items-center h-16 md:h-20">
+                {/* Logo */}
+                <a href="/" className="flex items-center flex-shrink-0 gap-2">
+                  <img src={logoSrc} alt="A2A Global" className="h-8 sm:h-10 md:h-12 w-auto" />
+                  <span className="font-semibold text-[#0F3DD1] text-sm md:text-base hidden sm:inline">Expert Opinion</span>
+                </a>
+
+                {/* Center divider line */}
+                <div className="hidden lg:block flex-1 mx-8">
+                  <div className="h-[1px] bg-[#0F3DD1]/20" />
+                </div>
+
+                {/* Desktop Nav */}
+                <div className="hidden md:flex items-center gap-6 lg:gap-8">
+                  <button
+                    onClick={() => scrollTo("section-how-it-works")}
+                    className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
+                    data-testid="nav-how-it-works"
+                  >
+                    How it Works
+                  </button>
+                  <button
+                    onClick={() => scrollTo("section-pricing")}
+                    className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
+                    data-testid="nav-pricing"
+                  >
+                    Pricing
+                  </button>
+                  <button
+                    onClick={() => scrollTo("section-faq")}
+                    className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
+                    data-testid="nav-faq"
+                  >
+                    FAQ
+                  </button>
+
+                  {/* Register + Login buttons with hover morph */}
+                  <div className="flex items-center gap-2 relative min-w-[200px] justify-end" onMouseLeave={() => setHoveredBtn(null)}>
+                    <Link href="/register">
+                      <span
+                        onMouseEnter={() => setHoveredBtn("register")}
+                        className={`relative z-10 inline-flex items-center justify-center text-[15px] font-medium transition-all duration-300 ease-in-out h-11 rounded-full border border-gray-300 hover:border-[#0F3DD1] text-[#686868] hover:text-[#0F3DD1] cursor-pointer ${
+                          hoveredBtn === "login" ? "w-11 px-0" : "px-5"
+                        }`}
+                        data-testid="button-nav-signup"
+                      >
+                        {hoveredBtn === "login" ? (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                        ) : (
+                          <span className="flex items-center gap-2 whitespace-nowrap">
+                            Sign Up
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                          </span>
+                        )}
+                      </span>
+                    </Link>
+                    <Link href="/login">
+                      <span
+                        onMouseEnter={() => setHoveredBtn("login")}
+                        className={`relative z-10 inline-flex items-center justify-center transition-all duration-300 ease-in-out bg-[#0F3DD1] text-white h-11 rounded-full cursor-pointer ${
+                          hoveredBtn === "login" ? "px-5" : "w-11 px-0"
+                        }`}
+                        data-testid="button-nav-login"
+                      >
+                        {hoveredBtn === "login" ? (
+                          <span className="flex items-center gap-2 whitespace-nowrap text-[15px] font-semibold">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                            Login
+                          </span>
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                        )}
+                      </span>
+                    </Link>
+                  </div>
+                </div>
+
+                {/* Mobile hamburger */}
+                {!mobileOpen && (
+                  <button className="md:hidden p-2" onClick={() => setMobileOpen(true)} data-testid="button-mobile-menu" aria-label="Menu">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#686868" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
-        {/* Mobile: Login + Sign Up + hamburger */}
-        <div className="flex lg:hidden items-center gap-2">
-          <Link href="/login"><Button size="sm" variant="outline" className="border-white/40 text-white hover:bg-white/10 hover:text-white text-xs font-semibold px-3 py-1" data-testid="button-nav-login-mobile">Login</Button></Link>
-          <Link href="/register"><Button size="sm" className="bg-white text-primary hover:bg-white/90 text-xs font-semibold px-3 py-1" data-testid="button-nav-signup-mobile">Sign Up</Button></Link>
-          <button onClick={() => setMobileOpen(!mobileOpen)} className="text-white p-1.5" data-testid="button-mobile-menu" aria-label="Menu">
-            {mobileOpen ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-            )}
-          </button>
+      </nav>
+
+      {/* Mobile Nav Overlay (fullscreen with blur, matching payments style) */}
+      <div className={`md:hidden fixed inset-0 z-40 transition-all duration-500 ease-in-out ${mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}>
+        <div
+          className={`absolute inset-0 transition-all duration-500 ${mobileOpen ? "backdrop-blur-xl" : "backdrop-blur-none"}`}
+          style={{ background: mobileOpen ? "linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(240,245,255,0.95) 50%, rgba(255,255,255,0.92) 100%)" : "transparent" }}
+          onClick={() => setMobileOpen(false)}
+        />
+        <button className="absolute top-6 right-6 p-2 z-10" onClick={() => setMobileOpen(false)} aria-label="Close menu">
+          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#686868" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div className={`relative h-full flex flex-col pt-24 px-8 transition-all duration-500 ${mobileOpen ? "translate-y-0 opacity-100" : "-translate-y-8 opacity-0"}`}>
+          <div className="space-y-2">
+            {[
+              ["section-how-it-works", "How it Works", 100],
+              ["section-pricing", "Pricing", 150],
+              ["section-faq", "FAQ", 200],
+            ].map(([id, label, delay]) => (
+              <button
+                key={id as string}
+                onClick={() => { scrollTo(id as string); setMobileOpen(false); }}
+                className={`flex items-center gap-3 py-4 w-full text-left text-xl font-medium text-[#686868] hover:text-[#0F3DD1] transition-all duration-300 border-b border-gray-100 ${mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-4 opacity-0"}`}
+                style={{ transitionDelay: mobileOpen ? `${delay}ms` : "0ms" }}
+              >
+                <span className="w-2.5 h-2.5 rounded-full bg-[#0F3DD1]/30" />
+                {label as string}
+              </button>
+            ))}
+            <Link href="/login">
+              <span
+                className={`flex items-center gap-3 py-4 text-xl font-medium text-[#686868] hover:text-[#0F3DD1] transition-all duration-300 border-b border-gray-100 cursor-pointer ${mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-4 opacity-0"}`}
+                style={{ transitionDelay: mobileOpen ? "250ms" : "0ms" }}
+                onClick={() => setMobileOpen(false)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                Login
+              </span>
+            </Link>
+          </div>
+          <div className={`mt-8 transition-all duration-500 ${mobileOpen ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`} style={{ transitionDelay: mobileOpen ? "350ms" : "0ms" }}>
+            <Link href="/register">
+              <span
+                className="block w-full h-14 rounded-full text-lg font-semibold text-white text-center leading-[56px] cursor-pointer"
+                style={{ background: "linear-gradient(135deg, #0F3DD1 0%, #1a4fe0 50%, #2961f0 100%)" }}
+                onClick={() => setMobileOpen(false)}
+              >
+                Sign Up Free
+              </span>
+            </Link>
+          </div>
         </div>
       </div>
-      {/* Mobile dropdown */}
-      {mobileOpen && (
-        <div className="lg:hidden mt-3 bg-[#081F6B]/95 backdrop-blur-lg rounded-xl p-4 space-y-1 border border-white/10">
-          <button onClick={() => { scrollTo("section-how-it-works"); setMobileOpen(false); }} className="block w-full text-left text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10">How it Works</button>
-          <button onClick={() => { scrollTo("section-pricing"); setMobileOpen(false); }} className="block w-full text-left text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10">Pricing</button>
-          <div className="border-t border-white/10 my-2" />
-          <Link href="/login"><span className="block w-full text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10 cursor-pointer" onClick={() => setMobileOpen(false)}>Client Portal</span></Link>
-          <Link href="/login"><span className="block w-full text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10 cursor-pointer" onClick={() => setMobileOpen(false)}>Expert Portal</span></Link>
-          <div className="border-t border-white/10 my-2" />
-          <Link href="/login"><span className="block w-full text-center border border-white/40 text-white font-semibold text-sm py-2.5 px-3 rounded-lg cursor-pointer" onClick={() => setMobileOpen(false)} data-testid="button-mobile-login">Login</span></Link>
-          <Link href="/register"><span className="block w-full text-center bg-white text-primary font-semibold text-sm py-2.5 px-3 rounded-lg mt-2 cursor-pointer" onClick={() => setMobileOpen(false)}>Sign Up Free</span></Link>
-        </div>
-      )}
-    </nav>
+    </>
   );
 }
 
