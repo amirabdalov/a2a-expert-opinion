@@ -1749,8 +1749,11 @@ export async function registerRoutes(
   // AI Chat for requests
   app.post("/api/chat", async (req, res) => {
     try {
-      const { messages: chatMessages, category } = req.body;
-      const text = await getAIResponse(chatMessages, category || "finance", 1024);
+      const { messages: chatMessages, message, category } = req.body;
+      // Support both { messages: [...] } and { message: "string" } formats
+      const msgs = chatMessages || (message ? [{ role: "user", content: message }] : []);
+      if (!msgs.length) return res.status(400).json({ error: true, message: "No message provided" });
+      const text = await getAIResponse(msgs, category || "finance", 1024);
       return res.json({ content: text });
     } catch (e: any) {
       console.error("Chat error:", e);
