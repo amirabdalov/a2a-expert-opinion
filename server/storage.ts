@@ -1,4 +1,4 @@
-import bcryptPkg from "bcrypt";
+import bcryptPkg from "bcryptjs";
 import {
   type User, type InsertUser, users,
   type Expert, type InsertExpert, experts,

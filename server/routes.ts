@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage, sqlite } from "./storage";
 import { otpRegisterSchema, otpVerifySchema, otpLoginSchema } from "@shared/schema";
 import crypto from "crypto";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { v4 as uuidv4 } from "uuid";
 import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
