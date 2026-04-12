@@ -1,3 +1,4 @@
+import bcryptPkg from "bcrypt";
 import {
   type User, type InsertUser, users,
   type Expert, type InsertExpert, experts,
@@ -198,9 +199,7 @@ sqlite.exec(`
 // Auto-seed admin accounts on fresh database
 const adminCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM admins").get() as { cnt: number };
 if (adminCount.cnt === 0) {
-  // bcrypt.hashSync is available synchronously
-  const bcryptLib = require("bcrypt");
-  const hash = bcryptLib.hashSync("A2A$uperAdmin2026!", 10);
+  const hash = bcryptPkg.hashSync("A2A$uperAdmin2026!", 10);
   sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("amir@a2a.global", hash, "Amir (Admin)");
   sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("oleg@a2a.global", hash, "Oleg (Admin)");
   console.log("[DB] Admin accounts seeded.");
@@ -208,8 +207,7 @@ if (adminCount.cnt === 0) {
 // Auto-seed demo accounts on fresh database
 const userCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM users").get() as { cnt: number };
 if (userCount.cnt === 0) {
-  const bcryptLib2 = require("bcrypt");
-  const pwHash = bcryptLib2.hashSync("password123", 10);
+  const pwHash = bcryptPkg.hashSync("password123", 10);
   const now = new Date().toISOString();
 
   // demo_client — Alex Johnson
