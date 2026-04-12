@@ -31,7 +31,8 @@ function AppRouter() {
       <Route path="/terms" component={TermsPage} />
       <Route path="/privacy" component={PrivacyPage} />
       <Route path="/cookies" component={CookiesPage} />
-      <Route path="/payments" component={PaymentsPage} />
+      {/* Payments page removed from public nav for Stripe submission — standby access only */}
+      <Route path="/payments-standby" component={PaymentsPage} />
       <Route component={NotFound} />
     </Switch>
   );

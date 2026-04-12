@@ -934,7 +934,6 @@ function Footer() {
                 <button onClick={() => scrollTo("section-ai-mistakes")} className="block hover:text-primary transition-colors cursor-pointer">AI Mistakes</button>
                 <button onClick={() => scrollTo("section-pricing")} className="block hover:text-primary transition-colors cursor-pointer">Expert Tiers</button>
                 <button onClick={() => scrollTo("section-categories")} className="block hover:text-primary transition-colors cursor-pointer">Categories</button>
-                <Link href="/payments" className="block hover:text-primary transition-colors">Payments</Link>
               </div>
             </div>
             <div>
@@ -991,7 +990,6 @@ function LandingNav() {
           <div className="flex items-center" style={{ gap: '2rem' }}>
             <button onClick={() => scrollTo("section-how-it-works")} className="text-white/70 hover:text-white text-sm whitespace-nowrap" data-testid="nav-how-it-works">How it Works</button>
             <button onClick={() => scrollTo("section-pricing")} className="text-white/70 hover:text-white text-sm whitespace-nowrap" data-testid="nav-pricing">Pricing</button>
-            <Link href="/payments"><span className="text-white/70 hover:text-white text-sm whitespace-nowrap cursor-pointer" data-testid="nav-payments">Payments</span></Link>
             <Link href="/login"><span className="text-white/70 hover:text-white text-sm whitespace-nowrap cursor-pointer" data-testid="button-nav-login">Client Portal</span></Link>
             <Link href="/login"><span className="text-white/70 hover:text-white text-sm whitespace-nowrap cursor-pointer" data-testid="button-nav-expert-login">Expert Portal</span></Link>
             <Link href="/login"><Button size="sm" variant="outline" className="border-white/40 text-white hover:bg-white/10 hover:text-white text-sm font-semibold whitespace-nowrap" data-testid="button-nav-login">Login</Button></Link>
@@ -1016,7 +1014,6 @@ function LandingNav() {
         <div className="lg:hidden mt-3 bg-[#081F6B]/95 backdrop-blur-lg rounded-xl p-4 space-y-1 border border-white/10">
           <button onClick={() => { scrollTo("section-how-it-works"); setMobileOpen(false); }} className="block w-full text-left text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10">How it Works</button>
           <button onClick={() => { scrollTo("section-pricing"); setMobileOpen(false); }} className="block w-full text-left text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10">Pricing</button>
-          <Link href="/payments"><span className="block w-full text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10 cursor-pointer" onClick={() => setMobileOpen(false)}>Payments</span></Link>
           <div className="border-t border-white/10 my-2" />
           <Link href="/login"><span className="block w-full text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10 cursor-pointer" onClick={() => setMobileOpen(false)}>Client Portal</span></Link>
           <Link href="/login"><span className="block w-full text-white/80 hover:text-white text-sm py-2 px-3 rounded-lg hover:bg-white/10 cursor-pointer" onClick={() => setMobileOpen(false)}>Expert Portal</span></Link>
