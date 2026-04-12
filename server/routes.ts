@@ -590,15 +590,34 @@ export async function registerRoutes(
     return res.json({ ok: true });
   });
 
-  // ─── BACKUP TEST ───
+  // ─── BACKUP TEST & HEALTH ───
   app.get("/api/admin/backup-test", async (_req, res) => {
     try {
-      const { backupDatabase } = await import("./db-persistence");
+      const { backupDatabase, isBackupHealthy } = await import("./db-persistence");
+      const beforeStatus = isBackupHealthy();
       await backupDatabase();
-      res.json({ ok: true, message: "Backup triggered. Check server logs." });
+      const afterStatus = isBackupHealthy();
+      res.json({ 
+        ok: afterStatus, 
+        wasHealthy: beforeStatus,
+        message: afterStatus 
+          ? "Backup successful. User data is safe." 
+          : "BACKUP FAILED. Check Cloud Run logs. Run: gcloud storage buckets add-iam-policy-binding gs://a2a-global-data --member=serviceAccount:506299896481-compute@developer.gserviceaccount.com --role=roles/storage.admin --project=winter-jet-492110-g9"
+      });
     } catch (err: any) {
       res.json({ ok: false, error: err.message });
     }
+  });
+
+  app.get("/api/health", async (_req, res) => {
+    const { isBackupHealthy } = await import("./db-persistence");
+    const userCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM users").get() as any;
+    res.json({ 
+      status: "running",
+      backupHealthy: isBackupHealthy(),
+      totalUsers: userCount?.cnt || 0,
+      warning: !isBackupHealthy() ? "DATABASE BACKUP IS NOT WORKING. User data will be lost on next deploy." : null
+    });
   });
 
   // ─── TRACKING ───

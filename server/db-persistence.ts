@@ -19,17 +19,31 @@ async function getGcpToken(): Promise<string | null> {
   }
 }
 
+let lastBackupSuccess = false;
+let backupAttempts = 0;
+
+export function isBackupHealthy(): boolean { return lastBackupSuccess; }
+
 export async function backupDatabase(): Promise<void> {
   try {
-    if (!existsSync(DB_PATH)) return;
+    if (!existsSync(DB_PATH)) {
+      console.log("[DB-BACKUP] No data.db file found, nothing to backup");
+      return;
+    }
     const token = await getGcpToken();
     if (!token) {
-      console.log("[DB-BACKUP] No GCP token available, skipping backup");
+      console.error("[DB-BACKUP] \u26a0\ufe0f NO GCP TOKEN AVAILABLE. Database is NOT being backed up. User data WILL BE LOST on next deploy!");
+      console.error("[DB-BACKUP] This is normal in local dev. On Cloud Run, check service account permissions.");
+      lastBackupSuccess = false;
       return;
     }
     const data = readFileSync(DB_PATH);
+    if (data.length < 100) {
+      console.log("[DB-BACKUP] Database too small, skipping (likely empty)");
+      return;
+    }
     const url = `https://storage.googleapis.com/upload/storage/v1/b/${BUCKET}/o?uploadType=media&name=${encodeURIComponent(OBJECT)}`;
-    console.log(`[DB-BACKUP] Uploading ${data.length} bytes to gs://${BUCKET}/${OBJECT}...`);
+    backupAttempts++;
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -41,12 +55,20 @@ export async function backupDatabase(): Promise<void> {
     });
     const responseText = await res.text();
     if (res.ok) {
-      console.log(`[DB-BACKUP] Successfully backed up database to gs://${BUCKET}/${OBJECT} (${data.length} bytes)`);
+      lastBackupSuccess = true;
+      console.log(`[DB-BACKUP] \u2705 Success: ${data.length} bytes \u2192 gs://${BUCKET}/${OBJECT} (attempt #${backupAttempts})`);
     } else {
-      console.error(`[DB-BACKUP] Backup failed: ${res.status} — ${responseText}`);
+      lastBackupSuccess = false;
+      console.error(`[DB-BACKUP] \u274c FAILED (attempt #${backupAttempts}): HTTP ${res.status}`);
+      console.error(`[DB-BACKUP] Response: ${responseText.substring(0, 500)}`);
+      if (res.status === 403) {
+        console.error(`[DB-BACKUP] \u26a0\ufe0f PERMISSION DENIED. Run this command to fix:`);
+        console.error(`[DB-BACKUP] gcloud storage buckets add-iam-policy-binding gs://${BUCKET} --member="serviceAccount:506299896481-compute@developer.gserviceaccount.com" --role="roles/storage.admin" --project=winter-jet-492110-g9`);
+      }
     }
   } catch (err) {
-    console.error("[DB-BACKUP] Error during backup:", err);
+    lastBackupSuccess = false;
+    console.error("[DB-BACKUP] \u274c Exception during backup:", err);
   }
 }
 
