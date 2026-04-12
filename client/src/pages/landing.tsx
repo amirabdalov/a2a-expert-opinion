@@ -51,11 +51,15 @@ function Hero() {
               Get Expert Opinion <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </Link>
-          <Link href="/register?role=expert">
-            <Button size="lg" variant="outline" className="border-white/40 text-white hover:bg-white/10 px-8 text-base font-semibold" data-testid="button-become-expert">
-              Become an Expert
-            </Button>
-          </Link>
+          <Button
+            size="lg"
+            variant="outline"
+            className="border-white/40 text-white hover:bg-white/10 px-8 text-base font-semibold"
+            data-testid="button-become-expert"
+            onClick={() => { window.location.hash = '/register?role=expert'; }}
+          >
+            Become an Expert
+          </Button>
         </div>
         <p className="text-white font-medium text-sm drop-shadow-[0_1px_4px_rgba(0,0,0,0.4)]">
           $5 free credits for new users
@@ -95,6 +99,7 @@ function VideoSection() {
           muted
           loop
           playsInline
+          poster="/a2a-blue-logo.svg"
           className="w-full rounded-xl shadow-lg"
           data-testid="video-promo"
         >
@@ -432,6 +437,7 @@ function TierPricing() {
       name: "Standard",
       badge: "bg-blue-500",
       priceRange: "$0.90 — $90/hr",
+      perQuestion: "From $5 per question",
       cardStyle: "border border-[#E5E7EB] bg-white dark:bg-card",
       headerStyle: "",
       clientRequest: `I'm co-founding a startup with two friends. We're splitting equity 33/33/33. ChatGPT said this is fine and common for early-stage startups.\n\nWhat AI Told Them:\nAI confirmed that equal splits are very common among co-founders and reflect equal commitment and trust. It mentioned vesting schedules as something to consider eventually and noted that investor preference for clean cap tables makes equal splits straightforward.`,
@@ -444,6 +450,7 @@ function TierPricing() {
       name: "Pro",
       badge: "bg-indigo-500",
       priceRange: "$78 — $780/hr",
+      perQuestion: "From $10 per question",
       cardStyle: "border-2 border-primary shadow-lg ring-1 ring-primary bg-gradient-to-b from-[#DAE3FF] to-white dark:from-primary/10 dark:to-card",
       headerStyle: "popular",
       clientRequest: `We're a profitable $4M ARR B2B SaaS company. A private equity firm approached us about a minority recapitalization \u2014 taking 30% for $2.5M. AI says this is a good deal for liquidity without losing control. Should we take it?\n\nWhat AI Told Them:\nAI framed minority recaps as a clean liquidity event that lets founders diversify personal wealth while retaining majority control and operational independence. It noted that PE firms bring networks and operational expertise and suggested negotiating board representation carefully.`,
@@ -456,6 +463,7 @@ function TierPricing() {
       name: "Guru",
       badge: "bg-amber-500",
       priceRange: "$690 — $2,070/hr",
+      perQuestion: "From $15 per question",
       cardStyle: "border border-[#E5E7EB] bg-[#171717] text-white",
       headerStyle: "premium",
       clientRequest: `I'm the CFO of a healthcare staffing company doing $80M revenue. We're finalizing a $15M debt facility with a regional bank. The covenants look standard to me. Our outside counsel reviewed the contract and said it looks fine. I just want a second set of eyes.\n\nWhat AI Told Them:\nAI reviewed the summary terms provided and confirmed that EBITDA-based covenants, debt service coverage ratios, and MAC (material adverse change) clauses are standard in commercial lending. It noted the 3.5x leverage covenant and 1.2x DSCR looked reasonable for a company at this revenue level.`,
@@ -473,7 +481,8 @@ function TierPricing() {
           <span className="bg-gradient-to-r from-[#0F3DD1] to-[#686868] bg-clip-text text-transparent">Expert Tiers — Sample Reports</span>
         </h2>
         <p className="text-muted-foreground text-center mb-4 text-sm">See what you get at each tier.</p>
-        <p className="text-muted-foreground text-center mb-10 text-xs">Price includes 2 follow-up clarification questions with the expert</p>
+        <p className="text-muted-foreground text-center mb-1 text-xs">Price includes 2 follow-up clarification questions with the expert</p>
+        <p className="text-muted-foreground text-center mb-10 text-xs">Pricing depends on complexity and expert credentials</p>
 
         <div className="grid lg:grid-cols-3 gap-6">
           {tiers.map((tier) => {
@@ -492,6 +501,7 @@ function TierPricing() {
                   <div className="mb-4">
                     <Badge className={`${tier.badge} text-white text-xs mb-2`}>{tier.name}</Badge>
                     <p className={`text-lg font-bold ${isPremium ? "text-white" : ""}`}>{tier.priceRange}</p>
+                    <p className={`text-sm font-semibold mt-0.5 ${isPremium ? "text-amber-400" : "text-primary"}`}>{tier.perQuestion}</p>
                   </div>
 
                   {/* Features */}
@@ -732,7 +742,7 @@ const PRESS_CITATIONS = [
     badge: "Deloitte",
     badgeColor: "bg-[#86BC25] text-[#171717]",
     quote: "47% of business executives have made major decisions based on unverified AI content.",
-    link: "",
+    link: "https://www2.deloitte.com/us/en/insights/focus/tech-trends/2024/ai-trust-gap-business-leaders-employees.html",
   },
   {
     publication: "Quinnipiac University",
@@ -774,7 +784,7 @@ function PressCitations() {
         </h2>
         <p className="text-muted-foreground text-center mb-10 text-sm">Leading publications highlight the risks of relying on AI without expert oversight.</p>
 
-        <div className="overflow-hidden" data-testid="marquee-container">
+        <div className="overflow-hidden pl-4" data-testid="marquee-container">
           <div
             ref={marqueeRef}
             className="flex gap-6 marquee-track"
@@ -903,11 +913,14 @@ function BecomeExpert() {
             </div>
           ))}
         </div>
-        <Link href="/register?role=expert">
-          <Button size="lg" className="px-8 bg-gradient-to-br from-[#0F3DD1] to-[#171717] text-white hover:opacity-90" data-testid="button-apply-expert">
-            Apply as Expert <ChevronRight className="ml-1 h-4 w-4" />
-          </Button>
-        </Link>
+        <Button
+          size="lg"
+          className="px-8 bg-gradient-to-br from-[#0F3DD1] to-[#171717] text-white hover:opacity-90"
+          data-testid="button-apply-expert"
+          onClick={() => { window.location.hash = '/register?role=expert'; }}
+        >
+          Apply as Expert <ChevronRight className="ml-1 h-4 w-4" />
+        </Button>
         <p className="text-sm text-[#6B7280] mt-4">Sign up free. Get immediate notification once a relevant request is submitted</p>
       </div>
     </section>
@@ -931,27 +944,27 @@ function Footer() {
             <div>
               <p className="font-semibold mb-2">Product</p>
               <div className="space-y-1.5 text-muted-foreground">
-                <button onClick={() => scrollTo("section-how-it-works")} className="block hover:text-primary transition-colors cursor-pointer">How it Works</button>
-                <button onClick={() => scrollTo("section-ai-mistakes")} className="block hover:text-primary transition-colors cursor-pointer">AI Mistakes</button>
-                <button onClick={() => scrollTo("section-pricing")} className="block hover:text-primary transition-colors cursor-pointer">Expert Tiers</button>
-                <button onClick={() => scrollTo("section-categories")} className="block hover:text-primary transition-colors cursor-pointer">Categories</button>
+                <a href="#section-how-it-works" onClick={(e) => { e.preventDefault(); scrollTo("section-how-it-works"); }} className="block hover:text-primary transition-colors">How it Works</a>
+                <a href="#section-ai-mistakes" onClick={(e) => { e.preventDefault(); scrollTo("section-ai-mistakes"); }} className="block hover:text-primary transition-colors">AI Mistakes</a>
+                <a href="#section-pricing" onClick={(e) => { e.preventDefault(); scrollTo("section-pricing"); }} className="block hover:text-primary transition-colors">Expert Tiers</a>
+                <a href="#section-categories" onClick={(e) => { e.preventDefault(); scrollTo("section-categories"); }} className="block hover:text-primary transition-colors">Categories</a>
               </div>
             </div>
             <div>
               <p className="font-semibold mb-2">Portals</p>
               <div className="space-y-1.5 text-muted-foreground">
                 <Link href="/login" className="block hover:text-primary transition-colors">Client Portal</Link>
-                <Link href="/login" className="block hover:text-primary transition-colors">Expert Portal</Link>
-                <Link href="/register?role=expert" className="block hover:text-primary transition-colors">Become an Expert</Link>
-                <button onClick={() => scrollTo("section-faq")} className="block hover:text-primary transition-colors cursor-pointer">FAQ</button>
+                <a href="#/login?role=expert" className="block hover:text-primary transition-colors" onClick={(e) => { e.preventDefault(); window.location.hash = '/login?role=expert'; }}>Expert Portal</a>
+                <a href="#/register?role=expert" className="block hover:text-primary transition-colors" onClick={(e) => { e.preventDefault(); window.location.hash = '/register?role=expert'; }}>Become an Expert</a>
+                <a href="#section-faq" onClick={(e) => { e.preventDefault(); scrollTo("section-faq"); }} className="block hover:text-primary transition-colors">FAQ</a>
               </div>
             </div>
             <div>
               <p className="font-semibold mb-2">Company</p>
               <div className="space-y-1.5 text-muted-foreground">
-                <button onClick={() => scrollTo("section-solutions")} className="block hover:text-primary transition-colors cursor-pointer">How Experts Solve</button>
-                <button onClick={() => scrollTo("section-press")} className="block hover:text-primary transition-colors cursor-pointer">The Press</button>
-                <button onClick={() => scrollTo("section-try-it")} className="block hover:text-primary transition-colors cursor-pointer">Try AI Free</button>
+                <a href="#section-solutions" onClick={(e) => { e.preventDefault(); scrollTo("section-solutions"); }} className="block hover:text-primary transition-colors">How Experts Solve</a>
+                <a href="#section-press" onClick={(e) => { e.preventDefault(); scrollTo("section-press"); }} className="block hover:text-primary transition-colors">The Press</a>
+                <a href="#section-try-it" onClick={(e) => { e.preventDefault(); scrollTo("section-try-it"); }} className="block hover:text-primary transition-colors">Try AI Free</a>
                 <a href="tel:+13026210214" className="block hover:text-primary transition-colors">+1 (302) 621-0214</a>
                 <a href="mailto:support@a2a.global" className="block hover:text-primary transition-colors">support@a2a.global</a>
                 <a href="https://a2a.global" target="_blank" rel="noopener" className="block hover:text-primary transition-colors">A2A Global</a>
@@ -999,7 +1012,7 @@ function LandingNav() {
       <nav className="fixed top-0 left-0 right-0 z-50 px-4 md:px-6 lg:px-8 pt-2">
         <div className="max-w-[1800px] mx-auto">
           <div className={`w-full transition-all duration-300 rounded-full ${
-            scrolled ? "bg-white/80 backdrop-blur-md shadow-lg" : "bg-white"
+            scrolled ? "bg-white shadow-lg" : "bg-white"
           }`}>
             <div className="max-w-full px-4 md:px-6 lg:px-8">
               <div className="flex justify-between items-center h-16 md:h-20">
@@ -1016,27 +1029,30 @@ function LandingNav() {
 
                 {/* Desktop Nav */}
                 <div className="hidden md:flex items-center gap-6 lg:gap-8">
-                  <button
-                    onClick={() => scrollTo("section-how-it-works")}
+                  <a
+                    href="#section-how-it-works"
+                    onClick={(e) => { e.preventDefault(); scrollTo("section-how-it-works"); }}
                     className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
                     data-testid="nav-how-it-works"
                   >
                     How it Works
-                  </button>
-                  <button
-                    onClick={() => scrollTo("section-pricing")}
+                  </a>
+                  <a
+                    href="#section-pricing"
+                    onClick={(e) => { e.preventDefault(); scrollTo("section-pricing"); }}
                     className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
                     data-testid="nav-pricing"
                   >
                     Pricing
-                  </button>
-                  <button
-                    onClick={() => scrollTo("section-faq")}
+                  </a>
+                  <a
+                    href="#section-faq"
+                    onClick={(e) => { e.preventDefault(); scrollTo("section-faq"); }}
                     className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
                     data-testid="nav-faq"
                   >
                     FAQ
-                  </button>
+                  </a>
 
                   {/* Register + Login buttons with hover morph */}
                   <div className="flex items-center gap-2 relative min-w-[200px] justify-end" onMouseLeave={() => setHoveredBtn(null)}>

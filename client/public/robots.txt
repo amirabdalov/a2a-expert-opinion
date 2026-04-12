@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://a2a.global/sitemap.xml

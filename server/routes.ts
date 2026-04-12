@@ -993,6 +993,7 @@ export async function registerRoutes(
         responseTime: expert.responseTime,
         verified: expert.verified === 1,
         availability: expert.availability === 1,
+        photoUrl: user?.photo ? `/api/users/${user.id}/photo` : null,
       });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });

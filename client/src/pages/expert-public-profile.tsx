@@ -70,8 +70,17 @@ export default function ExpertPublicProfile() {
       <div className="max-w-3xl mx-auto px-6 py-8">
         {/* Profile header */}
         <div className="flex items-start gap-6 mb-8" data-testid="profile-header">
-          <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-            <UserCircle className="h-10 w-10 text-primary" />
+          <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center shrink-0 overflow-hidden">
+            {user?.photo ? (
+              <img
+                src={`/api/users/${user.id}/photo`}
+                alt={user.name}
+                className="w-full h-full object-cover"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+              />
+            ) : (
+              <UserCircle className="h-10 w-10 text-primary" />
+            )}
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">

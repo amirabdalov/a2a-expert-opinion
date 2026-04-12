@@ -28,6 +28,7 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [termsAccepted, setTermsAccepted] = useState(false);
   // BUG-2: Only show terms error after the user has tried to submit
   const [submitted, setSubmitted] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [existingEmailLogin, setExistingEmailLogin] = useState(false);
   // Resend code timer
   const [resendTimer, setResendTimer] = useState(0);
@@ -42,18 +43,33 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   }, []);
 
   // BUG-1 + BUG-005: Read URL params for role pre-selection and prefill data
-  // Parse hash manually to handle hash-router query params
+  // Parse hash manually (for window.location.hash = '/register?role=expert' navigations)
+  // Also check window.location.search as fallback (for wouter Link navigations)
   const urlPrefill = (() => {
     try {
+      // First try hash query params (e.g. #/register?role=expert)
       const hash = window.location.hash;
       const qIdx = hash.indexOf('?');
-      if (qIdx === -1) return null;
-      const params = new URLSearchParams(hash.slice(qIdx + 1));
-      return {
-        role: params.get('role') as Role | null,
-        request: params.get('request'),
-        prefill: params.get('prefill'),
-      };
+      if (qIdx !== -1) {
+        const params = new URLSearchParams(hash.slice(qIdx + 1));
+        if (params.get('role') || params.get('prefill') || params.get('request')) {
+          return {
+            role: params.get('role') as Role | null,
+            request: params.get('request'),
+            prefill: params.get('prefill'),
+          };
+        }
+      }
+      // Fallback: check window.location.search (for wouter Link-based navigation)
+      if (window.location.search) {
+        const params = new URLSearchParams(window.location.search);
+        return {
+          role: params.get('role') as Role | null,
+          request: params.get('request'),
+          prefill: params.get('prefill'),
+        };
+      }
+      return null;
     } catch {
       return null;
     }
@@ -61,9 +77,14 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
 
   // BUG-1: Apply URL role param on mount
   useEffect(() => {
+    // Check hash params first
     const hashParts = window.location.hash.split('?');
-    const params = new URLSearchParams(hashParts[1] || '');
-    const roleParam = params.get('role');
+    const hashParams = new URLSearchParams(hashParts[1] || '');
+    const roleFromHash = hashParams.get('role');
+    // Fallback to search params
+    const searchParams = new URLSearchParams(window.location.search);
+    const roleFromSearch = searchParams.get('role');
+    const roleParam = roleFromHash || roleFromSearch;
     if (roleParam === 'expert') setRole('expert');
     else if (roleParam === 'client') setRole('client');
   }, []);
@@ -95,6 +116,16 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     e.preventDefault();
     // BUG-2: Mark as submitted so terms error shows
     setSubmitted(true);
+    // Validate form fields
+    const errors: Record<string, string> = {};
+    if (isRegister && !name.trim()) errors.name = "Full name is required";
+    if (!email.trim()) errors.email = "Email address is required";
+    if (isRegister && !termsAccepted) errors.terms = "Please accept the Terms to continue";
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
+      return;
+    }
+    setFormErrors({});
     if (isRegister && !termsAccepted) return;
     setLoading(true);
     try {
@@ -228,7 +259,7 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
             {step === "email" && (
               <>
                 <CardTitle className="text-xl mt-1">
-                  {isRegister ? "Create your account" : "Welcome back"}
+                  {isRegister ? "Create your account" : (role === "expert" ? "Welcome back, Expert" : "Welcome back")}
                 </CardTitle>
                 <CardDescription className="text-sm mt-1">
                   {isRegister
@@ -304,13 +335,13 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                       <Input
                         id="name"
                         value={name}
-                        onChange={(e) => setName(e.target.value)}
+                        onChange={(e) => { setName(e.target.value); setFormErrors((prev) => ({ ...prev, name: '' })); }}
                         placeholder="Jane Smith"
-                        className="pl-9"
-                        required
+                        className={`pl-9 ${formErrors.name ? 'border-destructive' : ''}`}
                         data-testid="input-name"
                       />
                     </div>
+                    {formErrors.name && <p className="text-xs text-destructive mt-1">{formErrors.name}</p>}
                   </div>
                 )}
 
@@ -323,20 +354,20 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                       id="email"
                       type="email"
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      onChange={(e) => { setEmail(e.target.value); setFormErrors((prev) => ({ ...prev, email: '' })); }}
                       placeholder="you@example.com"
-                      className="pl-9"
-                      required
+                      className={`pl-9 ${formErrors.email ? 'border-destructive' : ''}`}
                       data-testid="input-email"
                     />
                   </div>
+                  {formErrors.email && <p className="text-xs text-destructive mt-1">{formErrors.email}</p>}
                 </div>
 
                 {/* UX-5: "Create Account" for signup, "Send Verification Code" for login */}
                 <Button
                   type="submit"
                   className="w-full"
-                  disabled={loading || (isRegister && !termsAccepted)}
+                  disabled={loading}
                   data-testid="button-send-code"
                 >
                   {loading ? "Sending..." : isRegister ? "Create Account" : "Send Verification Code"}
@@ -344,7 +375,7 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
 
                 {/* BUG-2: Only show terms error after attempted submit */}
                 {isRegister && submitted && !termsAccepted && (
-                  <p className="text-xs text-destructive text-center">Please accept the Terms of Use and Privacy Policy to continue.</p>
+                  <p className="text-xs text-destructive text-center">{formErrors.terms || "Please accept the Terms of Use and Privacy Policy to continue."}</p>
                 )}
 
                 {/* Terms Acceptance — mandatory checkbox */}

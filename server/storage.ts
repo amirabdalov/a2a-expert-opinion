@@ -239,6 +239,17 @@ if (userCount.cnt === 0) {
   // beta_user — Mike Thompson (client)
   sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("beta_user", pwHash, "Mike Thompson", "mike@startup.io", "client", 15, "StartupIO", "individual", 2500, 1, 0);
 
+  // Add demo requests for the available queue
+  sqlite.prepare(`INSERT INTO requests (user_id, title, description, category, tier, status, credits_cost, created_at, service_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    clientId, "Review my investment portfolio allocation", "I have $100K split between stocks, bonds, and crypto. AI suggested 60/30/10 split. Is this appropriate for a 35-year-old?", "finance", "standard", "pending", 5, now, "review"
+  );
+  sqlite.prepare(`INSERT INTO requests (user_id, title, description, category, tier, status, credits_cost, created_at, service_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    clientId, "Startup valuation sanity check", "AI valued my SaaS startup at $4.2M based on 10x ARR. We have $420K ARR with 15% MoM growth. Is this realistic for Series A?", "entrepreneurship", "pro", "pending", 10, now, "review"
+  );
+  sqlite.prepare(`INSERT INTO requests (user_id, title, description, category, tier, status, credits_cost, created_at, service_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    clientId, "M&A deal structure review", "Reviewing acquisition terms for a healthcare staffing company. $15M enterprise value, 5.2x EBITDA. AI flagged the MAC clause as standard.", "finance", "guru", "pending", 15, now, "custom"
+  );
+
   console.log("[DB] Demo accounts seeded (demo_client, demo_expert, demo_expert2, demo_expert3, new_expert, beta_user).");
 }
 

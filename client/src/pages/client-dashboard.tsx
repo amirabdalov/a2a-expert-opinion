@@ -2366,6 +2366,12 @@ function GlobalSearchBar({ userId, onNavigate }: { userId: number; onNavigate: (
 export default function ClientDashboard() {
   const { user, logout } = useAuth();
   const [, setLocation] = useLocation();
+  // NOTE: `view` and `selectedRequest` are React state only — not encoded in the URL hash.
+  // When a user refreshes while viewing a request detail (e.g. view="request-detail", selectedRequest=42),
+  // they will land on the dashboard overview. This is expected behavior with hash routing:
+  // the hash (#/dashboard) is preserved on refresh, but component state is reset.
+  // Deep-linking to a specific request is supported via the ?request=ID query param
+  // (handled by the useEffect below), but only when navigating from a notification link.
   const [view, setView] = useState<ClientView>(() => getPrefillData() ? "new-request" : "overview");
   const [selectedRequest, setSelectedRequest] = useState<number>(0);
   const [editDraftId, setEditDraftId] = useState<number | undefined>(undefined);
@@ -2418,6 +2424,7 @@ export default function ClientDashboard() {
   }, []);
 
   if (!user) {
+    window.history.replaceState(null, '', '#/login');
     setLocation("/login");
     return null;
   }

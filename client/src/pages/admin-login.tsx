@@ -74,7 +74,7 @@ export default function AdminLogin() {
                 id="admin-password"
                 data-testid="input-admin-password"
                 type="password"
-                placeholder="••••••••"
+                placeholder="Enter admin password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 required

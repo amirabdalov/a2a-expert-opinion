@@ -1956,6 +1956,7 @@ export default function ExpertDashboard() {
     : [];
 
   if (!user) {
+    window.history.replaceState(null, '', '#/login');
     setLocation("/login");
     return null;
   }
