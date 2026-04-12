@@ -91,11 +91,7 @@ export default function AdminLogin() {
               Sign In
             </Button>
           </form>
-          <div className="mt-4 p-3 bg-zinc-800/50 rounded-lg border border-zinc-700" data-testid="admin-credentials-hint">
-            <p className="text-xs text-zinc-400 text-center">
-              Admin credentials: <span className="text-zinc-300 font-mono">oleg@a2a.global</span> / <span className="text-zinc-300 font-mono">A2A2026!</span>
-            </p>
-          </div>
+          {/* Admin credentials hint removed (Fix 9) */}
         </CardContent>
       </Card>
     </div>

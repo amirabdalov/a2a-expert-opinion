@@ -43,25 +43,36 @@ const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any }> = [
   { id: "intelligence", label: "RL Core & BI", icon: Activity },
 ];
 
-// Generate mock time-series data
-function generateMockChartData() {
-  const days = [];
+// Fix 12: Build chart data from real API data
+function buildChartDataFromReal(
+  requests: any[] | undefined,
+  transactions: any[] | undefined
+): Array<{ date: string; requests: number; revenue: number; payouts: number }> {
+  const last30Days: Array<{ date: string; label: string }> = [];
   for (let i = 29; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
+    const isoDate = d.toISOString().slice(0, 10); // YYYY-MM-DD
     const label = `${d.getMonth() + 1}/${d.getDate()}`;
-    days.push({
-      date: label,
-      requests: Math.floor(Math.random() * 8) + 2,
-      revenue: Math.floor(Math.random() * 500) + 100,
-      payouts: Math.floor(Math.random() * 200) + 50,
-      users: Math.floor(Math.random() * 3) + 1,
-    });
+    last30Days.push({ date: isoDate, label });
   }
-  return days;
-}
 
-const CHART_DATA = generateMockChartData();
+  return last30Days.map(({ date, label }) => {
+    const reqs = (requests || []).filter((r: any) => {
+      const created = r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : null;
+      return created === date;
+    }).length;
+    const rev = (transactions || []).filter((t: any) => {
+      const created = t.createdAt ? new Date(t.createdAt).toISOString().slice(0, 10) : null;
+      return created === date && t.amount > 0;
+    }).reduce((s: number, t: any) => s + (t.amount || 0), 0);
+    const pay = (transactions || []).filter((t: any) => {
+      const created = t.createdAt ? new Date(t.createdAt).toISOString().slice(0, 10) : null;
+      return created === date && t.amount < 0;
+    }).reduce((s: number, t: any) => s + Math.abs(t.amount || 0), 0);
+    return { date: label, requests: reqs, revenue: rev, payouts: pay };
+  });
+}
 
 // ─── Cmd+K Command Palette Actions (change #14) ───
 const CMD_K_ACTIONS: Array<{ label: string; action: AdminPage | "credits"; icon: any }> = [
@@ -377,13 +388,20 @@ function OperationalMetrics() {
 
 function DashboardOverview() {
   const { data: stats } = useQuery<any>({ queryKey: ["/api/admin/stats"] });
+  // Fix 12: Fetch real data for charts
+  const { data: allRequests } = useQuery<any[]>({ queryKey: ["/api/admin/requests"] });
+  const { data: allTransactions } = useQuery<any[]>({ queryKey: ["/api/admin/transactions"] });
 
+  const chartData = buildChartDataFromReal(allRequests, allTransactions);
+  const hasChartData = chartData.some(d => d.requests > 0 || d.revenue > 0);
+
+  // Fix 11: Remove "cr" from Total Revenue — show as $X.XX
   const kpis = [
     { label: "Total Users", value: stats?.totalUsers ?? "—", icon: Users, color: "text-blue-400", bg: "bg-blue-500/10" },
     { label: "Verified Experts", value: `${stats?.verifiedExperts ?? "—"} / ${stats?.totalExperts ?? "—"}`, icon: UserCheck, color: "text-emerald-400", bg: "bg-emerald-500/10" },
     { label: "Active Requests", value: stats?.activeRequests ?? "—", icon: ClipboardList, color: "text-amber-400", bg: "bg-amber-500/10" },
-    { label: "Total Revenue", value: `${stats?.totalRevenue ?? 0} cr`, icon: DollarSign, color: "text-teal-400", bg: "bg-teal-500/10" },
-    { label: "Total Payouts", value: `$${((stats?.totalPayouts ?? 0) / 100).toFixed(0)}`, icon: ArrowDownUp, color: "text-purple-400", bg: "bg-purple-500/10" },
+    { label: "Total Revenue", value: `$${(stats?.totalRevenue ?? 0).toFixed(2)}`, icon: DollarSign, color: "text-teal-400", bg: "bg-teal-500/10" },
+    { label: "Total Payouts", value: `$${((stats?.totalPayouts ?? 0) / 100).toFixed(2)}`, icon: ArrowDownUp, color: "text-purple-400", bg: "bg-purple-500/10" },
     { label: "Avg Take Rate", value: `${((stats?.avgTakeRate ?? 0) * 100).toFixed(0)}%`, icon: PieChart, color: "text-rose-400", bg: "bg-rose-500/10" },
   ];
 
@@ -414,28 +432,32 @@ function DashboardOverview() {
       {/* Operational Metrics */}
       <OperationalMetrics />
 
-      {/* Charts */}
+      {/* Charts — Fix 12: Use real data, show empty state if none */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         <Card className="bg-zinc-900 border-zinc-800">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-zinc-300">Requests / Day (Last 30 Days)</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={CHART_DATA}>
-                <defs>
-                  <linearGradient id="reqGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#14b8a6" stopOpacity={0.3} />
-                    <stop offset="100%" stopColor="#14b8a6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} />
-                <YAxis tick={{ fill: "#71717a", fontSize: 10 }} />
-                <Tooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#e4e4e7" }} />
-                <Area type="monotone" dataKey="requests" stroke="#14b8a6" fill="url(#reqGrad)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
+            {!hasChartData ? (
+              <div className="h-[220px] flex items-center justify-center text-zinc-500 text-sm">No data yet</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={chartData}>
+                  <defs>
+                    <linearGradient id="reqGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#14b8a6" stopOpacity={0.3} />
+                      <stop offset="100%" stopColor="#14b8a6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} />
+                  <YAxis tick={{ fill: "#71717a", fontSize: 10 }} />
+                  <Tooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#e4e4e7" }} />
+                  <Area type="monotone" dataKey="requests" stroke="#14b8a6" fill="url(#reqGrad)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
@@ -444,17 +466,21 @@ function DashboardOverview() {
             <CardTitle className="text-sm text-zinc-300">Revenue vs Payouts</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={CHART_DATA}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} />
-                <YAxis tick={{ fill: "#71717a", fontSize: 10 }} />
-                <Tooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#e4e4e7" }} />
-                <Legend wrapperStyle={{ color: "#a1a1aa", fontSize: 12 }} />
-                <Bar dataKey="revenue" name="Revenue ($)" fill="#14b8a6" radius={[2, 2, 0, 0]} />
-                <Bar dataKey="payouts" name="Payouts ($)" fill="#a78bfa" radius={[2, 2, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {!hasChartData ? (
+              <div className="h-[220px] flex items-center justify-center text-zinc-500 text-sm">No data yet</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 10 }} />
+                  <YAxis tick={{ fill: "#71717a", fontSize: 10 }} />
+                  <Tooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #27272a", borderRadius: 8, color: "#e4e4e7" }} />
+                  <Legend wrapperStyle={{ color: "#a1a1aa", fontSize: 12 }} />
+                  <Bar dataKey="revenue" name="Revenue ($)" fill="#14b8a6" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="payouts" name="Payouts ($)" fill="#a78bfa" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -734,7 +760,18 @@ function ExpertsPage() {
                 return (
                   <tr key={e.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-expert-${e.id}`}>
                     <td className="px-4 py-3 text-zinc-500">#{e.id}</td>
-                    <td className="px-4 py-3 text-zinc-200 font-medium">{e.userName}</td>
+                    {/* Fix 13: Expert name clickable → public profile */}
+                    <td className="px-4 py-3 text-zinc-200 font-medium">
+                      <a
+                        href={`/#/expert/profile/${e.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:text-teal-400 hover:underline transition-colors"
+                        data-testid={`link-expert-profile-${e.id}`}
+                      >
+                        {e.userName}
+                      </a>
+                    </td>
                     <td className="px-4 py-3 text-zinc-400 text-xs">{e.education || "—"}</td>
                     <td className="px-4 py-3 text-right text-zinc-300">{e.yearsExperience}</td>
                     <td className="px-4 py-3">
@@ -940,15 +977,21 @@ function RequestsPage() {
 // ─── Transactions Page ───
 
 function TransactionsPage() {
-  const { data: transactions } = useQuery<any[]>({ queryKey: ["/api/admin/transactions"] });
+  // Fix 10: Add isLoading and error handling to prevent blank page
+  const { data: transactions, isLoading, error } = useQuery<any[]>({
+    queryKey: ["/api/admin/transactions"],
+    retry: 2,
+  });
   const [typeFilter, setTypeFilter] = useState("all");
 
-  const filtered = (transactions || []).filter((t: any) =>
-    typeFilter === "all" || t.type === typeFilter
+  const safeTransactions = Array.isArray(transactions) ? transactions : [];
+
+  const filtered = safeTransactions.filter((t: any) =>
+    typeFilter === "all" || t?.type === typeFilter
   );
 
-  const totalIn = (transactions || []).filter(t => t.amount > 0).reduce((sum: number, t: any) => sum + t.amount, 0);
-  const totalOut = (transactions || []).filter(t => t.amount < 0).reduce((sum: number, t: any) => sum + Math.abs(t.amount), 0);
+  const totalIn = safeTransactions.filter((t: any) => (t?.amount ?? 0) > 0).reduce((sum: number, t: any) => sum + (t?.amount ?? 0), 0);
+  const totalOut = safeTransactions.filter((t: any) => (t?.amount ?? 0) < 0).reduce((sum: number, t: any) => sum + Math.abs(t?.amount ?? 0), 0);
 
   return (
     <div data-testid="admin-transactions-page">
@@ -971,22 +1014,31 @@ function TransactionsPage() {
         </Select>
       </div>
 
+      {/* Fix 10: Loading and error states */}
+      {isLoading && (
+        <div className="text-center py-8 text-zinc-500 text-sm">Loading transactions...</div>
+      )}
+      {error && (
+        <div className="text-center py-8 text-red-400 text-sm">Failed to load transactions. Try refreshing.</div>
+      )}
+
+      {/* Fix 11: Remove 'cr', use $ */}
       <div className="grid grid-cols-3 gap-3 mb-4">
         <Card className="bg-zinc-900 border-zinc-800">
           <CardContent className="p-4 text-center">
-            <div className="text-lg font-bold text-emerald-400">{totalIn} cr</div>
+            <div className="text-lg font-bold text-emerald-400">${totalIn.toFixed(2)}</div>
             <div className="text-xs text-zinc-500">Total In</div>
           </CardContent>
         </Card>
         <Card className="bg-zinc-900 border-zinc-800">
           <CardContent className="p-4 text-center">
-            <div className="text-lg font-bold text-red-400">{totalOut} cr</div>
+            <div className="text-lg font-bold text-red-400">${totalOut.toFixed(2)}</div>
             <div className="text-xs text-zinc-500">Total Out</div>
           </CardContent>
         </Card>
         <Card className="bg-zinc-900 border-zinc-800">
           <CardContent className="p-4 text-center">
-            <div className="text-lg font-bold text-teal-400">{totalIn - totalOut} cr</div>
+            <div className="text-lg font-bold text-teal-400">${(totalIn - totalOut).toFixed(2)}</div>
             <div className="text-xs text-zinc-500">Net Balance</div>
           </CardContent>
         </Card>
@@ -1006,18 +1058,22 @@ function TransactionsPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((t: any) => (
-                <tr key={t.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-tx-${t.id}`}>
-                  <td className="px-4 py-3 text-zinc-500">#{t.id}</td>
-                  <td className="px-4 py-3 text-zinc-200">{t.userName}</td>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-zinc-500 text-sm">
+                  {isLoading ? "Loading..." : "No transactions found"}
+                </td></tr>
+              ) : filtered.map((t: any) => (
+                <tr key={t?.id ?? Math.random()} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-tx-${t?.id}`}>
+                  <td className="px-4 py-3 text-zinc-500">#{t?.id}</td>
+                  <td className="px-4 py-3 text-zinc-200">{t?.userName ?? "—"}</td>
                   <td className="px-4 py-3">
-                    <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-400 capitalize">{t.type}</Badge>
+                    <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-400 capitalize">{t?.type ?? "—"}</Badge>
                   </td>
-                  <td className={`px-4 py-3 text-right font-medium ${t.amount > 0 ? "text-emerald-400" : "text-red-400"}`}>
-                    {t.amount > 0 ? "+" : ""}{t.amount}
+                  <td className={`px-4 py-3 text-right font-medium ${(t?.amount ?? 0) > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    {(t?.amount ?? 0) > 0 ? "+" : ""}{t?.amount ?? 0}
                   </td>
-                  <td className="px-4 py-3 text-zinc-400 text-xs max-w-[250px] truncate">{t.description}</td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{new Date(t.createdAt).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-zinc-400 text-xs max-w-[250px] truncate">{t?.description ?? "—"}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{t?.createdAt ? new Date(t.createdAt).toLocaleDateString() : "—"}</td>
                 </tr>
               ))}
             </tbody>

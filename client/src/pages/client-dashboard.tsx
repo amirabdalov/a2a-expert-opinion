@@ -1398,13 +1398,29 @@ function RequestTimeline({ requestId, userId, userName }: { requestId: number; u
     }
   }
 
-  function eventLabel(e: RequestEvent) {
+  function expertLink(actorId: number | null | undefined, actorName: string | null | undefined) {
+    if (actorId) {
+      return (
+        <a
+          href={`/#/expert/profile/${actorId}`}
+          className="text-primary hover:underline font-medium"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {actorName || "an expert"}
+        </a>
+      );
+    }
+    return <span>{actorName || "an expert"}</span>;
+  }
+
+  function eventLabel(e: RequestEvent): JSX.Element | string {
     switch (e.type) {
       case "submitted": return "Request submitted";
-      case "viewed": return `Viewed by ${e.actorName || "experts"}`;
-      case "claimed": return `Claimed by ${e.actorName || "an expert"}`;
-      case "in_review": return `Under review by ${e.actorName || "an expert"}`;
-      case "completed": return `Completed by ${e.actorName || "an expert"}`;
+      case "viewed": return <span>Viewed by {e.actorId ? expertLink(e.actorId, e.actorName) : (e.actorName || "experts")}</span>;
+      case "claimed": return <span>Claimed by {expertLink(e.actorId, e.actorName)}</span>;
+      case "in_review": return <span>Under review by {expertLink(e.actorId, e.actorName)}</span>;
+      case "completed": return <span>Completed by {expertLink(e.actorId, e.actorName)}</span>;
       case "message": return `${e.actorName}: ${e.message}`;
       default: return e.type;
     }
@@ -2432,12 +2448,17 @@ export default function ClientDashboard() {
                     setSelectedRequest(parseInt(reqId));
                     setView('request-detail');
                   }
+                } else if (link === '/dashboard?view=credits' || link === '/dashboard/credits') {
+                  // Item 28: Welcome notification → navigate to credits section
+                  setView('credits');
                 } else {
                   setLocation(link);
                 }
               }} />
-              <Badge variant="secondary" className="text-xs"><Coins className="h-3 w-3 mr-1" />${user.credits} credits</Badge>
-              <span className="text-sm font-medium">{user.name}</span>
+              <button onClick={() => setView("credits")} className="focus:outline-none" title="Credits & Billing" data-testid="header-credits-link">
+                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />${user.credits} credits</Badge>
+              </button>
+              <button onClick={() => setView("settings")} className="text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">{user.name}</button>
             </div>
           </header>
           <main className="flex-1 overflow-auto">

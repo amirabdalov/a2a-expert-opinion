@@ -861,7 +861,7 @@ function Trust() {
   const stats = [
     { value: "1,000+", label: "Access to Verified Experts", icon: Users },
     { value: "70+", label: "Countries", icon: Globe },
-    { value: "98%", label: "Satisfaction Rate", icon: Star },
+    { value: "98%*", label: "Satisfaction Rate", icon: Star },
   ];
   return (
     <section id="section-trust" className="py-10 sm:py-12 px-4 sm:px-6 bg-white dark:bg-background" data-testid="section-trust">
@@ -875,6 +875,7 @@ function Trust() {
             </div>
           ))}
         </div>
+        <p className="text-[10px] text-muted-foreground text-center mt-4">*Based on beta user feedback</p>
       </div>
     </section>
   );
@@ -892,7 +893,7 @@ function BecomeExpert() {
         </p>
         <div className="grid sm:grid-cols-3 gap-6 mb-8">
           {[
-            { title: "Earn up to $2,000", desc: "Per verified response" },
+            { title: "Earn $50–200 per response", desc: "Typical experts earn $50-200 per verified response. Top experts earn up to $2,000." },
             { title: "Flexible Hours", desc: "Work on your schedule" },
             { title: "Verification Badge", desc: "Build your reputation" },
           ].map((item) => (
@@ -951,7 +952,8 @@ function Footer() {
                 <button onClick={() => scrollTo("section-solutions")} className="block hover:text-primary transition-colors cursor-pointer">How Experts Solve</button>
                 <button onClick={() => scrollTo("section-press")} className="block hover:text-primary transition-colors cursor-pointer">The Press</button>
                 <button onClick={() => scrollTo("section-try-it")} className="block hover:text-primary transition-colors cursor-pointer">Try AI Free</button>
-                <a href="tel:+13026210214" className="block hover:text-primary transition-colors">Contact</a>
+                <a href="tel:+13026210214" className="block hover:text-primary transition-colors">+1 (302) 621-0214</a>
+                <a href="mailto:support@a2a.global" className="block hover:text-primary transition-colors">support@a2a.global</a>
                 <a href="https://a2a.global" target="_blank" rel="noopener" className="block hover:text-primary transition-colors">A2A Global</a>
               </div>
             </div>

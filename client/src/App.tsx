@@ -1,5 +1,6 @@
-import { Switch, Route, Router } from "wouter";
+import { Switch, Route, Router, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
+import { useEffect } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -16,6 +17,19 @@ import { TermsPage, PrivacyPage, CookiesPage } from "@/pages/legal";
 import PaymentsPage from "@/pages/payments";
 import ExpertPublicProfile from "@/pages/expert-public-profile";
 
+// BUG-3 / Item 18: Redirect /faq to landing page FAQ section
+function FaqRedirect() {
+  const [, setLocation] = useLocation();
+  useEffect(() => {
+    setLocation("/");
+    // Scroll to FAQ section after navigation settles
+    setTimeout(() => {
+      document.getElementById("section-faq")?.scrollIntoView({ behavior: "smooth" });
+    }, 200);
+  }, []);
+  return null;
+}
+
 function AppRouter() {
   return (
     <Switch>
@@ -31,6 +45,8 @@ function AppRouter() {
       <Route path="/terms" component={TermsPage} />
       <Route path="/privacy" component={PrivacyPage} />
       <Route path="/cookies" component={CookiesPage} />
+      {/* BUG-3: /faq redirects to landing page FAQ section */}
+      <Route path="/faq" component={FaqRedirect} />
       {/* Payments page removed from public nav for Stripe submission — standby access only */}
       <Route path="/payments-standby" component={PaymentsPage} />
       <Route component={NotFound} />

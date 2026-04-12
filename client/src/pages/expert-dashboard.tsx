@@ -97,8 +97,14 @@ function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView:
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 bg-green-600 rounded flex items-center justify-center">
-            <Award className="h-4 w-4 text-white" />
+          {/* A2A blue logo */}
+          <div className="w-7 h-7 bg-[#0F3DD1] rounded flex items-center justify-center shrink-0">
+            <svg width="18" height="14" viewBox="0 0 18 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="A2A">
+              <path d="M4 11L7 3L10 11" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M5.5 8.5H8.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M11.5 11V3H14C15.1 3 16 3.9 16 5C16 6.1 15.1 7 14 7H11.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M11.5 7H14.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
           </div>
           <span className="font-semibold text-sm text-sidebar-foreground">Expert Portal</span>
         </div>
@@ -705,6 +711,25 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         </Card>
       )}
 
+      {/* Fix 3: Fallback response form for any unrecognized service type */}
+      {!isCompleted && request.serviceType !== "rate" && request.serviceType !== "review" && request.serviceType !== "custom" && (
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2"><Send className="h-4 w-4 text-blue-500" /> Your Response</CardTitle>
+              <ExpertTemplateDropdown onSelect={(content) => setDeliverable(content)} hasContent={!!deliverable} />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <MarkdownToolbar textareaRef={deliverableRef} value={deliverable} onChange={setDeliverable} />
+            <Textarea ref={deliverableRef} value={deliverable} onChange={(e) => setDeliverable(e.target.value)} onFocus={() => setActiveField("deliverable")} placeholder="Write your response here..." rows={10} className="mb-4 rounded-t-none" data-testid="input-deliverable" />
+            <Button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending || !deliverable.trim()} data-testid="button-submit-review">
+              <Send className="mr-2 h-4 w-4" /> {submitMutation.isPending ? "Submitting..." : "Submit Response"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {isCompleted && request.serviceType === "rate" && (
         <Card className="border-green-200 bg-green-50 dark:bg-green-900/10">
           <CardContent className="p-4">
@@ -1028,7 +1053,10 @@ function Earnings({ userId }: { userId: number }) {
   });
 
   const earningsTxs = data?.transactions?.filter((t) => t.type === "earning") ?? [];
-  const totalEarned = earningsTxs.reduce((sum, t) => sum + t.amount, 0);
+  const earningsFromReviews = earningsTxs.reduce((sum, t) => sum + t.amount, 0);
+  // Fix 6: Include $5 welcome bonus in Total Earned
+  const WELCOME_BONUS = 5;
+  const totalEarned = earningsFromReviews + WELCOME_BONUS;
   const balance = data?.credits ?? 0;
 
   const generateInvoiceMutation = useMutation({
@@ -1228,13 +1256,14 @@ function Earnings({ userId }: { userId: number }) {
     <div className="p-6" data-testid="expert-view-earnings">
       <h1 className="text-xl font-bold mb-6">Earnings</h1>
 
+      {/* Fix 6: $ signs, welcome bonus included in Total Earned */}
       <div className="grid sm:grid-cols-3 gap-4 mb-8">
-        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold text-green-600">{totalEarned}</p><p className="text-xs text-muted-foreground">Total Earned</p></CardContent></Card>
-        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold">{balance}</p><p className="text-xs text-muted-foreground">Balance</p></CardContent></Card>
+        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold text-green-600">${totalEarned}</p><p className="text-xs text-muted-foreground">Total Earned</p></CardContent></Card>
+        <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold">${balance}</p><p className="text-xs text-muted-foreground">Balance</p></CardContent></Card>
         <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold">{earningsTxs.length}</p><p className="text-xs text-muted-foreground">Completed Reviews</p></CardContent></Card>
       </div>
 
-      {/* Withdraw Funds section */}
+      {/* Fix 6: Withdraw Funds with $50 minimum */}
       <Card className="mb-8">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
@@ -1242,32 +1271,36 @@ function Earnings({ userId }: { userId: number }) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {earningsTxs.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-2" data-testid="text-no-invoiceable-reviews">
-              No completed reviews to invoice yet
-            </p>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm">Current balance: <span className="font-bold">${balance} credits</span></p>
-                  <p className="text-xs text-muted-foreground">Estimated value: ${balance.toFixed(2)} (at $1/credit)</p>
-                  {balance < 50 && (
-                    <p className="text-xs text-amber-600 mt-1" data-testid="text-withdrawal-threshold">
-                      Withdrawal available above $50. Current balance: ${balance.toFixed(2)}
-                    </p>
-                  )}
-                </div>
-                <Button
-                  onClick={() => { setWithdrawAmount(balance); setShowWithdrawDialog(true); }}
-                  disabled={balance <= 0}
-                  data-testid="button-withdraw"
-                >
-                  <Wallet className="mr-2 h-4 w-4" /> Withdraw
-                </Button>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm">Current balance: <span className="font-bold">${balance}</span></p>
+                <p className="text-xs text-muted-foreground">Withdrawals are available for a minimum of $50.</p>
+                <p className="text-xs text-muted-foreground italic mt-0.5">We are working on reducing the withdrawal limits</p>
               </div>
+              <Button
+                onClick={() => {
+                  if (balance < 50) {
+                    toast({
+                      title: "Minimum not reached",
+                      description: "Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits",
+                    });
+                    return;
+                  }
+                  setWithdrawAmount(balance);
+                  setShowWithdrawDialog(true);
+                }}
+                data-testid="button-withdraw"
+              >
+                <Wallet className="mr-2 h-4 w-4" /> Withdraw Funds
+              </Button>
             </div>
-          )}
+            {balance < 50 && balance > 0 && (
+              <p className="text-xs text-amber-600" data-testid="text-withdrawal-threshold">
+                Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -1383,10 +1416,17 @@ function ExpertProfile({ expert }: { expert: Expert }) {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
-  // FIX-8: Tier & rate editor state
-  const [editTier, setEditTier] = useState<string>(normalizeTier(expert.rateTier).toLowerCase());
+  // Fix 1: Rate-only editor — tier is auto-determined from rate
   const [editRate, setEditRate] = useState<string>(expert.ratePerMinute ? String(expert.ratePerMinute) : "");
   const [tierSaving, setTierSaving] = useState(false);
+
+  // Auto-determine tier from rate per minute
+  function getTierFromRateValue(rate: number): string {
+    if (rate > 13.00) return "guru";
+    if (rate > 1.50) return "pro";
+    return "standard";
+  }
+  const editTier = getTierFromRateValue(parseFloat(editRate) || 0);
 
   // FIX-8: Fetch available requests by tier
   const { data: availableRequests } = useQuery<ExpertReview[]>({
@@ -1542,43 +1582,51 @@ function ExpertProfile({ expert }: { expert: Expert }) {
     <div className="p-6 max-w-2xl" data-testid="expert-view-profile">
       <h1 className="text-xl font-bold mb-4">Expert Profile</h1>
 
-      {/* FIX-8: Tier & Rate Editor */}
+      {/* Fix 1: Rate-only editor — tier auto-determined */}
       <Card className="mb-6 border-primary/20" data-testid="card-tier-rate-editor">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
-            <Award className="h-4 w-4 text-primary" /> Tier &amp; Rate Settings
+            <Award className="h-4 w-4 text-primary" /> Rate Settings
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid sm:grid-cols-2 gap-4">
+          <div className="space-y-3">
             <div>
-              <Label className="text-sm mb-1 block">Your Tier</Label>
-              <Select value={editTier} onValueChange={setEditTier}>
-                <SelectTrigger data-testid="select-expert-tier">
-                  <SelectValue placeholder="Select tier" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="standard">Standard (50% take rate)</SelectItem>
-                  <SelectItem value="pro">Pro (30% take rate)</SelectItem>
-                  <SelectItem value="guru">Guru (15% take rate)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-sm mb-1 block">Rate per minute ($)</Label>
-              <Input
-                type="number"
-                step="0.01"
-                min="0.01"
-                value={editRate}
-                onChange={(e) => setEditRate(e.target.value)}
-                placeholder="e.g. 5.00"
-                data-testid="input-expert-rate"
-              />
+              <Label className="text-sm mb-1 block">Set your rate per minute ($)</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={editRate}
+                  onChange={(e) => setEditRate(e.target.value)}
+                  placeholder="e.g. 5.00"
+                  className="max-w-[160px]"
+                  data-testid="input-expert-rate"
+                />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Your tier:</span>
+                  <Badge
+                    className={`text-xs capitalize ${
+                      editTier === "guru"
+                        ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+                        : editTier === "pro"
+                        ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-400"
+                        : "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+                    }`}
+                    data-testid="badge-auto-tier"
+                  >
+                    {editTier}
+                  </Badge>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                $0.01–$1.50/min = Standard &nbsp;·&nbsp; $1.51–$13.00/min = Pro &nbsp;·&nbsp; $13.01+/min = Guru
+              </p>
             </div>
           </div>
           <Button onClick={handleSaveTierRate} disabled={tierSaving} size="sm" data-testid="button-save-tier-rate">
-            {tierSaving ? "Saving..." : "Save Tier & Rate"}
+            {tierSaving ? "Saving..." : "Save Rate"}
           </Button>
 
           {/* FIX-8: Available requests by tier info box */}
@@ -1839,6 +1887,25 @@ function ExpertOverviewSkeleton() {
   );
 }
 
+// ─── Expert Header Avatar (Fix 4: photo in header) ───
+function ExpertHeaderAvatar({ userId }: { userId: number }) {
+  const [photoUrl, setPhotoUrl] = useState<string | null>(`/api/users/${userId}/photo?t=${Date.now()}`);
+  return (
+    <div className="w-7 h-7 rounded-full bg-primary/10 overflow-hidden flex items-center justify-center shrink-0">
+      {photoUrl ? (
+        <img
+          src={photoUrl}
+          alt="Profile"
+          className="w-7 h-7 rounded-full object-cover"
+          onError={() => setPhotoUrl(null)}
+        />
+      ) : (
+        <UserCircle className="h-5 w-5 text-primary" />
+      )}
+    </div>
+  );
+}
+
 // ─── Main Expert Dashboard ───
 export default function ExpertDashboard() {
   const { user, logout } = useAuth();
@@ -1941,8 +2008,14 @@ export default function ExpertDashboard() {
           <header className="flex items-center justify-between px-4 py-2 border-b bg-background gap-3">
             <div className="hidden md:block"><SidebarTrigger data-testid="button-expert-sidebar-toggle" /></div>
             <div className="md:hidden flex items-center gap-2">
-              <div className="w-7 h-7 bg-green-600 rounded flex items-center justify-center">
-                <Award className="h-4 w-4 text-white" />
+              {/* A2A blue logo for mobile header */}
+              <div className="w-7 h-7 bg-[#0F3DD1] rounded flex items-center justify-center shrink-0">
+                <svg width="18" height="14" viewBox="0 0 18 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="A2A">
+                  <path d="M4 11L7 3L10 11" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M5.5 8.5H8.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                  <path d="M11.5 11V3H14C15.1 3 16 3.9 16 5C16 6.1 15.1 7 14 7H11.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M11.5 7H14.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
               </div>
               <span className="font-semibold text-sm">Expert</span>
             </div>
@@ -1983,7 +2056,16 @@ export default function ExpertDashboard() {
                 }
               }} />
               {expert?.verified === 1 && <Badge className="hidden sm:flex bg-green-100 text-green-800 text-xs"><Award className="h-3 w-3 mr-1" />Verified</Badge>}
-              <span className="text-sm font-medium hidden sm:block">{user.name}</span>
+              {/* Fix 7: Expert name clickable → profile; Fix 4: avatar in header */}
+              <button
+                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                onClick={() => setView('profile')}
+                title="Go to your profile"
+                data-testid="header-expert-name"
+              >
+                <ExpertHeaderAvatar userId={user.id} />
+                <span className="text-sm font-medium hidden sm:block">{user.name}</span>
+              </button>
             </div>
           </header>
           <main className="flex-1 overflow-auto pb-16 md:pb-0">

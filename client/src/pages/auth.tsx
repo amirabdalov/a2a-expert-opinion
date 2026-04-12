@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -26,7 +26,12 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  // BUG-2: Only show terms error after the user has tried to submit
+  const [submitted, setSubmitted] = useState(false);
   const [existingEmailLogin, setExistingEmailLogin] = useState(false);
+  // Resend code timer
+  const [resendTimer, setResendTimer] = useState(0);
+  const resendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
   const { login } = useAuth();
   const [, setLocation] = useLocation();
@@ -36,7 +41,8 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     document.documentElement.classList.remove("dark");
   }, []);
 
-  // BUG-005: Read URL params for role pre-selection and prefill data
+  // BUG-1 + BUG-005: Read URL params for role pre-selection and prefill data
+  // Parse hash manually to handle hash-router query params
   const urlPrefill = (() => {
     try {
       const hash = window.location.hash;
@@ -53,16 +59,43 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     }
   })();
 
-  // Apply URL role param
+  // BUG-1: Apply URL role param on mount
   useEffect(() => {
-    if (urlPrefill?.role === 'expert') setRole('expert');
-    else if (urlPrefill?.role === 'client') setRole('client');
+    const hashParts = window.location.hash.split('?');
+    const params = new URLSearchParams(hashParts[1] || '');
+    const roleParam = params.get('role');
+    if (roleParam === 'expert') setRole('expert');
+    else if (roleParam === 'client') setRole('client');
+  }, []);
+
+  // Cleanup resend timer on unmount
+  useEffect(() => {
+    return () => {
+      if (resendIntervalRef.current) clearInterval(resendIntervalRef.current);
+    };
   }, []);
 
   const isRegister = mode === "register";
 
+  function startResendTimer() {
+    setResendTimer(60);
+    if (resendIntervalRef.current) clearInterval(resendIntervalRef.current);
+    resendIntervalRef.current = setInterval(() => {
+      setResendTimer((t) => {
+        if (t <= 1) {
+          if (resendIntervalRef.current) clearInterval(resendIntervalRef.current);
+          return 0;
+        }
+        return t - 1;
+      });
+    }, 1000);
+  }
+
   async function handleSendCode(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    // BUG-2: Mark as submitted so terms error shows
+    setSubmitted(true);
+    if (isRegister && !termsAccepted) return;
     setLoading(true);
     try {
       if (isRegister) {
@@ -72,6 +105,7 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
           // Email already registered — server already sent OTP, switch to OTP step
           setExistingEmailLogin(true);
           setStep("otp");
+          startResendTimer();
           toast({ title: "Email already registered", description: "Please type 2FA code – check your email inbox" });
           return;
         }
@@ -79,9 +113,28 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
         await apiRequest("POST", "/api/auth/login", { email });
       }
       setStep("otp");
+      startResendTimer();
       toast({ title: "Code sent", description: `Check ${email} for your 6-digit code.` });
     } catch (err: any) {
       toast({ title: "Failed to send code", description: err.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResendCode() {
+    if (resendTimer > 0) return;
+    setLoading(true);
+    try {
+      if (isRegister && !existingEmailLogin) {
+        await apiRequest("POST", "/api/auth/register", { name, email, role });
+      } else {
+        await apiRequest("POST", "/api/auth/login", { email });
+      }
+      startResendTimer();
+      toast({ title: "Code resent", description: `Check ${email} for a new 6-digit code.` });
+    } catch (err: any) {
+      toast({ title: "Failed to resend code", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -119,6 +172,26 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     setStep("email");
     setOtp("");
     setExistingEmailLogin(false);
+    setSubmitted(false);
+    if (resendIntervalRef.current) clearInterval(resendIntervalRef.current);
+    setResendTimer(0);
+  }
+
+  // UX-18: Update URL when switching tabs
+  function switchToLogin() {
+    setMode("login");
+    setStep("email");
+    setOtp("");
+    setSubmitted(false);
+    window.history.replaceState(null, '', '#/login');
+  }
+
+  function switchToRegister() {
+    setMode("register");
+    setStep("email");
+    setOtp("");
+    setSubmitted(false);
+    window.history.replaceState(null, '', '#/register');
   }
 
   return (
@@ -138,14 +211,14 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
             <div className="flex rounded-lg border border-border bg-muted/40 p-1 mb-2">
               <button
                 type="button"
-                onClick={() => { setMode("login"); setStep("email"); setOtp(""); }}
+                onClick={switchToLogin}
                 className={`flex-1 text-sm py-1.5 rounded-md font-medium transition-all ${mode === "login" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               >
                 Log In
               </button>
               <button
                 type="button"
-                onClick={() => { setMode("register"); setStep("email"); setOtp(""); }}
+                onClick={switchToRegister}
                 className={`flex-1 text-sm py-1.5 rounded-md font-medium transition-all ${mode === "register" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               >
                 Sign Up
@@ -259,15 +332,18 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                   </div>
                 </div>
 
+                {/* UX-5: "Create Account" for signup, "Send Verification Code" for login */}
                 <Button
                   type="submit"
                   className="w-full"
                   disabled={loading || (isRegister && !termsAccepted)}
                   data-testid="button-send-code"
                 >
-                  {loading ? "Sending..." : "Send Verification Code"}
+                  {loading ? "Sending..." : isRegister ? "Create Account" : "Send Verification Code"}
                 </Button>
-                {isRegister && !termsAccepted && (
+
+                {/* BUG-2: Only show terms error after attempted submit */}
+                {isRegister && submitted && !termsAccepted && (
                   <p className="text-xs text-destructive text-center">Please accept the Terms of Use and Privacy Policy to continue.</p>
                 )}
 
@@ -289,6 +365,16 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                       <span className="block mt-0.5 text-[10px] text-muted-foreground/70">Your acceptance date, time, and IP address will be recorded for compliance.</span>
                     </label>
                   </div>
+                )}
+
+                {/* UX-17: Sign up link below login form */}
+                {!isRegister && (
+                  <p className="text-sm text-center text-muted-foreground">
+                    Don't have an account?{" "}
+                    <button type="button" onClick={switchToRegister} className="text-primary font-medium hover:underline">
+                      Sign up
+                    </button>
+                  </p>
                 )}
               </form>
             )}
@@ -322,6 +408,17 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                 >
                   {loading ? "Verifying..." : "Verify"}
                 </Button>
+
+                {/* Resend Code button with cooldown */}
+                <button
+                  type="button"
+                  onClick={handleResendCode}
+                  disabled={loading || resendTimer > 0}
+                  className="w-full text-sm text-muted-foreground hover:text-foreground text-center disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="button-resend-code"
+                >
+                  {resendTimer > 0 ? `Resend Code (${resendTimer}s)` : "Resend Code"}
+                </button>
 
                 <button
                   type="button"

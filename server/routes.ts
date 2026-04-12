@@ -266,7 +266,7 @@ async function getAIResponse(messages: Array<{ role: string; content: string }>,
     if (anthropic) {
       try {
         const response = await anthropic.messages.create({
-          model: "claude_sonnet_4_6",
+          model: "claude-sonnet-4-5",
           max_tokens: maxTokens,
           system: getSystemPrompt(category),
           messages: messages.map((m) => ({
@@ -672,15 +672,28 @@ export async function registerRoutes(
       const activeRequests = allRequests.filter(r => r.status === "pending" || r.status === "in_progress").length;
       const completedRequests = allRequests.filter(r => r.status === "completed").length;
 
-      const totalRevenue = allCreditTx
+      // Revenue = sum of all credit purchases (what clients paid in)
+      const totalRevenuePurchases = allCreditTx
         .filter(t => t.type === "purchase")
-        .reduce((sum, t) => sum + t.amount, 0);
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      // Also count charged transactions (credits deducted for completed services)
+      const totalRevenueCharged = allCreditTx
+        .filter(t => t.type === "charged" || t.type === "debit")
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+      // Use max of purchases vs charged as totalRevenue (purchases = platform gross)
+      const totalRevenue = Math.round(totalRevenuePurchases + totalRevenueCharged);
+
       const totalPayouts = allWithdrawals
         .filter(w => w.status === "approved")
         .reduce((sum, w) => sum + w.amountCents, 0);
 
-      // Calculate avg take rate
-      const avgTakeRate = 0.30; // simplified
+      // Calculate avg take rate from actual data
+      const allTierRates = allRequests
+        .filter(r => r.status === "completed")
+        .map(r => TAKE_RATES[(r.priceTier || r.tier || "standard").toLowerCase()] ?? 0.50);
+      const avgTakeRate = allTierRates.length > 0
+        ? Math.round((allTierRates.reduce((s, v) => s + v, 0) / allTierRates.length) * 100) / 100
+        : 0.30;
 
       return res.json({
         totalUsers: allUsers.length,
@@ -729,9 +742,10 @@ export async function registerRoutes(
   });
 
   app.get("/api/admin/transactions", async (_req, res) => {
-    const allTx = storage.getAllCreditTransactions();
-    const allUsers = storage.getAllUsers();
-    const allRequests = storage.getAllRequests();
+    try {
+    const allTx = storage.getAllCreditTransactions() || [];
+    const allUsers = storage.getAllUsers() || [];
+    const allRequests = storage.getAllRequests() || [];
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     const enrichedTx = allTx.map(t => {
@@ -775,6 +789,10 @@ export async function registerRoutes(
       transactions: enrichedTx,
       totals: { totalClientPaid, totalExpertPayout, totalPlatformFees },
     });
+    } catch (e: any) {
+      console.error("[admin/transactions] error:", e);
+      return res.status(500).json({ error: true, message: e.message, transactions: [], totals: { totalClientPaid: 0, totalExpertPayout: 0, totalPlatformFees: 0 } });
+    }
   });
 
   app.get("/api/admin/wallet-transactions", async (_req, res) => {
@@ -950,6 +968,37 @@ export async function registerRoutes(
     return res.json(expert);
   });
 
+  // Expert public profile — returns only public-safe fields (no sensitive data)
+  app.get("/api/experts/:expertId/public-profile", async (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      const expert = storage.getExpert(expertId);
+      if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+      const user = storage.getUser(expert.userId);
+      if (!user) return res.status(404).json({ error: true, message: "User not found" });
+      let categories: string[] = [];
+      try { categories = JSON.parse(expert.categories || "[]"); } catch {}
+      return res.json({
+        id: expert.id,
+        name: user.name,
+        bio: expert.bio,
+        expertise: expert.expertise,
+        credentials: expert.credentials,
+        education: expert.education,
+        yearsExperience: expert.yearsExperience,
+        rating: expert.rating,
+        totalReviews: expert.totalReviews,
+        tier: normalizeTier(expert.rateTier),
+        categories,
+        responseTime: expert.responseTime,
+        verified: expert.verified === 1,
+        availability: expert.availability === 1,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
   // ─── Request routes ───
 
   app.get("/api/requests/user/:userId", async (req, res) => {
@@ -965,6 +1014,14 @@ export async function registerRoutes(
   app.get("/api/requests/pending", async (_req, res) => {
     const reqs = storage.getPendingRequests();
     return res.json(reqs);
+  });
+
+  // NOTE: /drafts/:userId MUST be registered before /:id to avoid the wildcard catching it
+  app.get("/api/requests/drafts/:userId", async (req, res) => {
+    const userId = parseInt(req.params.userId);
+    const allRequests = storage.getRequestsByUser(userId);
+    const drafts = allRequests.filter((r) => r.status === "draft");
+    return res.json(drafts);
   });
 
   app.get("/api/requests/:id", async (req, res) => {
@@ -987,20 +1044,32 @@ export async function registerRoutes(
       }
 
       const sType = serviceType || "rate";
+      const effectiveTier = (priceTier || tier || "standard").toLowerCase();
+      const effectiveTakeRate = TAKE_RATES[effectiveTier] ?? 0.50;
+
+      // Tier-based default costs (credits = dollars for this platform)
+      // Standard: $5 base, Pro: $10 base, Guru: $15 base
+      const tierBaseCost: Record<string, number> = { standard: 5, pro: 10, guru: 15 };
+      const tierDefault = tierBaseCost[effectiveTier] ?? 5;
+
       let cost = 0;
       if (sType === "rate") {
         cost = Math.max(1, Math.min(10, expertsNeeded || 1));
+        // Scale by tier for pro/guru
+        if (effectiveTier === "pro") cost = Math.max(cost, 10);
+        if (effectiveTier === "guru") cost = Math.max(cost, 15);
       } else if (sType === "review") {
-        cost = 3;
+        cost = effectiveTier === "guru" ? 15 : effectiveTier === "pro" ? 10 : 5;
       } else if (sType === "custom") {
-        cost = 5;
+        cost = effectiveTier === "guru" ? 20 : effectiveTier === "pro" ? 12 : 7;
+      } else {
+        // sense_check, consult, and any other type — use tier default
+        cost = tierDefault;
       }
 
-      // FIX-5: If pricePerMinute is provided (expert rate), compute client rate using take rate
+      // If pricePerMinute is provided (expert rate), override cost with rate-based calculation
       // client_rate = expert_rate / (1 - take_rate)
       let computedPricePerMinute = pricePerMinute || null;
-      const effectiveTier = (priceTier || tier || "standard").toLowerCase();
-      const effectiveTakeRate = TAKE_RATES[effectiveTier] ?? 0.50;
       if (pricePerMinute && !isNaN(Number(pricePerMinute))) {
         const expertRate = Number(pricePerMinute);
         const clientRate = expertRate / (1 - effectiveTakeRate);
@@ -1157,13 +1226,6 @@ export async function registerRoutes(
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
-  });
-
-  app.get("/api/requests/drafts/:userId", async (req, res) => {
-    const userId = parseInt(req.params.userId);
-    const allRequests = storage.getRequestsByUser(userId);
-    const drafts = allRequests.filter((r) => r.status === "draft");
-    return res.json(drafts);
   });
 
   app.delete("/api/requests/:id/draft", async (req, res) => {
@@ -1972,6 +2034,9 @@ export async function registerRoutes(
     try {
       const requestId = parseInt(req.params.id);
       const { rating, comment } = req.body;
+      if (!rating || rating < 1 || rating > 5) {
+        return res.status(400).json({ error: true, message: "Rating must be between 1 and 5" });
+      }
       const request = storage.getRequest(requestId);
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
       if (request.status !== "completed") return res.status(400).json({ error: true, message: "Can only rate completed requests" });
@@ -1980,6 +2045,23 @@ export async function registerRoutes(
         clientRating: rating,
         clientRatingComment: comment || null,
       });
+
+      // Update the expert's average rating in the experts table
+      if (request.expertId) {
+        const expert = storage.getExpert(request.expertId);
+        if (expert) {
+          // Compute new average rating from all completed reviews with client ratings
+          const allReqs = storage.getRequestsByExpert(request.expertId);
+          const ratedReqs = allReqs.filter(r => r.clientRating !== null && r.clientRating !== undefined);
+          // Include the new rating (not yet persisted in the fetched list)
+          const totalRatings = ratedReqs.reduce((sum, r) => sum + (r.clientRating || 0), 0) + rating;
+          const countRatings = ratedReqs.length + 1;
+          // Store as integer 0-50 (where 50 = 5.0 stars, matching existing schema convention)
+          const newAvgRating = Math.round((totalRatings / countRatings) * 10);
+          storage.updateExpert(request.expertId, { rating: newAvgRating });
+        }
+      }
+
       return res.json(updated);
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
