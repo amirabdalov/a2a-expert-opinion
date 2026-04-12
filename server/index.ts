@@ -4,7 +4,10 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import helmet from "helmet";
 import cors from "cors";
-import { startPeriodicBackup, backupDatabase } from "./db-persistence";
+import { startPeriodicBackup, backupDatabase, triggerBackup } from "./db-persistence";
+
+// Export triggerBackup so routes.ts can call it after writes
+export { triggerBackup };
 
 const app = express();
 const httpServer = createServer(app);

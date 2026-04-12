@@ -485,6 +485,27 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
     enabled: !!currentReview?.requestId,
   });
 
+  // FIX-5: Fetch full chat/message history and timeline for this request
+  const { data: chatMessages } = useQuery<Message[]>({
+    queryKey: ["/api/messages", currentReview?.requestId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/messages/${currentReview!.requestId}`);
+      return res.json();
+    },
+    enabled: !!currentReview?.requestId,
+  });
+
+  const { data: timelineEvents } = useQuery<any[]>({
+    queryKey: ["/api/requests", currentReview?.requestId, "timeline"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/requests/${currentReview!.requestId}/timeline`);
+      return res.json();
+    },
+    enabled: !!currentReview?.requestId,
+  });
+
+  const followUpMessages = timelineEvents?.filter((e) => e.type === "message") ?? [];
+
   const [ratingValue, setRatingValue] = useState(5);
   const [ratingComment, setRatingComment] = useState("");
   const [correctPoints, setCorrectPoints] = useState("");
@@ -771,6 +792,46 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
           <CardContent><p className="text-sm whitespace-pre-wrap">{currentReview.deliverable}</p></CardContent>
         </Card>
       )}
+
+      {/* FIX-5: Full conversation/chat history for this request */}
+      {((chatMessages && chatMessages.length > 0) || followUpMessages.length > 0) && (
+        <Card className="mt-4">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-blue-500" /> Conversation History
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {/* AI chat messages */}
+              {chatMessages?.map((msg: Message) => (
+                <div key={`chat-${msg.id}`} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[80%] rounded-lg p-3 text-xs ${
+                    msg.role === "user"
+                      ? "bg-blue-100 text-blue-900 dark:bg-blue-900/30 dark:text-blue-100"
+                      : "bg-muted text-foreground"
+                  }`}>
+                    <p className="font-semibold mb-1 opacity-70">{msg.role === "user" ? "Client" : "AI"}</p>
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+              {/* Follow-up messages from timeline */}
+              {followUpMessages.map((evt: any) => (
+                <div key={`evt-${evt.id}`} className="flex justify-start">
+                  <div className="max-w-[80%] rounded-lg p-3 text-xs bg-amber-50 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-800/30">
+                    <p className="font-semibold mb-1 text-amber-700 dark:text-amber-400">{evt.actorName || "Client"}</p>
+                    <p className="whitespace-pre-wrap text-foreground">{evt.message}</p>
+                    {evt.createdAt && (
+                      <p className="text-[10px] text-muted-foreground mt-1">{new Date(evt.createdAt).toLocaleString()}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -964,13 +1025,16 @@ function InvoiceDocument({ data, userId }: { data: InvoiceData; userId: number }
         <div className="flex justify-end">
           <div className="w-64">
             <div className="flex justify-between py-1.5 text-xs">
-              <span className="text-slate-500">Subtotal</span>
+              <span className="text-slate-500">Subtotal (Expert Net)</span>
               <span className="font-mono">${(data.totalAmountCents / 100).toFixed(2)}</span>
             </div>
-            <div className="flex justify-between py-1.5 text-xs">
-              <span className="text-slate-500">Platform Fee ({data.platformFeeRate}%)</span>
-              <span className="font-mono text-red-600">-${(data.platformFeeCents / 100).toFixed(2)}</span>
-            </div>
+            {/* FIX-2: Only show platform fee row if it's non-zero */}
+            {data.platformFeeRate > 0 && (
+              <div className="flex justify-between py-1.5 text-xs">
+                <span className="text-slate-500">Platform Fee ({data.platformFeeRate}%)</span>
+                <span className="font-mono text-red-600">-${(data.platformFeeCents / 100).toFixed(2)}</span>
+              </div>
+            )}
             <div className="flex justify-between py-2 text-sm font-bold border-t border-slate-200 mt-1">
               <span>Net Payout</span>
               <span className="text-green-700 font-mono">${(data.netPayoutCents / 100).toFixed(2)}</span>
@@ -1187,19 +1251,21 @@ function Earnings({ userId }: { userId: number }) {
     doc.line(margin, y, 190, y);
     y += 5;
 
-    // Totals
+    // Totals — FIX-2: Only show platform fee when non-zero
     doc.setFontSize(8);
     doc.setTextColor(80, 80, 80);
-    doc.text("Subtotal", 145, y, { align: "right" });
+    doc.text("Subtotal (Expert Net)", 145, y, { align: "right" });
     doc.setFont("helvetica", "bold");
     doc.setTextColor(30, 30, 30);
     doc.text(`$${(d.totalAmountCents / 100).toFixed(2)}`, 188, y, { align: "right" });
     y += 5;
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(180, 60, 60);
-    doc.text(`Platform Fee (${d.platformFeeRate}%)`, 145, y, { align: "right" });
-    doc.text(`-$${(d.platformFeeCents / 100).toFixed(2)}`, 188, y, { align: "right" });
-    y += 6;
+    if (d.platformFeeRate > 0) {
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(180, 60, 60);
+      doc.text(`Platform Fee (${d.platformFeeRate}%)`, 145, y, { align: "right" });
+      doc.text(`-$${(d.platformFeeCents / 100).toFixed(2)}`, 188, y, { align: "right" });
+      y += 6;
+    }
     doc.setFillColor(240, 249, 240);
     doc.rect(120, y - 4, 70, 8, "F");
     doc.setFont("helvetica", "bold");
@@ -1945,6 +2011,23 @@ export default function ExpertDashboard() {
     retryDelay: 500,
   });
 
+  // FIX-4: Expert reviews for follow-up notification navigation
+  const { data: allExpertReviews } = useQuery<ExpertReview[]>({
+    queryKey: ["/api/reviews/expert", expert?.id],
+    enabled: !!expert?.id,
+  });
+
+  // Helper: navigate to a specific request from a follow-up notification
+  function navigateToRequest(requestId: number) {
+    const rev = allExpertReviews?.find((r) => r.requestId === requestId);
+    if (rev) {
+      setSelectedReview(rev.id);
+      setView("review-detail");
+    } else {
+      setView("active");
+    }
+  }
+
   // Search data for expert — search Available Queue
   const { data: pendingReviews } = useQuery<ExpertRequest[]>({
     queryKey: ["/api/requests"],
@@ -2046,15 +2129,22 @@ export default function ExpertDashboard() {
             </div>
             <div className="flex items-center gap-3">
               <ExpertNotificationBell userId={user.id} expertId={expert.id} onNavigate={(link) => {
-                // Parse link for in-page navigation
-                if (link.startsWith('/expert?view=')) {
-                  const v = new URLSearchParams(link.split('?')[1]).get('view');
-                  if (v === 'queue') setView('queue');
-                  else if (v === 'active') setView('active');
-                  else if (v === 'earnings') setView('earnings');
-                } else {
-                  setLocation(link);
-                }
+                // FIX-4: Parse link for in-page navigation, including follow-up request links
+                if (!link) return;
+                const qIdx = link.indexOf('?');
+                const params = qIdx !== -1 ? new URLSearchParams(link.slice(qIdx + 1)) : new URLSearchParams();
+                const v = params.get('view');
+                const reqId = params.get('request');
+                if (reqId) {
+                  // Navigate to specific request via follow-up notification
+                  const rid = parseInt(reqId);
+                  if (!isNaN(rid)) navigateToRequest(rid);
+                } else if (v === 'queue') setView('queue');
+                else if (v === 'active') setView('active');
+                else if (v === 'earnings') setView('earnings');
+                else if (v === 'completed') setView('completed');
+                else if (link.startsWith('/expert')) { /* already on expert */ }
+                else setLocation(link);
               }} />
               {expert?.verified === 1 && <Badge className="hidden sm:flex bg-green-100 text-green-800 text-xs"><Award className="h-3 w-3 mr-1" />Verified</Badge>}
               {/* Fix 7: Expert name clickable → profile; Fix 4: avatar in header */}

@@ -24,7 +24,7 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { NotificationBell } from "@/components/notification-bell";
 import { OnboardingTour, CLIENT_TOUR_STEPS } from "@/components/onboarding-tour";
 import { FloatingHelp } from "@/components/floating-help";
-import { getPrefillData, clearPrefillData } from "@/lib/prefill-state";
+import { getPrefillData, clearPrefillData, setPrefillData } from "@/lib/prefill-state";
 import {
   PRICING_TIERS, getTierFromRate, getSliderValueFromRate, getRateFromSliderValue,
   getAISuggestedClientPrice, LLM_PROVIDERS,
@@ -986,6 +986,13 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
 function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { userId: number; setView: (v: ClientView) => void; setSelectedRequest: (id: number) => void; onContinueDraft: (id: number) => void }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [showDeleteDialog, setShowDeleteDialog] = useState<number | null>(null);
+  // Fix 8: mobile detection
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 640);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
   const { data: requests, isLoading } = useQuery<ExpertRequest[]>({ queryKey: ["/api/requests/user", userId] });
   const { data: drafts } = useQuery<ExpertRequest[]>({
     queryKey: ["/api/requests/drafts", userId],
@@ -1091,48 +1098,69 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
         </div>
       ) : (
         isLoading ? <p className="text-sm text-muted-foreground">Loading...</p> : (
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="text-left p-3 font-medium text-xs">Date</th>
-                  <th className="text-left p-3 font-medium text-xs">Title</th>
-                  <th className="text-left p-3 font-medium text-xs">Type</th>
-                  <th className="text-left p-3 font-medium text-xs">Category</th>
-                  <th className="text-left p-3 font-medium text-xs">Status</th>
-                  <th className="text-left p-3 font-medium text-xs">Credits</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(!filtered || filtered.length === 0) ? (
-                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground text-sm">No requests found</td></tr>
-                ) : (filtered as ExpertRequest[]).map((r) => (
-                  <tr key={r.id} className="border-t hover:bg-muted/30 cursor-pointer transition" onClick={() => { setSelectedRequest(r.id); setView("request-detail"); }} data-testid={`request-table-row-${r.id}`}>
-                    <td className="p-3 text-xs text-muted-foreground">{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : "—"}</td>
-                    <td className="p-3 text-sm font-medium">{r.title}</td>
-                    <td className="p-3"><Badge className={`text-[10px] ${serviceTypeBadge(r.serviceType)}`}>{serviceTypeLabel(r.serviceType)}</Badge></td>
-                    <td className="p-3 text-xs capitalize">{r.category}</td>
-                    <td className="p-3">
-                      <Badge className={`text-xs ${statusColor(r.status)}`}>{r.status.replace("_", " ")}</Badge>
-                      <div className="flex items-center gap-1 mt-1 text-muted-foreground">
-                        <Clock className="h-3 w-3" />
-                        <span className="text-[10px]">
-                          {r.status === 'pending' ? (
-                            r.tier === 'guru' ? 'Est. delivery: ~10-20min' : r.tier === 'pro' ? 'Est. delivery: ~30-60min' : 'Est. delivery: ~2-4h'
-                          ) : r.status === 'in_progress' ? (
-                            'Expert working on it — Est. ~1-2h remaining'
-                          ) : r.status === 'completed' && r.createdAt ? (
-                            `Completed in ${Math.max(1, Math.round((Date.now() - new Date(r.createdAt).getTime()) / 60000))} min`
-                          ) : ''}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="p-3 text-xs">${r.creditsCost} credits</td>
+          isMobile ? (
+            // Fix 8: Mobile card layout
+            <div className="space-y-3" data-testid="requests-mobile-list">
+              {(!filtered || filtered.length === 0) ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No requests found</p>
+              ) : (filtered as ExpertRequest[]).map((r) => (
+                <Card key={r.id} onClick={() => { if (r.status === 'draft') { onContinueDraft(r.id); return; } setSelectedRequest(r.id); setView('request-detail'); }} className="p-4 cursor-pointer hover:shadow-md transition" data-testid={`request-mobile-card-${r.id}`}>
+                  <p className="font-medium text-sm truncate mb-1">{r.title}</p>
+                  <div className="flex justify-between items-center text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <Badge className={`text-[10px] ${statusColor(r.status)}`}>{r.status.replace('_', ' ')}</Badge>
+                      <Badge className={`text-[10px] ${serviceTypeBadge(r.serviceType)}`}>{serviceTypeLabel(r.serviceType)}</Badge>
+                    </div>
+                    <span>${r.creditsCost} credits</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1 capitalize">{r.category} · {r.createdAt ? new Date(r.createdAt).toLocaleDateString() : ''}</p>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium text-xs">Date</th>
+                    <th className="text-left p-3 font-medium text-xs">Title</th>
+                    <th className="text-left p-3 font-medium text-xs">Type</th>
+                    <th className="text-left p-3 font-medium text-xs">Category</th>
+                    <th className="text-left p-3 font-medium text-xs">Status</th>
+                    <th className="text-left p-3 font-medium text-xs">Credits</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {(!filtered || filtered.length === 0) ? (
+                    <tr><td colSpan={6} className="p-6 text-center text-muted-foreground text-sm">No requests found</td></tr>
+                  ) : (filtered as ExpertRequest[]).map((r) => (
+                    <tr key={r.id} className="border-t hover:bg-muted/30 cursor-pointer transition" onClick={() => { if (r.status === 'draft') { onContinueDraft(r.id); return; } setSelectedRequest(r.id); setView("request-detail"); }} data-testid={`request-table-row-${r.id}`}>
+                      <td className="p-3 text-xs text-muted-foreground">{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : "—"}</td>
+                      <td className="p-3 text-sm font-medium">{r.title}</td>
+                      <td className="p-3"><Badge className={`text-[10px] ${serviceTypeBadge(r.serviceType)}`}>{serviceTypeLabel(r.serviceType)}</Badge></td>
+                      <td className="p-3 text-xs capitalize">{r.category}</td>
+                      <td className="p-3">
+                        <Badge className={`text-xs ${statusColor(r.status)}`}>{r.status.replace("_", " ")}</Badge>
+                        <div className="flex items-center gap-1 mt-1 text-muted-foreground">
+                          <Clock className="h-3 w-3" />
+                          <span className="text-[10px]">
+                            {r.status === 'pending' ? (
+                              r.tier === 'guru' ? 'Est. delivery: ~10-20min' : r.tier === 'pro' ? 'Est. delivery: ~30-60min' : 'Est. delivery: ~2-4h'
+                            ) : r.status === 'in_progress' ? (
+                              'Expert working on it — Est. ~1-2h remaining'
+                            ) : r.status === 'completed' && r.createdAt ? (
+                              `Completed in ${Math.max(1, Math.round((Date.now() - new Date(r.createdAt).getTime()) / 60000))} min`
+                            ) : ''}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="p-3 text-xs">${r.creditsCost} credits</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
         )
       )}
     </div>
@@ -1356,7 +1384,7 @@ function ClientRatingSection({ request, userId }: { request: ExpertRequest; user
 
 // ─── Request Detail (type-specific) ───
 // ─── Request Timeline Component ───
-function RequestTimeline({ requestId, userId, userName }: { requestId: number; userId: number; userName: string }) {
+function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { requestId: number; userId: number; userName: string; expertIdByUserId?: Record<number, number> }) {
   const { data: events } = useQuery<RequestEvent[]>({
     queryKey: ["/api/requests", requestId, "timeline"],
     queryFn: async () => {
@@ -1400,18 +1428,25 @@ function RequestTimeline({ requestId, userId, userName }: { requestId: number; u
 
   function expertLink(actorId: number | null | undefined, actorName: string | null | undefined) {
     if (actorId) {
-      return (
-        <a
-          href={`/#/expert/profile/${actorId}`}
-          className="text-primary hover:underline font-medium"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {actorName || "an expert"}
-        </a>
-      );
+      // Fix 10: actorId is userId, not expert table ID. Look up expert ID from review data.
+      const expertTableId = expertIdByUserId?.[actorId] ?? null;
+      const profileUrl = expertTableId
+        ? `/#/expert/profile/${expertTableId}`
+        : null;
+      if (profileUrl) {
+        return (
+          <a
+            href={profileUrl}
+            className="text-primary hover:underline font-medium"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {actorName || "an expert"}
+          </a>
+        );
+      }
     }
-    return <span>{actorName || "an expert"}</span>;
+    return <span className="font-medium">{actorName || "an expert"}</span>;
   }
 
   function eventLabel(e: RequestEvent): JSX.Element | string {
@@ -1510,6 +1545,15 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
     ? (completedReviews.reduce((sum, r) => sum + (r.rating ?? 0), 0) / completedReviews.length).toFixed(1)
     : null;
 
+  // Fix 10: Build a map from userId → expert table ID using review data
+  const expertIdByUserId: Record<number, number> = {};
+  reviews?.forEach((rev) => {
+    const dRev = rev as DetailedReview;
+    if (dRev.expert?.userId && dRev.expert?.id) {
+      expertIdByUserId[dRev.expert.userId] = dRev.expert.id;
+    }
+  });
+
   return (
     <div className="p-6" data-testid="view-request-detail">
       <div className="flex items-center gap-3 mb-1">
@@ -1564,7 +1608,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
       </Card>
 
       {/* Request Timeline */}
-      <RequestTimeline requestId={requestId} userId={userId} userName={user?.name || ""} />
+      <RequestTimeline requestId={requestId} userId={userId} userName={user?.name || ""} expertIdByUserId={expertIdByUserId} />
 
       {/* AI Response */}
       {request.aiResponse && (
@@ -1727,6 +1771,33 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
             );
           })}
           <p className="text-[10px] text-muted-foreground/70 leading-relaxed" data-testid="text-expert-opinion-disclaimer">
+            Expert opinions represent the individual expert's professional assessment and do not constitute formal advice from A2A Global Inc.
+          </p>
+        </div>
+      )}
+
+      {/* Fix 9: Expert Response deliverable — show for all completed service types */}
+      {request.status === "completed" && completedReviews.some(r => r.deliverable) && !['custom', 'review', 'rate'].includes(request.serviceType) && (
+        <div className="space-y-3 mb-4">
+          {completedReviews.filter(r => r.deliverable).map((rev) => {
+            const dRev = rev as DetailedReview;
+            return (
+              <div key={rev.id} className="space-y-3" data-testid={`deliverable-${rev.id}`}>
+                {dRev.expert && <ExpertProfileCard expert={dRev.expert} compact />}
+                <Card className="mt-2 border-green-200 bg-green-50 dark:bg-green-900/10 dark:border-green-900/30">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-green-800 dark:text-green-400 flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4" /> Expert Response
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdown(rev.deliverable || '') }} />
+                  </CardContent>
+                </Card>
+              </div>
+            );
+          })}
+          <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
             Expert opinions represent the individual expert's professional assessment and do not constitute formal advice from A2A Global Inc.
           </p>
         </div>
@@ -2065,9 +2136,17 @@ function ChatAIView({ setView, prefillQuery }: { setView: (v: ClientView) => voi
   }
 
   function handleGetExpertReview() {
-    // Navigate to New Request pre-filled with the AI query
-    const hash = `#/dashboard?prefill_category=${encodeURIComponent(category)}&prefill_ai_response=${encodeURIComponent(chatHistory.filter(m => m.role === "assistant").pop()?.content ?? "")}&prefill_title=${encodeURIComponent(lastQuery.substring(0, 60))}`;
-    window.history.replaceState(null, "", window.location.pathname + hash);
+    // Navigate to New Request pre-filled with the AI query — ensure all required fields populated
+    const aiContent = chatHistory.filter(m => m.role === "assistant").pop()?.content ?? "";
+    const autoTitle = lastQuery.substring(0, 60) + (lastQuery.length > 60 ? "..." : "");
+    // Use setPrefillData to ensure all required fields are populated (title, category, service_type, tier)
+    setPrefillData({
+      aiResponse: aiContent,
+      category: category || 'finance',
+      title: autoTitle || 'Expert review of AI response',
+      llmProvider: '',
+      llmModel: '',
+    });
     setView("new-request");
   }
 
@@ -2106,7 +2185,11 @@ function ChatAIView({ setView, prefillQuery }: { setView: (v: ClientView) => voi
                 <div className={`max-w-[85%] rounded-lg px-3.5 py-2.5 text-sm ${
                   msg.role === "user" ? "bg-primary text-white" : "bg-muted"
                 }`}>
-                  {msg.content}
+                  {msg.role === "assistant" ? (
+                    <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                  ) : (
+                    msg.content
+                  )}
                 </div>
               </div>
             ))}
@@ -2311,6 +2394,13 @@ function GlobalSearchBar({ userId, onNavigate }: { userId: number; onNavigate: (
   const [query, setQuery] = useState('');
   const [showResults, setShowResults] = useState(false);
   const { data: requests } = useQuery<ExpertRequest[]>({ queryKey: ["/api/requests/user", userId] });
+  const { data: drafts } = useQuery<ExpertRequest[]>({
+    queryKey: ["/api/requests/drafts", userId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/requests/drafts/${userId}`);
+      return res.json();
+    },
+  });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [debouncedQuery, setDebouncedQuery] = useState('');
 
@@ -2320,10 +2410,16 @@ function GlobalSearchBar({ userId, onNavigate }: { userId: number; onNavigate: (
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query]);
 
+  // Fix 6: search across ALL requests including drafts
+  const allRequests = [
+    ...(requests?.filter(r => r.status !== 'deleted') ?? []),
+    ...(drafts ?? []),
+  ];
+
   const filtered = debouncedQuery.trim()
-    ? requests?.filter(r => r.status !== 'draft' && r.status !== 'deleted' && (
-        r.title.toLowerCase().includes(debouncedQuery.toLowerCase()) ||
-        r.category.toLowerCase().includes(debouncedQuery.toLowerCase()) ||
+    ? allRequests.filter(r => (
+        (r.title || '').toLowerCase().includes(debouncedQuery.toLowerCase()) ||
+        (r.category || '').toLowerCase().includes(debouncedQuery.toLowerCase()) ||
         r.status.toLowerCase().includes(debouncedQuery.toLowerCase())
       )).slice(0, 5)
     : [];
@@ -2363,6 +2459,62 @@ function GlobalSearchBar({ userId, onNavigate }: { userId: number; onNavigate: (
   );
 }
 
+// ─── Confetti component ───
+function Confetti() {
+  const [show, setShow] = useState(true);
+  useEffect(() => { setTimeout(() => setShow(false), 4000); }, []);
+  if (!show) return null;
+  return (
+    <>
+      <style>{`
+        @keyframes confetti-fall {
+          0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+        }
+        .animate-confetti { animation: confetti-fall var(--dur, 3s) ease-in var(--delay, 0s) forwards; }
+      `}</style>
+      <div className="fixed inset-0 z-50 pointer-events-none overflow-hidden">
+        {Array.from({length: 50}).map((_, i) => {
+          const left = (Math.random() * 100).toFixed(1);
+          const size = (6 + Math.random() * 8).toFixed(1);
+          const delay = (Math.random() * 2).toFixed(2);
+          const dur = (2 + Math.random() * 3).toFixed(2);
+          const color = ['#0F3DD1', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'][Math.floor(Math.random() * 5)];
+          const radius = Math.random() > 0.5 ? '50%' : '0';
+          return (
+            <div key={i} className="absolute animate-confetti" style={{
+              left: `${left}%`,
+              top: '-10%',
+              width: `${size}px`,
+              height: `${size}px`,
+              backgroundColor: color,
+              '--delay': `${delay}s`,
+              '--dur': `${dur}s`,
+              borderRadius: radius,
+            } as React.CSSProperties} />
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ─── renderMarkdown helper ───
+function renderMarkdown(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n- /g, '<br/>• ')
+    .replace(/\n(\d+)\. /g, '<br/>$1. ')
+    .replace(/\n/g, '<br/>')
+    .replace(/^/, '<p>')
+    .replace(/$/, '</p>');
+}
+
 export default function ClientDashboard() {
   const { user, logout } = useAuth();
   const [, setLocation] = useLocation();
@@ -2376,9 +2528,29 @@ export default function ClientDashboard() {
   const [selectedRequest, setSelectedRequest] = useState<number>(0);
   const [editDraftId, setEditDraftId] = useState<number | undefined>(undefined);
   const [showTour, setShowTour] = useState(true);
-  // Check tourCompleted on user load (change #10)
+  const [showConfetti, setShowConfetti] = useState(false);
+
+  // Fix 3: Live credit balance query (refreshes every 30s)
+  const { data: liveCreditData } = useQuery<{ credits: number }>({
+    queryKey: ['/api/users', user?.id, 'credits'],
+    queryFn: () => apiRequest('GET', `/api/users/${user?.id}`).then(r => r.json()),
+    enabled: !!user?.id,
+    refetchInterval: 30000,
+  });
+  const displayCredits = liveCreditData?.credits ?? user?.credits ?? 0;
+
+  // Check tourCompleted on user load (change #10) + confetti
   useEffect(() => {
     if (user?.tourCompleted === 1) setShowTour(false);
+    // Show confetti for first-time users
+    if (user?.tourCompleted === 0) {
+      setShowConfetti(true);
+      setTimeout(() => {
+        setShowConfetti(false);
+        // Mark tour as started
+        apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
+      }, 4000);
+    }
   }, [user]);
   // BUG-009: Force light theme — remove dark class
   useEffect(() => {
@@ -2463,7 +2635,7 @@ export default function ClientDashboard() {
                 }
               }} />
               <button onClick={() => setView("credits")} className="focus:outline-none" title="Credits & Billing" data-testid="header-credits-link">
-                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />${user.credits} credits</Badge>
+                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />${displayCredits} credits</Badge>
               </button>
               <button onClick={() => setView("settings")} className="text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">{user.name}</button>
             </div>
@@ -2479,6 +2651,7 @@ export default function ClientDashboard() {
           </main>
         </div>
         {showTour && <OnboardingTour steps={CLIENT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}
+        {showConfetti && <Confetti />}
         <FloatingHelp />
       </div>
     </SidebarProvider>

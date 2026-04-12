@@ -11,6 +11,7 @@ import rateLimit from "express-rate-limit";
 import type { Response } from "express";
 import { sendOtpEmail } from "./email";
 import multer from "multer";
+import { triggerBackup } from "./db-persistence";
 
 // Multer config: memory storage, 5MB limit, images only
 const photoUpload = multer({
@@ -391,6 +392,9 @@ export async function registerRoutes(
         );
       }
 
+      // Trigger backup after new user registration
+      triggerBackup();
+
       // Generate and send OTP
       const otp = generateOtp();
       otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name });
@@ -562,15 +566,39 @@ export async function registerRoutes(
         if (expert) {
           const expertUser = storage.getUser(expert.userId);
           if (expertUser && actorId !== expertUser.id) {
-            notifyUser(expertUser.id, { type: "message", title: "New Message", message: `${actorName}: ${message.substring(0, 100)}`, requestId });
+            // FIX-4: Follow-up notification with request link so expert can navigate
+            const notifTitle = `Follow-up on "${request.title}"`;
+            const notifMessage = `${actorName}: ${message.substring(0, 100)}`;
+            const notifLink = `/expert?request=${requestId}`;
+            storage.createNotification({
+              userId: expertUser.id,
+              title: notifTitle,
+              message: notifMessage,
+              read: 0,
+              link: notifLink,
+              createdAt: new Date().toISOString(),
+            });
+            notifyUser(expertUser.id, { type: "follow_up", title: notifTitle, message: notifMessage, requestId, link: notifLink } as any);
           }
         }
       }
       if (clientUser && actorId !== clientUser.id) {
-        notifyUser(clientUser.id, { type: "message", title: "New Message", message: `${actorName}: ${message.substring(0, 100)}`, requestId });
+        notifyUser(clientUser.id, { type: "message", title: "New Message", message: `${actorName}: ${message.substring(0, 100)}`, requestId } as any);
       }
     }
+    triggerBackup();
     return res.json({ ok: true });
+  });
+
+  // ─── BACKUP TEST ───
+  app.get("/api/admin/backup-test", async (_req, res) => {
+    try {
+      const { backupDatabase } = await import("./db-persistence");
+      await backupDatabase();
+      res.json({ ok: true, message: "Backup triggered. Check server logs." });
+    } catch (err: any) {
+      res.json({ ok: false, error: err.message });
+    }
   });
 
   // ─── TRACKING ───
@@ -1174,11 +1202,14 @@ export async function registerRoutes(
                 link: `/expert?view=queue`,
                 createdAt: new Date().toISOString(),
               });
-              // SSE push with Uber-style alert for expert
+              // SSE push with Uber-style alert for expert — show expert net payout
+              const expTier = (exp.rateTier || "standard").toLowerCase();
+              const expTakeRate = TAKE_RATES[expTier] ?? 0.50;
+              const expPayout = Math.max(1, Math.floor(cost * (1 - expTakeRate)));
               notifyUser(exp.userId, {
                 type: "new_request",
                 title: "\ud83d\udcb0 New Request Available!",
-                message: `${title} — ${category} — earn $${cost} credits in ~10 min`,
+                message: `${title} — ${category} — earn $${expPayout} in ~10 min`,
                 requestId: request.id,
               });
             }
@@ -1361,7 +1392,8 @@ export async function registerRoutes(
       if (expert) {
         const user = storage.getUser(expert.userId);
         if (user) {
-          const takeRate = TAKE_RATES[r.priceTier || "standard"] || 0.30;
+          // FIX-1: Use lowercase tier key, fall back to 0.50 for unknown tiers
+          const takeRate = TAKE_RATES[(r.priceTier || r.tier || "standard").toLowerCase()] ?? 0.50;
           const earning = Math.max(1, Math.floor(r.creditsCost * (1 - takeRate)));
           storage.updateUser(user.id, { credits: user.credits + earning });
           storage.createTransaction({
@@ -1598,7 +1630,8 @@ export async function registerRoutes(
           const user = storage.getUser(expert.userId);
           const request = storage.getRequest(review.requestId);
           if (user && request) {
-            const takeRate = TAKE_RATES[request.priceTier || "standard"] || 0.30;
+            // FIX-1: Consistent tier-based take rate
+            const takeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
             const perReviewCost = request.creditsCost / allReviews.length;
             const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
             storage.updateUser(user.id, { credits: user.credits + earning });
@@ -1647,10 +1680,12 @@ export async function registerRoutes(
           title: "Review Completed!",
           message: `An expert submitted their review for "${request.title}"`,
           requestId: request.id,
-        });
+        } as any);
       }
     }
 
+    // FIX-7: Trigger backup after expert review submission
+    triggerBackup();
     return res.json(updated);
   });
 
@@ -1746,9 +1781,11 @@ export async function registerRoutes(
           title: "Expert Review Submitted",
           message: `Expert has submitted a review for your request: ${request.title}`,
           requestId: request.id,
-        });
+        } as any);
       }
 
+      // FIX-7: Trigger backup after expert review submission
+      triggerBackup();
       return res.json(updated);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -2031,13 +2068,37 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/attachments/:requestId/:filename — download file from GCS
+  // GET /api/attachments/:requestId/:filename — download file from GCS with DB fallback
   app.get("/api/attachments/:requestId/:filename", async (req, res) => {
     try {
       const { requestId, filename } = req.params;
-      const gcsPath = `attachments/${requestId}/${filename}`;
-      const gcsResponse = await downloadFromGcs(gcsPath) as any;
+      const decodedFilename = decodeURIComponent(filename);
+
+      // FIX-6: Try DB fallback first for legacy {name, content} attachments
+      const request = storage.getRequest(parseInt(requestId));
+      if (request) {
+        let attachments: Array<any> = [];
+        try { attachments = JSON.parse(request.attachments || "[]"); } catch {}
+        const match = attachments.find((a: any) => a.name === decodedFilename || a.filename === decodedFilename);
+        if (match && match.content) {
+          // Legacy text-based attachment stored in DB
+          res.set("Content-Type", match.contentType || "text/plain");
+          res.set("Content-Disposition", `attachment; filename="${decodedFilename}"`);
+          return res.send(Buffer.from(match.content, "utf-8"));
+        }
+      }
+
+      // Try GCS download
+      const gcsPath = `attachments/${requestId}/${decodedFilename}`;
+      let gcsResponse: any;
+      try {
+        gcsResponse = await downloadFromGcs(gcsPath);
+      } catch (gcsErr: any) {
+        console.error(`[GCS] Download failed for ${gcsPath}:`, gcsErr.message);
+        return res.status(404).json({ error: true, message: "File not found" });
+      }
       if (!gcsResponse.ok) {
+        console.error(`[GCS] Download HTTP error ${gcsResponse.status} for ${gcsPath}`);
         return res.status(gcsResponse.status === 404 ? 404 : 500).json({
           error: true,
           message: gcsResponse.status === 404 ? "File not found" : "Failed to download file",
@@ -2045,11 +2106,12 @@ export async function registerRoutes(
       }
       const contentType = gcsResponse.headers.get("content-type") || "application/octet-stream";
       res.set("Content-Type", contentType);
-      res.set("Content-Disposition", `attachment; filename="${filename}"`);
+      res.set("Content-Disposition", `attachment; filename="${decodedFilename}"`);
       // Stream the response body
       const arrayBuffer = await gcsResponse.arrayBuffer();
       return res.send(Buffer.from(arrayBuffer));
     } catch (e: any) {
+      console.error("[ATTACHMENT] Download error:", e.message);
       return res.status(500).json({ error: true, message: e.message });
     }
   });
@@ -2190,24 +2252,29 @@ export async function registerRoutes(
       const uninvoicedReviews = storage.getUninvoicedReviewsByExpert(expertId);
 
       // Build line items from uninvoiced reviews (may be empty for new experts)
+      // FIX-2: Use expert net payout (not client price) in each line item
       const lineItems = uninvoicedReviews.map((rev) => {
         const request = storage.getRequest(rev.requestId);
+        const clientCost = request?.creditsCost || 1;
+        const reqTier = ((request?.priceTier || request?.tier || "standard") as string).toLowerCase();
+        const takeRate = TAKE_RATES[reqTier] ?? 0.50;
+        const expertNetPayout = Math.max(1, Math.floor(clientCost * (1 - takeRate)));
         return {
           reviewId: rev.id,
           requestId: rev.requestId,
           title: request?.title || "Unknown request",
           serviceType: request?.serviceType || "review",
           category: request?.category || "general",
-          creditsCost: request?.creditsCost || 1,
+          creditsCost: expertNetPayout,
           completedAt: rev.completedAt || new Date().toISOString(),
-          amountCents: (request?.creditsCost || 1) * 100,
+          amountCents: expertNetPayout * 100,
         };
       });
 
       const totalAmountCents = lineItems.reduce((sum, item) => sum + item.amountCents, 0);
-      const platformFeeRate = 20; // 20%
-      const platformFeeCents = Math.round(totalAmountCents * platformFeeRate / 100);
-      const netPayoutCents = totalAmountCents - platformFeeCents;
+      const platformFeeRate = 0;
+      const platformFeeCents = 0;
+      const netPayoutCents = totalAmountCents;
 
       let categories: string[] = [];
       try { categories = JSON.parse(expert.categories || "[]"); } catch {}
@@ -2274,18 +2341,22 @@ export async function registerRoutes(
       const uninvoicedReviews = storage.getUninvoicedReviewsByExpert(expertId);
       if (uninvoicedReviews.length === 0) return res.status(400).json({ error: true, message: "No uninvoiced reviews found. Complete reviews to generate an invoice." });
 
-      // Build line items
+      // Build line items — FIX-2: use expert net payout amounts, not client price
       const lineItems = uninvoicedReviews.map((rev) => {
         const request = storage.getRequest(rev.requestId);
+        const clientCost = request?.creditsCost || 1;
+        const reqTier = ((request?.priceTier || request?.tier || "standard") as string).toLowerCase();
+        const takeRate = TAKE_RATES[reqTier] ?? 0.50;
+        const expertNetPayout = Math.max(1, Math.floor(clientCost * (1 - takeRate)));
         return {
           reviewId: rev.id,
           requestId: rev.requestId,
           title: request?.title || "Unknown request",
           serviceType: request?.serviceType || "review",
           category: request?.category || "general",
-          creditsCost: request?.creditsCost || 1,
+          creditsCost: expertNetPayout,
           completedAt: rev.completedAt || new Date().toISOString(),
-          amountCents: (request?.creditsCost || 1) * 100,
+          amountCents: expertNetPayout * 100,
         };
       });
 

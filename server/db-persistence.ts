@@ -29,6 +29,7 @@ export async function backupDatabase(): Promise<void> {
     }
     const data = readFileSync(DB_PATH);
     const url = `https://storage.googleapis.com/upload/storage/v1/b/${BUCKET}/o?uploadType=media&name=${encodeURIComponent(OBJECT)}`;
+    console.log(`[DB-BACKUP] Uploading ${data.length} bytes to gs://${BUCKET}/${OBJECT}...`);
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -38,10 +39,11 @@ export async function backupDatabase(): Promise<void> {
       },
       body: data,
     });
+    const responseText = await res.text();
     if (res.ok) {
-      console.log(`[DB-BACKUP] Successfully backed up database to gs://${BUCKET}/${OBJECT}`);
+      console.log(`[DB-BACKUP] Successfully backed up database to gs://${BUCKET}/${OBJECT} (${data.length} bytes)`);
     } else {
-      console.error(`[DB-BACKUP] Backup failed: ${res.status} ${await res.text()}`);
+      console.error(`[DB-BACKUP] Backup failed: ${res.status} — ${responseText}`);
     }
   } catch (err) {
     console.error("[DB-BACKUP] Error during backup:", err);
@@ -75,6 +77,13 @@ export async function restoreDatabase(): Promise<void> {
   } catch (err) {
     console.error("[DB-RESTORE] Error during restore:", err);
   }
+}
+
+// Debounced backup: triggers 5 seconds after last write, prevents excessive uploads
+let backupTimer: ReturnType<typeof setTimeout> | null = null;
+export function triggerBackup(): void {
+  if (backupTimer) clearTimeout(backupTimer);
+  backupTimer = setTimeout(() => backupDatabase(), 5000);
 }
 
 export function startPeriodicBackup(): void {

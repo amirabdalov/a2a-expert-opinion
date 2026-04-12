@@ -100,6 +100,7 @@ function VideoSection() {
           loop
           playsInline
           poster="/a2a-blue-logo.svg"
+          onCanPlay={(e) => { (e.target as HTMLVideoElement).currentTime = 5; }}
           className="w-full rounded-xl shadow-lg"
           data-testid="video-promo"
         >
@@ -996,6 +997,26 @@ function LandingNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [hoveredBtn, setHoveredBtn] = useState<"register" | "login" | null>(null);
+  const [loggedInUser, setLoggedInUser] = useState<any>(null);
+
+  useEffect(() => {
+    // Check for auth cookie to show logged-in state
+    try {
+      const cookies = document.cookie.split(';');
+      const authCookie = cookies.find(c => c.trim().startsWith('a2a_user='));
+      if (authCookie) {
+        const userData = JSON.parse(decodeURIComponent(authCookie.split('=').slice(1).join('=')));
+        setLoggedInUser(userData);
+      }
+    } catch {}
+  }, []);
+
+  function handleLogout() {
+    // Clear the auth cookie
+    document.cookie = 'a2a_user=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/';
+    setLoggedInUser(null);
+    window.location.reload();
+  }
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 50);
@@ -1063,45 +1084,63 @@ function LandingNav() {
                     </span>
                   </Link>
 
-                  {/* Register + Login buttons with hover morph */}
-                  <div className="flex items-center gap-2 relative min-w-[200px] justify-end" onMouseLeave={() => setHoveredBtn(null)}>
-                    <Link href="/register">
-                      <span
-                        onMouseEnter={() => setHoveredBtn("register")}
-                        className={`relative z-10 inline-flex items-center justify-center text-[15px] font-medium transition-all duration-300 ease-in-out h-11 rounded-full border border-gray-300 hover:border-[#0F3DD1] text-[#686868] hover:text-[#0F3DD1] cursor-pointer ${
-                          hoveredBtn === "login" ? "w-11 px-0" : "px-5"
-                        }`}
-                        data-testid="button-nav-signup"
+                  {/* Auth buttons — show user info if logged in, else Sign Up / Login */}
+                  {loggedInUser ? (
+                    <div className="flex items-center gap-2" data-testid="nav-logged-in">
+                      <span className="text-sm font-medium text-[#686868] max-w-[140px] truncate" data-testid="nav-user-name">{loggedInUser.name || loggedInUser.email}</span>
+                      <Link href="/dashboard">
+                        <span className="inline-flex items-center gap-1.5 px-4 h-10 rounded-full bg-[#0F3DD1] text-white text-sm font-semibold cursor-pointer hover:opacity-90 transition whitespace-nowrap" data-testid="button-nav-dashboard">
+                          Go to Dashboard
+                        </span>
+                      </Link>
+                      <button
+                        onClick={handleLogout}
+                        className="inline-flex items-center gap-1 px-3 h-10 rounded-full border border-gray-300 hover:border-red-400 text-[#686868] hover:text-red-500 text-sm font-medium cursor-pointer transition"
+                        data-testid="button-nav-logout"
                       >
-                        {hoveredBtn === "login" ? (
-                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-                        ) : (
-                          <span className="flex items-center gap-2 whitespace-nowrap">
-                            Sign Up
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-                          </span>
-                        )}
-                      </span>
-                    </Link>
-                    <Link href="/login">
-                      <span
-                        onMouseEnter={() => setHoveredBtn("login")}
-                        className={`relative z-10 inline-flex items-center justify-center transition-all duration-300 ease-in-out bg-[#0F3DD1] text-white h-11 rounded-full cursor-pointer ${
-                          hoveredBtn === "login" ? "px-5" : "w-11 px-0"
-                        }`}
-                        data-testid="button-nav-login"
-                      >
-                        {hoveredBtn === "login" ? (
-                          <span className="flex items-center gap-2 whitespace-nowrap text-[15px] font-semibold">
+                        Log out
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 relative min-w-[200px] justify-end" onMouseLeave={() => setHoveredBtn(null)}>
+                      <Link href="/register">
+                        <span
+                          onMouseEnter={() => setHoveredBtn("register")}
+                          className={`relative z-10 inline-flex items-center justify-center text-[15px] font-medium transition-all duration-300 ease-in-out h-11 rounded-full border border-gray-300 hover:border-[#0F3DD1] text-[#686868] hover:text-[#0F3DD1] cursor-pointer ${
+                            hoveredBtn === "login" ? "w-11 px-0" : "px-5"
+                          }`}
+                          data-testid="button-nav-signup"
+                        >
+                          {hoveredBtn === "login" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                          ) : (
+                            <span className="flex items-center gap-2 whitespace-nowrap">
+                              Sign Up
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                            </span>
+                          )}
+                        </span>
+                      </Link>
+                      <Link href="/login">
+                        <span
+                          onMouseEnter={() => setHoveredBtn("login")}
+                          className={`relative z-10 inline-flex items-center justify-center transition-all duration-300 ease-in-out bg-[#0F3DD1] text-white h-11 rounded-full cursor-pointer ${
+                            hoveredBtn === "login" ? "px-5" : "w-11 px-0"
+                          }`}
+                          data-testid="button-nav-login"
+                        >
+                          {hoveredBtn === "login" ? (
+                            <span className="flex items-center gap-2 whitespace-nowrap text-[15px] font-semibold">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                              Login
+                            </span>
+                          ) : (
                             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                            Login
-                          </span>
-                        ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                        )}
-                      </span>
-                    </Link>
-                  </div>
+                          )}
+                        </span>
+                      </Link>
+                    </div>
+                  )}
                 </div>
 
                 {/* Mobile hamburger */}
