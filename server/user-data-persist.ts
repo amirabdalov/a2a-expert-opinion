@@ -20,20 +20,33 @@ let pgReady = false;
 
 async function getPgPool(): Promise<pg.Pool | null> {
   if (pgPool && pgReady) return pgPool;
-  try {
-    pgPool = new pg.Pool({ ...PG_CONFIG, max: 3, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000 });
-    // Test connection
-    const client = await pgPool.connect();
-    client.release();
-    pgReady = true;
-    console.log("[CLOUD-SQL] ✅ Connected to PostgreSQL");
-    return pgPool;
-  } catch (err) {
-    console.log("[CLOUD-SQL] Not available (local dev or no Cloud SQL proxy):", (err as Error).message?.substring(0, 80));
-    pgPool = null;
-    pgReady = false;
-    return null;
+
+  // Try Unix socket first (Cloud Run), then public IP fallback
+  const configs = [
+    { ...PG_CONFIG, host: `/cloudsql/${CLOUD_SQL_CONNECTION}` },
+    { user: "postgres", password: "A2A$ecureDB2026!", database: "a2a_production", host: "34.46.252.14", port: 5432 },
+  ];
+
+  for (const config of configs) {
+    try {
+      const pool = new pg.Pool({ ...config, max: 3, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000 });
+      const client = await pool.connect();
+      client.release();
+      pgPool = pool;
+      pgReady = true;
+      const via = config.host?.startsWith('/') ? 'Unix socket' : `TCP ${config.host}`;
+      console.log(`[CLOUD-SQL] ✅ Connected to PostgreSQL via ${via}`);
+      return pgPool;
+    } catch (err) {
+      const via = config.host?.startsWith('/') ? 'Unix socket' : `TCP ${config.host}`;
+      console.log(`[CLOUD-SQL] ${via} failed:`, (err as Error).message?.substring(0, 80));
+    }
   }
+
+  console.log("[CLOUD-SQL] Not available — all connection methods failed");
+  pgPool = null;
+  pgReady = false;
+  return null;
 }
 
 async function ensurePgTables(pool: pg.Pool): Promise<void> {
