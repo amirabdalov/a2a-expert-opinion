@@ -914,6 +914,10 @@ export default function NewsPage() {
 
   // Track pageview on mount
   useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
+
+  useEffect(() => {
     fetch("/api/track/pageview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

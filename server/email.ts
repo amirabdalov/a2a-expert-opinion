@@ -48,6 +48,32 @@ export async function sendInvoiceEmail(to: string, data: InvoiceEmailData) {
   });
 }
 
+export async function sendVerificationEmail(expertName: string, requestTitle: string) {
+  const recipients = ["oleg@a2a.global", "amir@a2a.global"];
+  return resend.emails.send({
+    from: "A2A Global <noreply@a2a.global>",
+    to: recipients,
+    subject: `A2A Global — Expert Response Needs Verification`,
+    html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+      <div style="text-align:center;padding:20px;border-bottom:2px solid #0F3DD1;">
+        <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="40" style="height:40px;display:block;margin:0 auto;" />
+      </div>
+      <div style="padding:24px 0;">
+        <h2 style="color:#0F3DD1;margin:0 0 8px;">New Response Needs Verification</h2>
+        <p>Expert <strong>${expertName}</strong> submitted a response for request <strong>'${requestTitle}'</strong>.</p>
+        <p>Please review in the admin panel.</p>
+        <div style="margin:24px 0;">
+          <a href="https://a2a.global/admin" style="background:#0F3DD1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Open Admin Panel</a>
+        </div>
+      </div>
+      <div style="border-top:1px solid #eee;padding:16px 0;text-align:center;">
+        <p style="font-size:11px;color:#9ca3af;">Connecting businesses with AI experts worldwide.</p>
+        <p style="font-size:10px;color:#9ca3af;">&copy; 2026 A2A Global Inc. File No. 10050200, Newark, Delaware.</p>
+      </div>
+    </div>`,
+  });
+}
+
 export async function sendOtpEmail(to: string, name: string, otp: string) {
   return resend.emails.send({
     from: "A2A Global <noreply@a2a.global>",

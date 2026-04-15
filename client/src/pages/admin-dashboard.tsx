@@ -15,8 +15,9 @@ import {
   ArrowDownUp, Settings, Bell, LogOut, Search, Plus, Ban,
   CheckCircle2, XCircle, ChevronRight, TrendingUp, DollarSign,
   UserCheck, ClipboardList, PieChart, Activity, RefreshCw, Clock, Timer, BarChart3, Gauge,
-  Command,
+  Command, ShieldCheck, MessageSquare, AlertCircle,
 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend, Area, AreaChart,
@@ -29,10 +30,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "@/components/ui/select";
 
-type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence" | "acquisition";
+type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence" | "acquisition" | "review_queue";
 
-const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any }> = [
+const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any; badgeKey?: string }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "review_queue", label: "Review Queue", icon: ShieldCheck, badgeKey: "pending_reviews" },
   { id: "users", label: "Users", icon: Users },
   { id: "experts", label: "Experts", icon: GraduationCap },
   { id: "requests", label: "Requests", icon: FileText },
@@ -174,6 +176,17 @@ export default function AdminDashboard() {
     if (!admin) setLocation("/admin/login");
   }, [admin]);
 
+  // Fetch pending review count for badge
+  const { data: pendingReviews } = useQuery<any[]>({
+    queryKey: ["/api/admin/pending-reviews"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/pending-reviews");
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+  const pendingReviewCount = pendingReviews?.length ?? 0;
+
   // Cmd+K keyboard shortcut
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -222,6 +235,7 @@ export default function AdminDashboard() {
           {NAV_ITEMS.map(item => {
             const Icon = item.icon;
             const active = page === item.id;
+            const badge = item.badgeKey === "pending_reviews" ? pendingReviewCount : 0;
             return (
               <button
                 key={item.id}
@@ -234,7 +248,12 @@ export default function AdminDashboard() {
                 }`}
               >
                 <Icon className="w-4 h-4" />
-                {item.label}
+                <span className="flex-1 text-left">{item.label}</span>
+                {badge > 0 && (
+                  <span className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">
+                    {badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -267,6 +286,7 @@ export default function AdminDashboard() {
       <main className="flex-1 overflow-y-auto">
         <div className="p-6">
           {page === "dashboard" && <DashboardOverview />}
+          {page === "review_queue" && <ReviewQueuePanel />}
           {page === "users" && <UsersPage />}
           {page === "experts" && <ExpertsPage />}
           {page === "requests" && <RequestsPage />}
@@ -280,6 +300,169 @@ export default function AdminDashboard() {
       </main>
     </div>
     </AdminErrorBoundary>
+  );
+}
+
+// ─── Review Queue Panel ───
+function ReviewQueuePanel() {
+  const { toast } = useToast();
+  const { data: pendingItems, isLoading, refetch } = useQuery<any[]>({
+    queryKey: ["/api/admin/pending-reviews"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/pending-reviews");
+      return res.json();
+    },
+    refetchInterval: 15000,
+  });
+
+  const [feedbackMap, setFeedbackMap] = useState<Record<number, string>>({});
+  const [showFeedbackFor, setShowFeedbackFor] = useState<number | null>(null);
+
+  const approveMutation = useMutation({
+    mutationFn: async (requestId: number) => {
+      const res = await apiRequest("POST", `/api/admin/reviews/${requestId}/approve`, {});
+      if (!res.ok) throw new Error("Failed to approve");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Approved", description: "Response sent to client." });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pending-reviews"] });
+      refetch();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: async ({ requestId, feedback }: { requestId: number; feedback: string }) => {
+      const res = await apiRequest("POST", `/api/admin/reviews/${requestId}/reject`, { feedback });
+      if (!res.ok) throw new Error("Failed to request revision");
+      return res.json();
+    },
+    onSuccess: (_data, { requestId }) => {
+      toast({ title: "Revision Requested", description: "Expert has been notified." });
+      setShowFeedbackFor(null);
+      setFeedbackMap(prev => { const n = { ...prev }; delete n[requestId]; return n; });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pending-reviews"] });
+      refetch();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <div data-testid="review-queue-panel">
+      <div className="mb-6">
+        <h1 className="text-xl font-bold text-zinc-100 flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5 text-amber-400" />
+          Review Queue
+        </h1>
+        <p className="text-sm text-zinc-400 mt-1">Expert responses awaiting A2A quality verification before delivery to clients.</p>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-4">
+          {[1,2].map(i => <div key={i} className="h-40 bg-zinc-800 animate-pulse rounded-lg" />)}
+        </div>
+      ) : !pendingItems || pendingItems.length === 0 ? (
+        <div className="text-center py-16">
+          <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-3" />
+          <p className="text-zinc-300 font-medium">All clear!</p>
+          <p className="text-zinc-500 text-sm mt-1">No responses pending review right now.</p>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {pendingItems.map((item: any) => (
+            <div key={item.id} className="bg-zinc-900 border border-zinc-700 rounded-xl overflow-hidden" data-testid={`review-item-${item.id}`}>
+              {/* Header */}
+              <div className="px-5 py-4 border-b border-zinc-800">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-semibold text-zinc-100 truncate">{item.title}</h3>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      <span className="text-xs text-zinc-500 capitalize">{item.category}</span>
+                      <span className="text-zinc-700">·</span>
+                      <span className="text-xs text-zinc-400">Client: <span className="text-zinc-300">{item.clientName}</span></span>
+                      <span className="text-zinc-700">·</span>
+                      <span className="text-xs text-zinc-400">Expert: <span className="text-zinc-300">{item.expertName}</span></span>
+                    </div>
+                  </div>
+                  <span className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                    <ShieldCheck className="h-3 w-3" /> Under Review
+                  </span>
+                </div>
+              </div>
+
+              {/* Expert Response */}
+              <div className="px-5 py-4">
+                <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <MessageSquare className="h-3.5 w-3.5" /> Expert Response
+                </p>
+                <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-4 max-h-60 overflow-y-auto">
+                  <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">
+                    {item.expertResponse || <span className="text-zinc-500 italic">No response text found</span>}
+                  </pre>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="px-5 py-4 border-t border-zinc-800 flex flex-col gap-3">
+                {showFeedbackFor === item.id ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-400" />
+                      <p className="text-sm font-medium text-zinc-200">Feedback for expert (required):</p>
+                    </div>
+                    <Textarea
+                      value={feedbackMap[item.id] || ""}
+                      onChange={(e) => setFeedbackMap(prev => ({ ...prev, [item.id]: e.target.value }))}
+                      placeholder="Explain what needs to be revised..."
+                      rows={3}
+                      className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500 resize-none"
+                      data-testid={`feedback-textarea-${item.id}`}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => rejectMutation.mutate({ requestId: item.id, feedback: feedbackMap[item.id] || "" })}
+                        disabled={rejectMutation.isPending || !(feedbackMap[item.id] || "").trim()}
+                        className="flex-1 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                        data-testid={`button-reject-confirm-${item.id}`}
+                      >
+                        {rejectMutation.isPending ? "Sending..." : "Send Revision Request"}
+                      </button>
+                      <button
+                        onClick={() => setShowFeedbackFor(null)}
+                        className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-zinc-200 text-sm transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => approveMutation.mutate(item.id)}
+                      disabled={approveMutation.isPending}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                      data-testid={`button-approve-${item.id}`}
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      Approve &amp; Send to Client
+                    </button>
+                    <button
+                      onClick={() => setShowFeedbackFor(item.id)}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-900/40 hover:bg-red-800/60 border border-red-800/50 text-red-400 text-sm font-medium transition-colors"
+                      data-testid={`button-reject-${item.id}`}
+                    >
+                      <XCircle className="h-4 w-4" />
+                      Request Revision
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

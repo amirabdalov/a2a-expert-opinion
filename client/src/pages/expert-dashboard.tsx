@@ -486,7 +486,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
   });
 
   // FIX-5: Fetch full chat/message history and timeline for this request
-  const { data: chatMessages } = useQuery<Message[]>({
+  const { data: chatMessages, refetch: refetchMessages } = useQuery<Message[]>({
     queryKey: ["/api/messages", currentReview?.requestId],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/messages/${currentReview!.requestId}`);
@@ -495,7 +495,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
     enabled: !!currentReview?.requestId,
   });
 
-  const { data: timelineEvents } = useQuery<any[]>({
+  const { data: timelineEvents, refetch: refetchTimeline } = useQuery<any[]>({
     queryKey: ["/api/requests", currentReview?.requestId, "timeline"],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/requests/${currentReview!.requestId}/timeline`);
@@ -505,6 +505,10 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
   });
 
   const followUpMessages = timelineEvents?.filter((e) => e.type === "message") ?? [];
+
+  // Follow-up reply state
+  const [replyText, setReplyText] = useState("");
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [ratingValue, setRatingValue] = useState(5);
   const [ratingComment, setRatingComment] = useState("");
@@ -569,7 +573,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Response submitted!", description: "Your response has been sent to the client." });
+      toast({ title: "Response submitted!", description: "Your response is now under A2A verification before delivery to the client." });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/request", currentReview?.requestId] });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/pending"] });
@@ -580,6 +584,30 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Follow-up reply mutation
+  const replyMutation = useMutation({
+    mutationFn: async (content: string) => {
+      if (!currentReview?.requestId) throw new Error("No request ID");
+      const res = await apiRequest("POST", `/api/requests/${currentReview.requestId}/message`, {
+        role: "expert",
+        actorId: undefined,
+        actorName: "Expert",
+        message: content,
+      });
+      if (!res.ok) throw new Error("Failed to send reply");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Reply sent!", description: "Your message has been delivered to the client." });
+      setReplyText("");
+      refetchTimeline();
+      refetchMessages();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error sending reply", description: err.message, variant: "destructive" });
     },
   });
 
@@ -801,16 +829,18 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         </Card>
       )}
 
-      {/* FIX-5: Full conversation/chat history for this request */}
-      {((chatMessages && chatMessages.length > 0) || followUpMessages.length > 0) && (
-        <Card className="mt-4">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <MessageSquare className="h-4 w-4 text-blue-500" /> Conversation History
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
+      {/* FIX-5: Full conversation/chat history for this request + Follow-up reply form */}
+      <Card className="mt-4">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <MessageSquare className="h-4 w-4 text-blue-500" />
+            {followUpMessages.length > 0 || (chatMessages && chatMessages.length > 0) ? "Conversation Thread" : "Follow-up Messages"}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/* Chat messages */}
+          {((chatMessages && chatMessages.length > 0) || followUpMessages.length > 0) ? (
+            <div className="space-y-3 mb-5">
               {/* AI chat messages */}
               {chatMessages?.map((msg: Message) => (
                 <div key={`chat-${msg.id}`} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -825,21 +855,59 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                 </div>
               ))}
               {/* Follow-up messages from timeline */}
-              {followUpMessages.map((evt: any) => (
-                <div key={`evt-${evt.id}`} className="flex justify-start">
-                  <div className="max-w-[80%] rounded-lg p-3 text-xs bg-amber-50 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-800/30">
-                    <p className="font-semibold mb-1 text-amber-700 dark:text-amber-400">{evt.actorName || "Client"}</p>
-                    <p className="whitespace-pre-wrap text-foreground">{evt.message}</p>
-                    {evt.createdAt && (
-                      <p className="text-[10px] text-muted-foreground mt-1">{new Date(evt.createdAt).toLocaleString()}</p>
-                    )}
+              {followUpMessages.map((evt: any) => {
+                const isExpert = evt.actorName && typeof evt.actorName === "string" && evt.actorName.toLowerCase().includes("expert");
+                return (
+                  <div key={`evt-${evt.id}`} className={`flex ${isExpert ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[80%] rounded-lg p-3 text-xs ${
+                      isExpert
+                        ? "bg-blue-100 text-blue-900 dark:bg-blue-900/30 dark:text-blue-100"
+                        : "bg-amber-50 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-800/30"
+                    }`}>
+                      <p className={`font-semibold mb-1 ${
+                        isExpert ? "opacity-70" : "text-amber-700 dark:text-amber-400"
+                      }`}>{evt.actorName || "Client"}</p>
+                      <p className="whitespace-pre-wrap text-foreground">{evt.message}</p>
+                      {evt.createdAt && (
+                        <p className="text-[10px] text-muted-foreground mt-1">{new Date(evt.createdAt).toLocaleString()}</p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          ) : (
+            <p className="text-xs text-muted-foreground mb-4">No follow-up messages yet. If the client asks a follow-up question, it will appear here.</p>
+          )}
+
+          {/* Follow-up Reply Form */}
+          <div className="border-t pt-4" data-testid="expert-followup-reply-form">
+            <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+              <Send className="h-3.5 w-3.5" /> Reply to Client Follow-ups
+            </p>
+            <Textarea
+              ref={replyTextareaRef}
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              placeholder="Type your reply to the client here..."
+              rows={4}
+              className="mb-3 resize-none"
+              data-testid="expert-reply-textarea"
+            />
+            <Button
+              onClick={() => {
+                if (replyText.trim()) replyMutation.mutate(replyText.trim());
+              }}
+              disabled={replyMutation.isPending || !replyText.trim()}
+              className="w-full sm:w-auto"
+              data-testid="expert-reply-send-button"
+            >
+              <Send className="mr-2 h-4 w-4" />
+              {replyMutation.isPending ? "Sending..." : "Send Reply"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

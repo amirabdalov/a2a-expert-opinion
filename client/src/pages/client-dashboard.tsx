@@ -385,7 +385,7 @@ function Overview({ userId, setView, setSelectedRequest }: { userId: number; set
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* FIX-6: Clickable overview cards */}
         <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("credits")} data-testid="card-stat-credits">
-          <CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-primary" /><div><p className="text-2xl font-bold">${credits}</p><p className="text-xs text-muted-foreground">$ Credits Available</p></div></div></CardContent>
+          <CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-primary" /><div><p className="text-2xl font-bold">${credits}</p><p className="text-xs text-muted-foreground">Credits Available</p></div></div></CardContent>
         </Card>
         <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("my-requests")} data-testid="card-stat-active">
           <CardContent className="p-4"><div className="flex items-center gap-3"><Clock className="h-8 w-8 text-yellow-500" /><div><p className="text-2xl font-bold">{active}</p><p className="text-xs text-muted-foreground">Active Requests</p></div></div></CardContent>
@@ -539,7 +539,7 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
     debounceTimer.current = setTimeout(() => {
       saveDraft({
         title, category, serviceType, aiResponse,
-        attachments: JSON.stringify(attachments),
+        attachments: JSON.stringify(attachments.map(a => ({ name: a.name, type: a.type, size: a.size }))),
         instructions, llmProvider, llmModel,
         serviceCategory: serviceType,
         description: question || aiResponse || instructions || title,
@@ -566,7 +566,8 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
         tier: activeTier,
         serviceType,
         aiResponse: aiResponse || null,
-        attachments: JSON.stringify(attachments),
+        // Send only metadata (no base64 data) to avoid 'request entity too large'
+        attachments: JSON.stringify(attachments.map(a => ({ name: a.name, type: a.type, size: a.size }))),
         expertsNeeded: 1,
         instructions: instructions || null,
         llmProvider: llmProvider || null,
@@ -581,8 +582,8 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
     onSuccess: async (data) => {
       const newRequestId = data.id;
 
-      // FIX-2: Upload files to /api/requests/{requestId}/attachments after request creation
-      const fileAttachments = attachments.filter((a) => a.data && a.type !== "text/plain");
+      // Upload ALL files (including text) via multipart after creation
+      const fileAttachments = attachments.filter((a) => a.data);
       if (fileAttachments.length > 0) {
         setUploading(true);
         try {
@@ -1573,26 +1574,27 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
       {/* Lifecycle Status Bar */}
       <Card className="mb-4" data-testid="lifecycle-status-bar">
         <CardContent className="p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-y-2">
             {[
               { key: "submitted", label: "Submitted", icon: <CheckCircle className="h-4 w-4" /> },
-              { key: "expert_assigned", label: "Expert Assigned", icon: <User className="h-4 w-4" /> },
-              { key: "in_progress", label: "In Progress", icon: <Clock className="h-4 w-4" /> },
-              { key: "completed", label: "Delivered", icon: <CheckCircle className="h-4 w-4" /> },
-              { key: "follow_ups", label: "Follow-ups", icon: <MessageSquare className="h-4 w-4" /> },
+              { key: "expert_claimed", label: "Expert Claimed", icon: <User className="h-4 w-4" /> },
+              { key: "expert_reviewing", label: "Expert Reviewing", icon: <Clock className="h-4 w-4" /> },
+              { key: "under_a2a_verification", label: "A2A Verification", icon: <ShieldCheck className="h-4 w-4" /> },
+              { key: "delivered", label: "Delivered", icon: <CheckCircle className="h-4 w-4" /> },
             ].map((step, i, arr) => {
-              const statusOrder = ["pending", "in_progress", "completed"];
+              const statusOrder = ["pending", "in_progress", "under_review", "awaiting_followup", "completed"];
               const currentIdx = statusOrder.indexOf(request.status);
               let isActive = false;
-              if (step.key === "submitted") isActive = currentIdx >= 0;
-              else if (step.key === "expert_assigned") isActive = currentIdx >= 1;
-              else if (step.key === "in_progress") isActive = currentIdx >= 1;
-              else if (step.key === "completed") isActive = currentIdx >= 2;
-              else if (step.key === "follow_ups") isActive = currentIdx >= 2;
+              let isCurrent = false;
+              if (step.key === "submitted") { isActive = currentIdx >= 0; }
+              else if (step.key === "expert_claimed") { isActive = currentIdx >= 1; }
+              else if (step.key === "expert_reviewing") { isActive = currentIdx >= 1; isCurrent = request.status === "in_progress"; }
+              else if (step.key === "under_a2a_verification") { isActive = currentIdx >= 2; isCurrent = request.status === "under_review"; }
+              else if (step.key === "delivered") { isActive = currentIdx >= 3; }
               return (
                 <div key={step.key} className="flex items-center gap-1">
                   <div className={`flex items-center gap-1.5 ${
-                    isActive ? "text-green-600" : "text-muted-foreground/40"
+                    isCurrent ? "text-amber-500" : isActive ? "text-green-600" : "text-muted-foreground/40"
                   }`}>
                     {step.icon}
                     <span className="text-[10px] font-medium hidden sm:inline">{step.label}</span>
@@ -1604,6 +1606,15 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
               );
             })}
           </div>
+          {/* Under A2A Verification message */}
+          {request.status === "under_review" && (
+            <div className="mt-3 flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-800/30" data-testid="under-review-message">
+              <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-800 dark:text-amber-300">
+                Your expert has responded. Our team is verifying the quality before delivery. This usually takes 1–2 hours.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -2608,7 +2619,7 @@ export default function ClientDashboard() {
                 }
               }} />
               <button onClick={() => setView("credits")} className="focus:outline-none" title="Credits & Billing" data-testid="header-credits-link">
-                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />${displayCredits} credits</Badge>
+                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />{displayCredits} credits</Badge>
               </button>
               <button onClick={() => setView("settings")} className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">
                 <span className="relative flex h-2 w-2" title="Online">

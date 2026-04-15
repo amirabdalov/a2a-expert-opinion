@@ -9,7 +9,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
 import rateLimit from "express-rate-limit";
 import type { Response } from "express";
-import { sendOtpEmail, sendInvoiceEmail } from "./email";
+import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import { triggerBackup } from "./db-persistence";
 
@@ -1217,14 +1217,10 @@ export async function registerRoutes(
         computedPricePerMinute = clientRate.toFixed(4);
       }
 
-      // FIX: Credits mismatch — if the client sends its own calculated creditsCost, use it
-      // (same value the UI showed). Validate it's within an acceptable range (0.5x–2x server cost)
-      // to prevent abuse, but don't recalculate from scratch.
-      if (clientCreditsCost && !isNaN(Number(clientCreditsCost))) {
-        const clientCost = Number(clientCreditsCost);
-        if (clientCost >= cost * 0.5 && clientCost <= cost * 2) {
-          cost = clientCost;
-        }
+      // FIX: Credits mismatch — ALWAYS use the client-sent creditsCost (what the UI showed).
+      // This is the price the user agreed to. Server cost is only a fallback.
+      if (clientCreditsCost && !isNaN(Number(clientCreditsCost)) && Number(clientCreditsCost) > 0) {
+        cost = Number(clientCreditsCost);
       }
 
       const user = storage.getUser(userId);
@@ -1821,7 +1817,7 @@ export async function registerRoutes(
     return res.json(updated);
   });
 
-  // POST /api/expert-reviews/:reviewId/respond — expert submits deliverable
+  // POST /api/expert-reviews/:reviewId/respond — expert submits deliverable → goes to admin review queue
   app.post("/api/expert-reviews/:reviewId/respond", async (req, res) => {
     try {
       const reviewId = parseInt(req.params.reviewId);
@@ -1836,89 +1832,238 @@ export async function registerRoutes(
         return res.status(400).json({ error: true, message: "Review already completed" });
       }
 
+      // Store the deliverable but mark as pending_admin_review (not yet completed)
       const updated = storage.updateExpertReview(reviewId, {
         deliverable,
         status: "completed",
         completedAt: new Date().toISOString(),
       });
 
-      // Check if all reviews for this request are done
-      const allReviews = storage.getReviewsByRequest(review.requestId);
-      const allCompleted = allReviews.every((r) => r.status === "completed");
+      // Mark the REQUEST as under_review (not yet visible to client)
+      storage.updateRequest(review.requestId, { status: "under_review" });
 
-      if (allCompleted) {
-        storage.updateRequest(review.requestId, { status: "completed" });
-        const completedRequest = storage.getRequest(review.requestId);
-        if (completedRequest) {
-          storage.createTransaction({
-            userId: completedRequest.userId,
-            amount: completedRequest.creditsCost,
-            type: "charged",
-            description: `Credits charged for completed request: ${completedRequest.title}`,
-          });
+      // Log timeline event
+      if (updated?.expertId) {
+        const submittingExpert = storage.getExpert(updated.expertId);
+        const submittingExpertUser = submittingExpert ? storage.getUser(submittingExpert.userId) : null;
+        logRequestEvent(review.requestId, "under_review", submittingExpertUser?.id, submittingExpertUser?.name || "Expert", "Response submitted — pending A2A verification");
+      }
+
+      // Notify admins via email
+      const requestForNotif = storage.getRequest(review.requestId);
+      if (requestForNotif && updated?.expertId) {
+        const notifExpert = storage.getExpert(updated.expertId);
+        const notifExpertUser = notifExpert ? storage.getUser(notifExpert.userId) : null;
+        try {
+          await sendVerificationEmail(notifExpertUser?.name || "Expert", requestForNotif.title);
+        } catch (emailErr) {
+          console.error("[VERIFY EMAIL] Failed to send verification email:", emailErr);
         }
       }
 
-      // Credit the expert
-      if (updated && updated.expertId) {
-        const expert = storage.getExpert(updated.expertId);
-        if (expert) {
-          const expertUser = storage.getUser(expert.userId);
-          const request = storage.getRequest(review.requestId);
-          if (expertUser && request) {
-            const takeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
-            const perReviewCost = request.creditsCost / Math.max(allReviews.length, 1);
-            const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
-            storage.updateUser(expertUser.id, { credits: expertUser.credits + earning });
-            storage.createTransaction({
-              userId: expertUser.id, amount: earning, type: "earning",
-              description: `Completed review: ${request.title}`,
-            });
-            storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
-            const earningCents = earning * 100;
-            const freshExpertUser = storage.getUser(expertUser.id);
-            storage.updateUser(expertUser.id, { walletBalance: (freshExpertUser?.walletBalance || 0) + earningCents });
-            storage.createWalletTransaction({
-              userId: expertUser.id,
-              amountCents: earningCents,
-              type: "earning",
-              description: `Earned from review: ${request.title}`,
-              createdAt: new Date().toISOString(),
-              stripePaymentId: null,
-            });
+      // Trigger backup
+      triggerBackup();
+      return res.json(updated);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // ─── ADMIN REVIEW QUEUE ───
+
+  // GET /api/admin/pending-reviews — returns all requests with status "under_review"
+  app.get("/api/admin/pending-reviews", async (_req, res) => {
+    try {
+      const allRequests = storage.getAllRequests();
+      const pendingReview = allRequests.filter((r) => r.status === "under_review");
+      const allUsers = storage.getAllUsers();
+      const allExperts = storage.getAllExperts();
+      const userMap = new Map(allUsers.map((u) => [u.id, u]));
+      const expertMap = new Map(allExperts.map((e) => [e.id, e]));
+
+      const enriched = pendingReview.map((r) => {
+        const clientUser = userMap.get(r.userId);
+        let expertName = "Unknown";
+        let expertResponse = "";
+        if (r.expertId) {
+          const expert = expertMap.get(r.expertId);
+          if (expert) {
+            const eu = userMap.get(expert.userId);
+            expertName = eu?.name || "Unknown";
+          }
+          // Get the latest completed review for this request
+          const reviews = storage.getReviewsByRequest(r.id);
+          const completedReview = reviews.find((rev) => rev.status === "completed" && rev.deliverable);
+          expertResponse = completedReview?.deliverable || "";
+        }
+        return {
+          ...r,
+          clientName: clientUser?.name || "Unknown",
+          expertName,
+          expertResponse,
+        };
+      });
+
+      return res.json(enriched);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // POST /api/admin/reviews/:requestId/approve — approve response, send to client
+  app.post("/api/admin/reviews/:requestId/approve", async (req, res) => {
+    try {
+      const requestId = parseInt(req.params.requestId);
+      const request = storage.getRequest(requestId);
+      if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+      if (request.status !== "under_review") {
+        return res.status(400).json({ error: true, message: "Request is not under review" });
+      }
+
+      // Check if all reviews completed — if so set awaiting_followup, else completed
+      const allReviews = storage.getReviewsByRequest(requestId);
+      const allCompleted = allReviews.every((r) => r.status === "completed");
+
+      const newStatus = "awaiting_followup";
+      const followupDeadline = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+      storage.updateRequest(requestId, {
+        status: newStatus,
+        followup_deadline: followupDeadline,
+      } as any);
+
+      // Charge credits and pay experts (same logic as before)
+      if (allCompleted) {
+        storage.createTransaction({
+          userId: request.userId,
+          amount: request.creditsCost,
+          type: "charged",
+          description: `Credits charged for completed request: ${request.title}`,
+        });
+
+        for (const rev of allReviews) {
+          if (rev.expertId && rev.status === "completed") {
+            const expert = storage.getExpert(rev.expertId);
+            if (expert) {
+              const expertUser = storage.getUser(expert.userId);
+              if (expertUser) {
+                const takeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
+                const perReviewCost = request.creditsCost / Math.max(allReviews.length, 1);
+                const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
+                storage.updateUser(expertUser.id, { credits: expertUser.credits + earning });
+                storage.createTransaction({
+                  userId: expertUser.id, amount: earning, type: "earning",
+                  description: `Completed review: ${request.title}`,
+                });
+                storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
+                const earningCents = earning * 100;
+                const freshExpertUser = storage.getUser(expertUser.id);
+                storage.updateUser(expertUser.id, { walletBalance: (freshExpertUser?.walletBalance || 0) + earningCents });
+                storage.createWalletTransaction({
+                  userId: expertUser.id,
+                  amountCents: earningCents,
+                  type: "earning",
+                  description: `Earned from review: ${request.title}`,
+                  createdAt: new Date().toISOString(),
+                  stripePaymentId: null,
+                });
+              }
+            }
           }
         }
       }
 
       // Log timeline event
-      if (updated?.expertId) {
-        const completedExpert = storage.getExpert(updated.expertId);
-        const completedExpertUser = completedExpert ? storage.getUser(completedExpert.userId) : null;
-        logRequestEvent(review.requestId, "completed", completedExpertUser?.id, completedExpertUser?.name || "Expert");
-      }
+      logRequestEvent(requestId, "approved", undefined, "A2A Admin", "Response approved and delivered to client");
 
       // Notify client
-      const request = storage.getRequest(review.requestId);
-      if (request) {
-        storage.createNotification({
-          userId: request.userId,
-          title: "Expert Has Submitted a Review",
-          message: `Expert has submitted a review for your request: ${request.title}`,
-          read: 0,
-          link: `/dashboard?request=${request.id}`,
-          createdAt: new Date().toISOString(),
+      storage.createNotification({
+        userId: request.userId,
+        title: "Expert Response Ready",
+        message: `Your expert's verified response for "${request.title}" is now available. You may ask up to 2 follow-up questions within 3 hours.`,
+        read: 0,
+        link: `/dashboard?request=${request.id}`,
+        createdAt: new Date().toISOString(),
+      });
+      notifyUser(request.userId, {
+        type: "review_approved",
+        title: "Expert Response Ready",
+        message: `Your expert's verified response for "${request.title}" is now available.`,
+        requestId: request.id,
+      } as any);
+
+      // Send approval emails to cofounders
+      try {
+        const { Resend } = await import("resend");
+        const resend = new Resend("re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        await resend.emails.send({
+          from: "A2A Global <noreply@a2a.global>",
+          to: ["oleg@a2a.global", "amir@a2a.global"],
+          subject: `A2A Global — Response Approved for "${request.title}"`,
+          html: `<p>The expert response for request <strong>"${request.title}"</strong> has been approved and delivered to the client.</p>`,
         });
-        notifyUser(request.userId, {
-          type: "review_completed",
-          title: "Expert Review Submitted",
-          message: `Expert has submitted a review for your request: ${request.title}`,
-          requestId: request.id,
-        } as any);
+      } catch (emailErr) {
+        console.error("[APPROVE EMAIL] Failed:", emailErr);
       }
 
-      // FIX-7: Trigger backup after expert review submission
       triggerBackup();
-      return res.json(updated);
+      return res.json({ ok: true, status: newStatus });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // POST /api/admin/reviews/:requestId/reject — send back to expert for revision
+  app.post("/api/admin/reviews/:requestId/reject", async (req, res) => {
+    try {
+      const requestId = parseInt(req.params.requestId);
+      const { feedback } = req.body;
+      const request = storage.getRequest(requestId);
+      if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+      if (request.status !== "under_review") {
+        return res.status(400).json({ error: true, message: "Request is not under review" });
+      }
+
+      // Revert request to in_progress so expert can revise
+      storage.updateRequest(requestId, { status: "in_progress" });
+
+      // Revert the completed review back to in_progress
+      const allReviews = storage.getReviewsByRequest(requestId);
+      for (const rev of allReviews) {
+        if (rev.status === "completed") {
+          storage.updateExpertReview(rev.id, { status: "in_progress" });
+          sqlite.prepare("UPDATE expert_reviews SET completed_at = NULL WHERE id = ?").run(rev.id);
+        }
+      }
+
+      // Log timeline event
+      logRequestEvent(requestId, "revision_requested", undefined, "A2A Admin", feedback || "Revision requested by admin");
+
+      // Notify expert
+      if (request.expertId) {
+        const expert = storage.getExpert(request.expertId);
+        if (expert) {
+          const expertUser = storage.getUser(expert.userId);
+          if (expertUser) {
+            storage.createNotification({
+              userId: expertUser.id,
+              title: "Revision Requested",
+              message: `Admin has requested a revision for "${request.title}"${feedback ? ": " + feedback : "."}`,
+              read: 0,
+              link: `/expert?request=${requestId}`,
+              createdAt: new Date().toISOString(),
+            });
+            notifyUser(expertUser.id, {
+              type: "revision_requested",
+              title: "Revision Requested",
+              message: `Please revise your response for "${request.title}".`,
+              requestId,
+            } as any);
+          }
+        }
+      }
+
+      triggerBackup();
+      return res.json({ ok: true, status: "in_progress" });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }

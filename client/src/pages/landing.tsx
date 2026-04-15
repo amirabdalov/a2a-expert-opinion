@@ -99,8 +99,7 @@ function VideoSection() {
           muted
           loop
           playsInline
-          poster="/a2a-blue-logo.svg"
-          onCanPlay={(e) => { (e.target as HTMLVideoElement).currentTime = 5; }}
+          preload="auto"
           className="w-full rounded-xl shadow-lg"
           data-testid="video-promo"
         >
