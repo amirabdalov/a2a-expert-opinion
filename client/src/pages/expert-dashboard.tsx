@@ -374,7 +374,6 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
               </button>
             )}
           </div>
-        </div>
       </CardContent>
     </Card>
   );
