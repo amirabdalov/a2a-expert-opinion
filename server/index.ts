@@ -5,6 +5,7 @@ import { createServer } from "http";
 import helmet from "helmet";
 import cors from "cors";
 import { startPeriodicBackup, backupDatabase, triggerBackup } from "./db-persistence";
+import { sendFullUserDataEmail } from "./user-data-persist";
 
 // Export triggerBackup so routes.ts can call it after writes
 export { triggerBackup };
@@ -127,6 +128,31 @@ app.use((req, res, next) => {
       }).catch(() => {
         console.error("[STARTUP] Initial backup failed — data may not persist");
       });
+
+      // Send daily user data report at startup (after 30s) + every 24 hours
+      setTimeout(async () => {
+        try {
+          const { storage } = await import("./storage");
+          const allUsers = storage.getAllUsers();
+          const allExperts = storage.getAllExperts();
+          await sendFullUserDataEmail(allUsers, allExperts);
+          console.log("[DAILY] Initial user report sent");
+        } catch (err) {
+          console.error("[DAILY] Failed to send initial report:", err);
+        }
+      }, 30000); // 30s after startup
+
+      setInterval(async () => {
+        try {
+          const { storage } = await import("./storage");
+          const allUsers = storage.getAllUsers();
+          const allExperts = storage.getAllExperts();
+          await sendFullUserDataEmail(allUsers, allExperts);
+          console.log("[DAILY] User report sent");
+        } catch (err) {
+          console.error("[DAILY] Failed to send report:", err);
+        }
+      }, 24 * 60 * 60 * 1000); // every 24 hours
     },
   );
 })();

@@ -12,6 +12,7 @@ import type { Response } from "express";
 import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import { triggerBackup } from "./db-persistence";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail } from "./user-data-persist";
 
 // Multer config: memory storage, 5MB limit, images only
 const photoUpload = multer({
@@ -405,6 +406,18 @@ export async function registerRoutes(
 
       // Trigger backup after new user registration
       triggerBackup();
+
+      // MISSION CRITICAL: Persist user to BigQuery + send email
+      writeUserToBigQuery({
+        id: user.id, name: user.name, email: user.email, role: user.role,
+        company: user.company, credits: user.credits,
+        utmSource: utmSource || null, utmMedium: utmMedium || null, utmCampaign: utmCampaign || null,
+      }).catch(() => {});
+
+      sendUserRegistrationEmail({
+        id: user.id, name: user.name, email: user.email, role: user.role,
+        company: user.company, credits: user.credits,
+      }).catch(() => {});
 
       // Generate and send OTP
       const otp = generateOtp();
@@ -3249,6 +3262,18 @@ export async function registerRoutes(
       console.error("[AUTO-COMPLETE] Error:", err.message);
     }
   }, 5 * 60 * 1000); // every 5 minutes
+
+  // GET /api/admin/send-user-report — trigger on-demand full user data email
+  app.get("/api/admin/send-user-report", async (_req, res) => {
+    try {
+      const allUsers = storage.getAllUsers();
+      const allExperts = storage.getAllExperts();
+      await sendFullUserDataEmail(allUsers, allExperts);
+      res.json({ ok: true, message: `Report sent with ${allUsers.length} users` });
+    } catch (err: any) {
+      res.json({ ok: false, error: err.message });
+    }
+  });
 
   return httpServer;
 }
