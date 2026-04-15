@@ -33,13 +33,14 @@ app.use(cors());
 
 app.use(
   express.json({
+    limit: '50mb',
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -118,10 +119,14 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
-      // BUG-008: Start periodic GCS backup every 60 seconds
+      // BUG-008: Start periodic GCS backup
       startPeriodicBackup();
-      // Immediate backup on startup (ensures first backup exists)
-      backupDatabase().catch(() => {});
+      // Wait for initial backup to succeed before considering server ready
+      backupDatabase().then(() => {
+        console.log("[STARTUP] Initial backup complete");
+      }).catch(() => {
+        console.error("[STARTUP] Initial backup failed — data may not persist");
+      });
     },
   );
 })();

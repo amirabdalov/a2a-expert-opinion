@@ -51,7 +51,7 @@ function ProfileStep({ expert, onComplete }: { expert: Expert; onComplete: () =>
   const { user } = useAuth();
   const [education, setEducation] = useState(expert.education || "");
   const [expertise, setExpertise] = useState(expert.expertise || "");
-  const [yearsExperience, setYearsExperience] = useState(expert.yearsExperience || 1);
+  const [yearsExperience, setYearsExperience] = useState<number | "">(expert.yearsExperience || "");
   const [bio, setBio] = useState(expert.bio || "");
   const [selectedCategories, setSelectedCategories] = useState<string[]>(() => {
     try { return JSON.parse(expert.categories || "[]"); } catch { return []; }
@@ -70,7 +70,7 @@ function ProfileStep({ expert, onComplete }: { expert: Expert; onComplete: () =>
         const res = await apiRequest("POST", "/api/experts/onboarding/profile", {
           expertId: expert.id,
           education,
-          yearsExperience,
+          yearsExperience: yearsExperience === "" ? 0 : yearsExperience,
           categories: selectedCategories,
           bio,
           expertise,
@@ -214,10 +214,19 @@ function ProfileStep({ expert, onComplete }: { expert: Expert; onComplete: () =>
           <Label className="text-sm font-medium">Years of Experience</Label>
           <Input
             type="number"
-            min={1}
+            min="0"
             max={50}
             value={yearsExperience}
-            onChange={(e) => setYearsExperience(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+            placeholder="0"
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === "") {
+                setYearsExperience("");
+              } else {
+                const n = parseInt(val, 10);
+                setYearsExperience(isNaN(n) ? "" : Math.min(50, Math.max(0, n)));
+              }
+            }}
             className="mt-1 w-32"
             data-testid="input-onboarding-years"
           />

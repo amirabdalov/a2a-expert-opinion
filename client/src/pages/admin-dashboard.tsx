@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { FloatingHelp } from "@/components/floating-help";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -135,6 +135,34 @@ function CommandPalette({ open, onClose, onAction }: { open: boolean; onClose: (
   );
 }
 
+// ─── Admin Error Boundary ───
+class AdminErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: string}> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: '' };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-8 text-center">
+          <h2 className="text-lg font-semibold mb-2">Admin Panel Error</h2>
+          <p className="text-red-500 mb-4">{this.state.error}</p>
+          <button
+            className="px-4 py-2 bg-teal-500 text-white rounded hover:bg-teal-600"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function AdminDashboard() {
   const [, setLocation] = useLocation();
   const admin = getAdmin();
@@ -172,6 +200,7 @@ export default function AdminDashboard() {
   if (!admin) return null;
 
   return (
+    <AdminErrorBoundary>
     <div className="flex h-screen bg-zinc-950 text-zinc-100" data-testid="admin-dashboard">
       {/* Command Palette */}
       <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} onAction={handleCmdAction} />
@@ -250,6 +279,7 @@ export default function AdminDashboard() {
         </div>
       </main>
     </div>
+    </AdminErrorBoundary>
   );
 }
 

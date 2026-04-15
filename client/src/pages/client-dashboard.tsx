@@ -1479,7 +1479,7 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { re
         </div>
         {/* Messaging input */}
         <div className="mt-4 pt-3 border-t">
-          <p className="text-xs font-medium mb-2">Send a message</p>
+          <p className="text-xs font-medium mb-2">Send a message to the expert</p>
           <div className="flex gap-2">
             <Input
               value={msg}
@@ -1826,35 +1826,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
         <ClientRatingSection request={request} userId={userId} />
       )}
 
-      {/* AI Chat */}
-      <Card className="mb-4">
-        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><MessageSquare className="h-4 w-4" /> AI Conversation</CardTitle></CardHeader>
-        <CardContent>
-          <div className="min-h-[200px] max-h-[350px] overflow-y-auto space-y-3 mb-4">
-            {(!msgs || msgs.length === 0) && (
-              <p className="text-sm text-muted-foreground text-center py-6">Start a conversation about your request</p>
-            )}
-            {msgs?.map((msg) => (
-              <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${msg.role === "user" ? "bg-primary text-white" : "bg-muted"}`}>
-                  {msg.content}
-                </div>
-              </div>
-            ))}
-            {sendMutation.isPending && (
-              <div className="flex justify-start"><div className="bg-muted rounded-lg px-3 py-2 text-sm text-muted-foreground">Analyzing...</div></div>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input value={chatInput} onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && chatInput.trim() && sendMutation.mutate()}
-              placeholder="Ask a follow-up question..." className="flex-1" data-testid="input-chat" />
-            <Button onClick={() => chatInput.trim() && sendMutation.mutate()} disabled={sendMutation.isPending || !chatInput.trim()} size="sm" data-testid="button-send-chat">
-              <Send className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {/* AI Chat section removed — use "Send a message to the expert" above */}
     </div>
   );
 }
@@ -2530,12 +2502,13 @@ export default function ClientDashboard() {
   const [showTour, setShowTour] = useState(true);
   const [showConfetti, setShowConfetti] = useState(false);
 
-  // Fix 3: Live credit balance query (refreshes every 30s)
+  // Fix 3: Live credit balance query (refreshes every 30s + on window focus)
   const { data: liveCreditData } = useQuery<{ credits: number }>({
     queryKey: ['/api/users', user?.id, 'credits'],
     queryFn: () => apiRequest('GET', `/api/users/${user?.id}`).then(r => r.json()),
     enabled: !!user?.id,
     refetchInterval: 30000,
+    refetchOnWindowFocus: true,
   });
   const displayCredits = liveCreditData?.credits ?? user?.credits ?? 0;
 
@@ -2637,7 +2610,13 @@ export default function ClientDashboard() {
               <button onClick={() => setView("credits")} className="focus:outline-none" title="Credits & Billing" data-testid="header-credits-link">
                 <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />${displayCredits} credits</Badge>
               </button>
-              <button onClick={() => setView("settings")} className="text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">{user.name}</button>
+              <button onClick={() => setView("settings")} className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">
+                <span className="relative flex h-2 w-2" title="Online">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                {user.name}
+              </button>
             </div>
           </header>
           <main className="flex-1 overflow-auto">

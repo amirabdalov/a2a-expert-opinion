@@ -793,6 +793,14 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         </Card>
       )}
 
+      {/* FIX: Show deliverable for any completed service type not covered above */}
+      {isCompleted && request.serviceType !== "rate" && request.serviceType !== "review" && request.serviceType !== "custom" && currentReview.deliverable && (
+        <Card className="border-green-200 bg-green-50/50 dark:bg-green-900/10">
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-green-700 dark:text-green-400 flex items-center gap-2"><CheckCircle className="h-4 w-4" /> Your Response</CardTitle></CardHeader>
+          <CardContent><p className="text-sm whitespace-pre-wrap">{currentReview.deliverable}</p></CardContent>
+        </Card>
+      )}
+
       {/* FIX-5: Full conversation/chat history for this request */}
       {((chatMessages && chatMessages.length > 0) || followUpMessages.length > 0) && (
         <Card className="mt-4">
@@ -1973,6 +1981,43 @@ function ExpertHeaderAvatar({ userId }: { userId: number }) {
 }
 
 // ─── Main Expert Dashboard ───
+// ─── Expert Confetti (first-time registration celebration) ───
+function ExpertConfetti() {
+  return (
+    <>
+      <style>{`
+        @keyframes expert-confetti-fall {
+          0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+        }
+        .animate-expert-confetti { animation: expert-confetti-fall var(--dur, 3s) ease-in var(--delay, 0s) forwards; }
+      `}</style>
+      <div className="fixed inset-0 z-50 pointer-events-none" style={{ overflow: 'visible' }}>
+        {Array.from({length: 50}).map((_, i) => {
+          const left = (Math.random() * 100).toFixed(1);
+          const size = (6 + Math.random() * 8).toFixed(1);
+          const delay = (Math.random() * 2).toFixed(2);
+          const dur = (2 + Math.random() * 3).toFixed(2);
+          const color = ['#0F3DD1', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'][Math.floor(Math.random() * 5)];
+          const radius = Math.random() > 0.5 ? '50%' : '0';
+          return (
+            <div key={i} className="absolute animate-expert-confetti" style={{
+              left: `${left}%`,
+              top: '-10%',
+              width: `${size}px`,
+              height: `${size}px`,
+              backgroundColor: color,
+              '--delay': `${delay}s`,
+              '--dur': `${dur}s`,
+              borderRadius: radius,
+            } as React.CSSProperties} />
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export default function ExpertDashboard() {
   const { user, logout } = useAuth();
   const [, setLocation] = useLocation();
@@ -1993,13 +2038,23 @@ export default function ExpertDashboard() {
   });
   const [selectedReview, setSelectedReview] = useState<number>(0);
   const [showTour, setShowTour] = useState(true);
+  const [showConfetti, setShowConfetti] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [headerAvailability, setHeaderAvailability] = useState<boolean | null>(null);
 
   // BUG-009: Force light theme — remove dark class
   useEffect(() => {
     document.documentElement.classList.remove("dark");
   }, []);
+
+  // Show confetti for first-time expert registrations
+  useEffect(() => {
+    if (user?.tourCompleted === 0) {
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 4000);
+    }
+  }, [user]);
 
   // SSE real-time notifications
   useSSE(user?.id);
@@ -2010,6 +2065,39 @@ export default function ExpertDashboard() {
     retry: 3,
     retryDelay: 500,
   });
+
+  // Sync headerAvailability from fetched expert data
+  useEffect(() => {
+    if (expert && headerAvailability === null) {
+      setHeaderAvailability(expert.availability === 1);
+    }
+  }, [expert]);
+
+  const { toast } = useToast();
+
+  const toggleAvailabilityMutation = useMutation({
+    mutationFn: async (newVal: boolean) => {
+      if (!expert) return;
+      await apiRequest("PATCH", `/api/experts/${expert.id}`, { availability: newVal ? 1 : 0 });
+    },
+    onSuccess: (_, newVal) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/experts/user", user?.id] });
+      toast({
+        title: newVal ? "You are now Online" : "You are now Offline",
+        description: newVal ? "You will receive new requests." : "You won't receive new requests while offline.",
+      });
+    },
+    onError: () => {
+      // Revert on error
+      setHeaderAvailability((prev) => !prev);
+      toast({ title: "Failed to update status", variant: "destructive" });
+    },
+  });
+
+  function handleToggleAvailability(val: boolean) {
+    setHeaderAvailability(val);
+    toggleAvailabilityMutation.mutate(val);
+  }
 
   // FIX-4: Expert reviews for follow-up notification navigation
   const { data: allExpertReviews } = useQuery<ExpertReview[]>({
@@ -2101,7 +2189,7 @@ export default function ExpertDashboard() {
                   <path d="M11.5 7H14.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
                 </svg>
               </div>
-              <span className="font-semibold text-sm">Expert</span>
+              <span className="font-semibold text-sm">A2A</span>
             </div>
             {/* Global search bar (change #11) */}
             <div className="flex-1 max-w-md relative hidden sm:block">
@@ -2146,6 +2234,24 @@ export default function ExpertDashboard() {
                 else if (link.startsWith('/expert')) { /* already on expert */ }
                 else setLocation(link);
               }} />
+              {/* Uber-style Online/Offline toggle */}
+              {expert && (
+                <div className="flex items-center gap-1.5 px-2 py-1 rounded-full border transition-colors"
+                  style={{ borderColor: headerAvailability ? '#22c55e' : '#d1d5db', background: headerAvailability ? '#f0fdf4' : '#f9fafb' }}
+                  data-testid="header-availability-toggle"
+                >
+                  <Switch
+                    checked={!!headerAvailability}
+                    onCheckedChange={handleToggleAvailability}
+                    disabled={toggleAvailabilityMutation.isPending}
+                    data-testid="header-availability-switch"
+                    className="h-4 w-7 scale-90"
+                  />
+                  <span className={`text-xs font-semibold hidden sm:block ${headerAvailability ? 'text-green-700' : 'text-gray-400'}`}>
+                    {headerAvailability ? 'Online' : 'Offline'}
+                  </span>
+                </div>
+              )}
               {expert?.verified === 1 && <Badge className="hidden sm:flex bg-green-100 text-green-800 text-xs"><Award className="h-3 w-3 mr-1" />Verified</Badge>}
               {/* Fix 7: Expert name clickable → profile; Fix 4: avatar in header */}
               <button
@@ -2155,6 +2261,10 @@ export default function ExpertDashboard() {
                 data-testid="header-expert-name"
               >
                 <ExpertHeaderAvatar userId={user.id} />
+                <span className="relative flex h-2 w-2 hidden sm:flex" title={headerAvailability ? 'Online' : 'Offline'}>
+                  {headerAvailability && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>}
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${headerAvailability ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+                </span>
                 <span className="text-sm font-medium hidden sm:block">{user.name}</span>
               </button>
             </div>
@@ -2184,6 +2294,7 @@ export default function ExpertDashboard() {
         {/* Mobile bottom tab bar */}
         <MobileBottomTabs view={view} setView={setView} />
         {showTour && <OnboardingTour steps={EXPERT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}
+        {showConfetti && <ExpertConfetti />}
         <FloatingHelp />
       </div>
     </SidebarProvider>

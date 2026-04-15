@@ -109,6 +109,21 @@ export function triggerBackup(): void {
 }
 
 export function startPeriodicBackup(): void {
-  setInterval(() => backupDatabase(), 60000);
-  console.log("[DB-BACKUP] Periodic backup started (every 60s)");
+  // For the first 5 minutes after startup, backup every 10 seconds.
+  // After 5 minutes, switch to every 60 seconds.
+  const FAST_INTERVAL_MS = 10_000;   // 10 seconds
+  const SLOW_INTERVAL_MS = 60_000;   // 60 seconds
+  const FAST_PHASE_DURATION_MS = 5 * 60_000; // 5 minutes
+
+  let fastTimer: ReturnType<typeof setInterval> | null = setInterval(() => backupDatabase(), FAST_INTERVAL_MS);
+  console.log("[DB-BACKUP] Periodic backup started (fast phase: every 10s for 5min)");
+
+  setTimeout(() => {
+    if (fastTimer) {
+      clearInterval(fastTimer);
+      fastTimer = null;
+    }
+    setInterval(() => backupDatabase(), SLOW_INTERVAL_MS);
+    console.log("[DB-BACKUP] Switched to slow backup phase (every 60s)");
+  }, FAST_PHASE_DURATION_MS);
 }

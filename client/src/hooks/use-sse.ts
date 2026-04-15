@@ -9,6 +9,7 @@ interface SSEEvent {
   title: string;
   message: string;
   requestId?: number;
+  link?: string;
 }
 
 export function useSSE(userId: number | undefined) {
@@ -25,11 +26,21 @@ export function useSSE(userId: number | undefined) {
     es.onmessage = (event) => {
       try {
         const data: SSEEvent = JSON.parse(event.data);
-        // Show toast notification
+        // Build navigation link from event data
+        const link = data.link ||
+          (data.requestId ? `#/dashboard?request=${data.requestId}` : undefined);
+
+        // Show toast notification — clickable if there's a link
         toast({
           title: data.title,
-          description: data.message,
+          description: data.message + (link ? " (click to view)" : ""),
           duration: 8000,
+          ...(link ? {
+            onClick: () => {
+              window.location.hash = link.startsWith('#') ? link.slice(1) : link;
+            },
+            className: "cursor-pointer",
+          } : {}),
         });
         // Auto-refresh relevant queries
         if (data.type === "new_request") {

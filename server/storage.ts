@@ -291,6 +291,9 @@ try {
 try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_source TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_medium TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_campaign TEXT"); } catch {}
+// Follow-up tracking columns for requests (migration for existing DBs)
+try { sqlite.exec("ALTER TABLE requests ADD COLUMN followup_count INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { sqlite.exec("ALTER TABLE requests ADD COLUMN followup_deadline TEXT"); } catch {}
 console.log("[DB] All tables ensured.");
 
 export const db = drizzle(sqlite);

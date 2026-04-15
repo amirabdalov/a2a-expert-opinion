@@ -9,7 +9,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
 import rateLimit from "express-rate-limit";
 import type { Response } from "express";
-import { sendOtpEmail } from "./email";
+import { sendOtpEmail, sendInvoiceEmail } from "./email";
 import multer from "multer";
 import { triggerBackup } from "./db-persistence";
 
@@ -97,8 +97,11 @@ function logRequestEvent(requestId: number, type: string, actorId?: number, acto
 }
 
 // Groq primary (free, commercial use), Anthropic fallback (sandbox)
-const GROQ_API_KEY = process.env.GROQ_API_KEY || "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";
-const groq = new Groq({ apiKey: GROQ_API_KEY });
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+let groq: any = null;
+if (GROQ_API_KEY) {
+  try { groq = new Groq({ apiKey: GROQ_API_KEY }); } catch { groq = null; }
+}
 let anthropic: Anthropic | null = null;
 try { anthropic = new Anthropic(); } catch { anthropic = null; }
 
@@ -247,41 +250,49 @@ function getSystemPrompt(category: string) {
 }
 
 async function getAIResponse(messages: Array<{ role: string; content: string }>, category: string, maxTokens = 1024): Promise<string> {
-  // Try Groq first (free, commercial use)
-  try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      max_tokens: maxTokens,
-      messages: [
-        { role: "system" as const, content: getSystemPrompt(category) },
-        ...messages.map((m) => ({
-          role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
-          content: m.content,
-        })),
-      ],
-    });
-    return response.choices[0]?.message?.content || "";
-  } catch (groqError: any) {
-    console.error("Groq API error (trying Anthropic fallback):", groqError.message);
-    // Fallback to Anthropic if available
-    if (anthropic) {
-      try {
-        const response = await anthropic.messages.create({
-          model: "claude-sonnet-4-5",
-          max_tokens: maxTokens,
-          system: getSystemPrompt(category),
-          messages: messages.map((m) => ({
+  // 1. Try Groq first if available (free, commercial use)
+  if (groq) {
+    try {
+      const response = await groq.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        max_tokens: maxTokens,
+        messages: [
+          { role: "system" as const, content: getSystemPrompt(category) },
+          ...messages.map((m) => ({
             role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
             content: m.content,
           })),
-        });
-        return response.content[0]?.type === "text" ? response.content[0].text : "";
-      } catch (anthropicError: any) {
-        console.error("Anthropic fallback error:", anthropicError.message);
-      }
+        ],
+      });
+      return response.choices[0]?.message?.content || "";
+    } catch (groqError: any) {
+      console.error("Groq API error (trying Anthropic fallback):", groqError.message);
     }
-    return "AI service temporarily unavailable. Please try again in a moment.";
   }
+
+  // 2. Fall back to Anthropic if available
+  if (anthropic) {
+    try {
+      const response = await anthropic.messages.create({
+        model: "claude-sonnet-4-5",
+        max_tokens: maxTokens,
+        system: getSystemPrompt(category),
+        messages: messages.map((m) => ({
+          role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
+          content: m.content,
+        })),
+      });
+      return response.content[0]?.type === "text" ? response.content[0].text : "";
+    } catch (anthropicError: any) {
+      console.error("Anthropic fallback error:", anthropicError.message);
+    }
+  }
+
+  // 3. No AI provider available
+  if (!groq) {
+    return "Please configure GROQ_API_KEY environment variable to enable AI responses.";
+  }
+  return "AI service temporarily unavailable. Please try again in a moment.";
 }
 
 export async function registerRoutes(
@@ -551,43 +562,86 @@ export async function registerRoutes(
   });
 
   // ─── REQUEST MESSAGE (timeline messaging) ───
+  // Both client and expert can send messages. Follow-up count is tracked for client messages.
   app.post("/api/requests/:id/message", async (req, res) => {
     const requestId = parseInt(req.params.id);
     const { actorId, actorName, message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: true, message: "Message required" });
-    const evt = logRequestEvent(requestId, "message", actorId, actorName, message);
-    // Also notify the other party
+
     const request = storage.getRequest(requestId);
-    if (request) {
-      // If sender is client, notify expert. If expert, notify client.
-      const clientUser = storage.getUser(request.userId);
-      if (request.expertId) {
-        const expert = storage.getExpert(request.expertId);
-        if (expert) {
-          const expertUser = storage.getUser(expert.userId);
-          if (expertUser && actorId !== expertUser.id) {
-            // FIX-4: Follow-up notification with request link so expert can navigate
-            const notifTitle = `Follow-up on "${request.title}"`;
-            const notifMessage = `${actorName}: ${message.substring(0, 100)}`;
-            const notifLink = `/expert?request=${requestId}`;
-            storage.createNotification({
-              userId: expertUser.id,
-              title: notifTitle,
-              message: notifMessage,
-              read: 0,
-              link: notifLink,
-              createdAt: new Date().toISOString(),
-            });
-            notifyUser(expertUser.id, { type: "follow_up", title: notifTitle, message: notifMessage, requestId, link: notifLink } as any);
-          }
-        }
-      }
-      if (clientUser && actorId !== clientUser.id) {
-        notifyUser(clientUser.id, { type: "message", title: "New Message", message: `${actorName}: ${message.substring(0, 100)}`, requestId } as any);
+    if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+
+    // Determine if sender is the client (for follow-up counting)
+    const isClientMessage = actorId === request.userId;
+    let autoCompleted = false;
+
+    // If request is in awaiting_followup and this is a client follow-up, track count
+    if (isClientMessage && request.status === "awaiting_followup") {
+      const currentCount: number = (request as any).followup_count ?? 0;
+      const newCount = currentCount + 1;
+      sqlite.prepare("UPDATE requests SET followup_count = ? WHERE id = ?").run(newCount, requestId);
+
+      // Auto-complete if 2 follow-ups have been used
+      if (newCount >= 2) {
+        await finalizeRequest(requestId);
+        autoCompleted = true;
       }
     }
+
+    // Check deadline auto-complete (3 hours since expert responded with no client action)
+    if (!autoCompleted && request.status === "awaiting_followup") {
+      const deadline = (request as any).followup_deadline;
+      if (deadline && new Date() > new Date(deadline)) {
+        await finalizeRequest(requestId);
+        autoCompleted = true;
+      }
+    }
+
+    logRequestEvent(requestId, "message", actorId, actorName, message);
+
+    // Notify the other party
+    const clientUser = storage.getUser(request.userId);
+    if (request.expertId) {
+      const expert = storage.getExpert(request.expertId);
+      if (expert) {
+        const expertUser = storage.getUser(expert.userId);
+        if (expertUser && actorId !== expertUser.id) {
+          // FIX-4 + FIX-followup: Follow-up notification with request link so expert can navigate
+          const notifTitle = `Follow-up on "${request.title}"`;
+          const notifMessage = `${actorName}: ${message.substring(0, 100)}`;
+          const notifLink = `/expert?request=${requestId}`;
+          storage.createNotification({
+            userId: expertUser.id,
+            title: notifTitle,
+            message: notifMessage,
+            read: 0,
+            link: notifLink,
+            createdAt: new Date().toISOString(),
+          });
+          notifyUser(expertUser.id, { type: "follow_up", title: notifTitle, message: notifMessage, requestId, link: notifLink } as any);
+        }
+        // If expert is responding to a follow-up, notify client
+        if (expertUser && actorId === expertUser.id && clientUser) {
+          const notifTitle = `Expert replied on "${request.title}"`;
+          const notifMessage = `${actorName}: ${message.substring(0, 100)}`;
+          storage.createNotification({
+            userId: clientUser.id,
+            title: notifTitle,
+            message: notifMessage,
+            read: 0,
+            link: `/dashboard?request=${requestId}`,
+            createdAt: new Date().toISOString(),
+          });
+          notifyUser(clientUser.id, { type: "expert_reply", title: notifTitle, message: notifMessage, requestId } as any);
+        }
+      }
+    }
+    if (clientUser && actorId !== clientUser.id) {
+      notifyUser(clientUser.id, { type: "message", title: "New Message", message: `${actorName}: ${message.substring(0, 100)}`, requestId } as any);
+    }
+
     triggerBackup();
-    return res.json({ ok: true });
+    return res.json({ ok: true, autoCompleted });
   });
 
   // ─── BACKUP TEST & HEALTH ───
@@ -1101,8 +1155,26 @@ export async function registerRoutes(
 
   app.post("/api/requests", async (req, res) => {
     try {
-      const { userId, title, description, category, tier, serviceType, aiResponse, attachments, expertsNeeded, instructions,
-        llmProvider, llmModel, pricePerMinute, priceTier, serviceCategory, draftId } = req.body;
+      const { userId, title, description, category, tier, serviceType, aiResponse, attachments: rawAttachments, expertsNeeded, instructions,
+        llmProvider, llmModel, pricePerMinute, priceTier, serviceCategory, draftId, creditsCost: clientCreditsCost } = req.body;
+
+      // CRITICAL-4: Strip large base64 data from inline attachments.
+      // Attachments should be uploaded via POST /api/requests/:id/attachments (multipart/form-data).
+      // If client sends attachments inline in the JSON body, keep only metadata (strip content/base64 fields).
+      let attachments: string = "[]";
+      if (rawAttachments) {
+        try {
+          const arr = Array.isArray(rawAttachments) ? rawAttachments : JSON.parse(rawAttachments);
+          const stripped = arr.map((a: any) => {
+            // Remove large base64 content fields
+            const { content, base64, data, buffer, ...meta } = a;
+            return meta;
+          });
+          attachments = JSON.stringify(stripped);
+        } catch {
+          attachments = "[]";
+        }
+      }
 
       // If submitting from a draft, delete the draft first
       if (draftId) {
@@ -1143,6 +1215,16 @@ export async function registerRoutes(
         const expertRate = Number(pricePerMinute);
         const clientRate = expertRate / (1 - effectiveTakeRate);
         computedPricePerMinute = clientRate.toFixed(4);
+      }
+
+      // FIX: Credits mismatch — if the client sends its own calculated creditsCost, use it
+      // (same value the UI showed). Validate it's within an acceptable range (0.5x–2x server cost)
+      // to prevent abuse, but don't recalculate from scratch.
+      if (clientCreditsCost && !isNaN(Number(clientCreditsCost))) {
+        const clientCost = Number(clientCreditsCost);
+        if (clientCost >= cost * 0.5 && clientCost <= cost * 2) {
+          cost = clientCost;
+        }
       }
 
       const user = storage.getUser(userId);
@@ -1375,13 +1457,45 @@ export async function registerRoutes(
     return res.json(r);
   });
 
-  // Submit expert response — legacy
+  // Submit expert response — sets status to awaiting_followup; credits charged only on final completion
   app.post("/api/requests/:id/respond", async (req, res) => {
     const { expertResponse } = req.body;
+    const followupDeadline = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(); // 3 hours from now
     const r = storage.updateRequest(parseInt(req.params.id), {
-      expertResponse, status: "completed",
-    });
+      expertResponse,
+      status: "awaiting_followup",
+      followup_deadline: followupDeadline,
+    } as any);
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
+
+    // Lifecycle notification: Response delivered, awaiting client follow-up
+    storage.createNotification({
+      userId: r.userId,
+      title: "Expert Response Ready",
+      message: `Expert has responded to your request "${r.title}". You may ask up to 2 follow-up questions within 3 hours.`,
+      read: 0,
+      link: `/dashboard?request=${r.id}`,
+      createdAt: new Date().toISOString(),
+    });
+    notifyUser(r.userId, {
+      type: "request_delivered",
+      title: "Expert Response Ready",
+      message: `Expert has responded to your request "${r.title}". You may ask up to 2 follow-up questions within 3 hours.`,
+      requestId: r.id,
+    });
+    sendEmailNotification(r.userId, "Expert Response Ready", `Expert has responded to your request "${r.title}". View the response now.`);
+
+    logRequestEvent(r.id, "responded", r.expertId || undefined);
+    triggerBackup();
+    return res.json(r);
+  });
+
+  // Helper to finalize a request: charge credits and credit the expert
+  async function finalizeRequest(requestId: number): Promise<void> {
+    const r = storage.getRequest(requestId);
+    if (!r || r.status === "completed" || r.refunded) return;
+
+    storage.updateRequest(requestId, { status: "completed" } as any);
 
     // FEAT-011: Mark held credits as charged on completion
     storage.createTransaction({
@@ -1389,34 +1503,16 @@ export async function registerRoutes(
       description: `Credits charged for completed request: ${r.title}`,
     });
 
-    // Lifecycle notification: Request delivered
-    storage.createNotification({
-      userId: r.userId,
-      title: "Request Delivered",
-      message: `Expert has completed your request "${r.title}". View the response now.`,
-      read: 0,
-      link: `/dashboard?request=${r.id}`,
-      createdAt: new Date().toISOString(),
-    });
-    notifyUser(r.userId, {
-      type: "request_delivered",
-      title: "Request Delivered",
-      message: `Expert has completed your request "${r.title}". View the response now.`,
-      requestId: r.id,
-    });
-    sendEmailNotification(r.userId, "Request Delivered", `Expert has completed your request "${r.title}". View the response now.`);
-
     if (r.expertId) {
       const expert = storage.getExpert(r.expertId);
       if (expert) {
-        const user = storage.getUser(expert.userId);
-        if (user) {
-          // FIX-1: Use lowercase tier key, fall back to 0.50 for unknown tiers
+        const expertUser = storage.getUser(expert.userId);
+        if (expertUser) {
           const takeRate = TAKE_RATES[(r.priceTier || r.tier || "standard").toLowerCase()] ?? 0.50;
           const earning = Math.max(1, Math.floor(r.creditsCost * (1 - takeRate)));
-          storage.updateUser(user.id, { credits: user.credits + earning });
+          storage.updateUser(expertUser.id, { credits: expertUser.credits + earning });
           storage.createTransaction({
-            userId: user.id, amount: earning, type: "earning",
+            userId: expertUser.id, amount: earning, type: "earning",
             description: `Completed: ${r.title}`,
           });
           storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
@@ -1424,17 +1520,34 @@ export async function registerRoutes(
       }
     }
 
-    // Notify client
     storage.createNotification({
       userId: r.userId,
-      title: "Expert Review Complete",
-      message: `Your request "${r.title}" has been completed. Check the results now.`,
+      title: "Request Completed",
+      message: `Your request "${r.title}" has been completed and closed.`,
       read: 0,
       link: `/dashboard?request=${r.id}`,
       createdAt: new Date().toISOString(),
     });
+    notifyUser(r.userId, {
+      type: "request_completed",
+      title: "Request Completed",
+      message: `Your request "${r.title}" is now complete.`,
+      requestId,
+    });
+    logRequestEvent(requestId, "completed");
+    triggerBackup();
+  }
 
-    return res.json(r);
+  // Client can mark request as done (manually close after follow-ups)
+  app.post("/api/requests/:id/complete", async (req, res) => {
+    try {
+      const requestId = parseInt(req.params.id);
+      await finalizeRequest(requestId);
+      const r = storage.getRequest(requestId);
+      return res.json(r);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
   });
 
   // ─── Expert Onboarding Routes ───
@@ -2240,17 +2353,25 @@ export async function registerRoutes(
       const { userId, amount } = req.body;
       const user = storage.getUser(userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
-      if (user.credits < amount) return res.status(400).json({ error: true, message: "Insufficient balance" });
+      // BUG-FIX: Withdrawal balance wrong ($4 instead of $54).
+      // Calculate balance by summing ALL transaction types (bonus, charged, earning, etc.),
+      // not just what's in user.credits which may miss initial bonus credits.
+      const allTxResult = sqlite.prepare(
+        "SELECT SUM(amount) as total FROM credit_transactions WHERE user_id = ?"
+      ).get(userId) as { total: number | null };
+      const trueBalance = allTxResult?.total || 0;
+      const effectiveBalance = Math.max(user.credits, trueBalance);
+      if (effectiveBalance < amount) return res.status(400).json({ error: true, message: "Insufficient balance" });
       // BUG-003: Enforce $50 minimum withdrawal
       if (amount < 50) return res.status(400).json({ error: true, message: "Minimum withdrawal amount is $50" });
 
-      storage.updateUser(userId, { credits: user.credits - amount });
+      storage.updateUser(userId, { credits: effectiveBalance - amount });
       storage.createTransaction({
         userId, amount: -amount, type: "withdrawal",
-        description: `Withdrawal: ${amount} credits ($${amount.toFixed(2)}) via Bank Transfer`,
+        description: `Withdrawal: ${amount} credits ($${Number(amount).toFixed(2)}) via Bank Transfer`,
       });
 
-      return res.json({ message: "Withdrawal submitted", credits: user.credits - amount });
+      return res.json({ message: "Withdrawal submitted", credits: effectiveBalance - amount });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
@@ -2439,6 +2560,20 @@ export async function registerRoutes(
 
       let categories: string[] = [];
       try { categories = JSON.parse(expert.categories || "[]"); } catch {}
+
+      // FIX: Invoice email not sent — send email to expert after invoice generation
+      if (user.email) {
+        sendInvoiceEmail(user.email, {
+          invoiceNumber,
+          expertName: user.name,
+          netPayoutCents,
+          totalAmountCents,
+          lineItems: lineItems.map((item) => ({ title: item.title, amountCents: item.amountCents })),
+          createdAt: invoice.createdAt,
+        }).catch((err: any) => {
+          console.error("[INVOICE] Failed to send invoice email:", err?.message);
+        });
+      }
 
       return res.json({
         invoice,
@@ -2952,6 +3087,23 @@ export async function registerRoutes(
       res.json({ error: err.message });
     }
   });
+
+  // ─── Auto-complete requests past their follow-up deadline ───
+  // Runs every 5 minutes. Finalizes any awaiting_followup request whose deadline has passed.
+  setInterval(async () => {
+    try {
+      const overdueRequests = sqlite.prepare(
+        "SELECT id FROM requests WHERE status = 'awaiting_followup' AND followup_deadline IS NOT NULL AND followup_deadline < ?"
+      ).all(new Date().toISOString()) as Array<{ id: number }>;
+
+      for (const row of overdueRequests) {
+        console.log(`[AUTO-COMPLETE] Finalizing overdue request #${row.id}`);
+        await finalizeRequest(row.id);
+      }
+    } catch (err: any) {
+      console.error("[AUTO-COMPLETE] Error:", err.message);
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
 
   return httpServer;
 }

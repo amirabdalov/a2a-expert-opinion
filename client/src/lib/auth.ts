@@ -49,14 +49,17 @@ export function useAuth() {
 
   const login = useCallback((u: Omit<User, "password">) => {
     setUser(u);
-    // Persist session in cookie (2 years)
-    document.cookie = `a2a_session=${encodeURIComponent(JSON.stringify(u))}; path=/; max-age=${730 * 24 * 60 * 60}; SameSite=None; Secure`;
+    // Persist session in cookie (24 hours)
+    document.cookie = `a2a_session=${encodeURIComponent(JSON.stringify(u))}; path=/; max-age=${24 * 60 * 60}; SameSite=None; Secure`;
+    // Also set a2a_user cookie for landing page compatibility (24 hours)
+    document.cookie = `a2a_user=${encodeURIComponent(JSON.stringify({ name: u.name, email: u.email, role: u.role }))}; path=/; max-age=${24 * 60 * 60}; SameSite=None; Secure`;
   }, []);
 
   const logout = useCallback(() => {
     setUser(null);
-    // Clear cookie
+    // Clear cookies
     document.cookie = "a2a_session=; path=/; max-age=0; SameSite=None; Secure";
+    document.cookie = "a2a_user=; path=/; max-age=0; SameSite=None; Secure";
   }, []);
 
   return { user, login, logout };
