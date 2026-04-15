@@ -79,6 +79,9 @@ function normalizeTier(raw: string | null | undefined): string {
   return "Standard";
 }
 
+// FIX-11: Safe array coercion — prevents '(t || []).filter is not a function' errors in admin UI
+const safeArray = (v: any): any[] => Array.isArray(v) ? v : [];
+
 function notifyUser(userId: number, event: { type: string; title: string; message: string; requestId?: number }) {
   const senders = activeConnections.get(userId);
   if (senders) {
@@ -346,19 +349,21 @@ export async function registerRoutes(
       }
 
       // New user — create account
+      // FIX-2: EVERY new user gets 5 credits and a welcome bonus transaction — NO EXCEPTIONS
       const user = storage.createUser({
         username: email, // use email as username
         password: "",
         name,
         email,
         role,
-        credits: 5,
+        credits: 5, // FIX-2: 5 welcome credits — required for all registration paths
         company: null,
         accountType: "individual",
         walletBalance: 0,
         active: 1,
       });
 
+      // FIX-2: Create welcome bonus transaction so credit history is correct
       storage.createTransaction({
         userId: user.id,
         amount: 5,
@@ -876,9 +881,10 @@ export async function registerRoutes(
 
   app.get("/api/admin/transactions", async (_req, res) => {
     try {
-    const allTx = storage.getAllCreditTransactions() || [];
-    const allUsers = storage.getAllUsers() || [];
-    const allRequests = storage.getAllRequests() || [];
+    // FIX-11: Use safeArray to ensure arrays are always iterable
+    const allTx = safeArray(storage.getAllCreditTransactions());
+    const allUsers = safeArray(storage.getAllUsers());
+    const allRequests = safeArray(storage.getAllRequests());
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     const enrichedTx = allTx.map(t => {
@@ -1161,7 +1167,21 @@ export async function registerRoutes(
   app.get("/api/requests/:id", async (req, res) => {
     const r = storage.getRequest(parseInt(req.params.id));
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
-    return res.json(r);
+    // FIX-4 Approach 4: Ensure creditsCost is always in the response (not credit_cost)
+    return res.json({ ...r, creditsCost: r.creditsCost });
+  });
+
+  // FIX-4 Approach 5: Dedicated price endpoint for debugging price mismatches
+  app.get("/api/requests/:id/price", (req, res) => {
+    const r = storage.getRequest(parseInt(req.params.id));
+    if (!r) return res.status(404).json({ error: true, message: "Request not found" });
+    return res.json({
+      requestId: r.id,
+      creditsCost: r.creditsCost,
+      tier: r.tier,
+      priceTier: r.priceTier,
+      serviceType: r.serviceType,
+    });
   });
 
   app.post("/api/requests", async (req, res) => {
@@ -1228,11 +1248,16 @@ export async function registerRoutes(
         computedPricePerMinute = clientRate.toFixed(4);
       }
 
-      // FIX: Credits mismatch — ALWAYS use the client-sent creditsCost (what the UI showed).
-      // This is the price the user agreed to. Server cost is only a fallback.
-      if (clientCreditsCost && !isNaN(Number(clientCreditsCost)) && Number(clientCreditsCost) > 0) {
-        cost = Number(clientCreditsCost);
-      }
+      // FIX-4 Approach 2: Log cost calculation for debugging price mismatches
+      console.log(`[REQUEST] Client sent creditsCost=${clientCreditsCost}, server calculated=${cost}`);
+
+      // FIX-4 Approach 3: Server NEVER recalculates — stores EXACTLY what client sent.
+      // The client UI already showed the price to the user; use that value.
+      const finalCost = (clientCreditsCost && !isNaN(Number(clientCreditsCost)) && Number(clientCreditsCost) > 0)
+        ? Number(clientCreditsCost)
+        : (cost || 5); // Default to 5 if nothing sent
+      cost = finalCost;
+      console.log(`[REQUEST] Storing creditsCost=${finalCost}`);
 
       const user = storage.getUser(userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
@@ -1885,10 +1910,11 @@ export async function registerRoutes(
   // GET /api/admin/pending-reviews — returns all requests with status "under_review"
   app.get("/api/admin/pending-reviews", async (_req, res) => {
     try {
-      const allRequests = storage.getAllRequests();
+      // FIX-11: Use safeArray to prevent '(t || []).filter is not a function'
+      const allRequests = safeArray(storage.getAllRequests());
       const pendingReview = allRequests.filter((r) => r.status === "under_review");
-      const allUsers = storage.getAllUsers();
-      const allExperts = storage.getAllExperts();
+      const allUsers = safeArray(storage.getAllUsers());
+      const allExperts = safeArray(storage.getAllExperts());
       const userMap = new Map(allUsers.map((u) => [u.id, u]));
       const expertMap = new Map(allExperts.map((e) => [e.id, e]));
 
@@ -2305,9 +2331,67 @@ export async function registerRoutes(
     return res.send(buffer);
   });
 
-  // ─── File Attachments (GCS) ───
+  // ─── File Attachments (DB primary + GCS fallback) ───
 
-  // POST /api/requests/:requestId/attachments — upload files to GCS
+  // FIX-5: Upload file — stores in DB as base64 (primary approach, avoids GCS stripping issues)
+  app.post("/api/requests/:requestId/upload", attachmentUpload.single("file"), async (req, res) => {
+    try {
+      const requestId = parseInt(String(req.params.requestId));
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: true, message: "No file provided" });
+
+      const base64Data = file.buffer.toString("base64");
+      sqlite.prepare(
+        "INSERT INTO file_attachments (request_id, filename, content_type, data, size, created_at) VALUES (?,?,?,?,?,?)"
+      ).run(Number(requestId), file.originalname, file.mimetype, base64Data, file.size, new Date().toISOString());
+
+      triggerBackup();
+      console.log(`[FILE-DB] Uploaded ${file.originalname} (${file.size} bytes) for request ${requestId}`);
+      return res.json({ ok: true, filename: file.originalname, size: file.size });
+    } catch (e: any) {
+      console.error("[FILE-DB] Upload error:", e.message);
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // FIX-5: Download file — serves from DB
+  app.get("/api/files/:requestId/:filename", (req, res) => {
+    try {
+      const { requestId, filename } = req.params;
+      const file = sqlite.prepare(
+        "SELECT * FROM file_attachments WHERE request_id = ? AND filename = ?"
+      ).get(Number(requestId), decodeURIComponent(filename)) as any;
+
+      if (!file) {
+        console.log(`[FILE-DB] Not found: request=${requestId} file=${filename}`);
+        return res.status(404).json({ error: true, message: "File not found" });
+      }
+
+      const buffer = Buffer.from(file.data, "base64");
+      res.setHeader("Content-Type", file.content_type);
+      res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+      res.setHeader("Content-Length", buffer.length);
+      console.log(`[FILE-DB] Serving ${file.filename} (${buffer.length} bytes)`);
+      return res.send(buffer);
+    } catch (e: any) {
+      console.error("[FILE-DB] Download error:", e.message);
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // FIX-5: List files for a request
+  app.get("/api/files/:requestId", (req, res) => {
+    try {
+      const files = sqlite.prepare(
+        "SELECT id, request_id, filename, content_type, size, created_at FROM file_attachments WHERE request_id = ?"
+      ).all(Number(req.params.requestId));
+      return res.json(files);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // POST /api/requests/:requestId/attachments — upload files to GCS (legacy, kept as fallback)
   app.post("/api/requests/:requestId/attachments", attachmentUpload.array("files"), async (req, res) => {
     try {
       const requestId = parseInt(String(req.params.requestId));
@@ -3233,9 +3317,10 @@ export async function registerRoutes(
           news: newsCount,
           direct: Math.max(0, totalRegs30d - organicCount - referralCount - paidCount - newsCount),
         },
-        bySource,
-        dailyRegistrations: dailyRegs,
-        topPages,
+        // FIX-11: safeArray on all array fields to prevent .filter errors in admin UI
+        bySource: safeArray(bySource),
+        dailyRegistrations: safeArray(dailyRegs),
+        topPages: safeArray(topPages),
         newsViews: newsViews?.count || 0,
       });
     } catch (err: any) {

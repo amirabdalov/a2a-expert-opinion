@@ -558,6 +558,8 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
 
   const submitMutation = useMutation({
     mutationFn: async () => {
+      // FIX-4: Use the same displayed price as single source of truth
+      const displayedPrice = Math.ceil(estimatedPrice);
       const res = await apiRequest("POST", "/api/requests", {
         userId,
         title,
@@ -576,6 +578,7 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
         priceTier: activeTier,
         serviceCategory: serviceType,
         draftId: draftId || null,
+        creditsCost: displayedPrice,
       });
       return res.json();
     },
@@ -589,15 +592,15 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
         try {
           for (const att of fileAttachments) {
             try {
-              // Convert base64 back to blob
-              const byteString = atob(att.data);
-              const ab = new ArrayBuffer(byteString.length);
-              const ia = new Uint8Array(ab);
-              for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-              const blob = new Blob([ab], { type: att.type });
+              // FIX-5: Convert base64 back to blob and upload to new DB-based endpoint
+              const base64Data = att.data.includes(',') ? att.data.split(',')[1] : att.data;
+              const byteChars = atob(base64Data);
+              const byteArray = new Uint8Array(byteChars.length);
+              for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
+              const blob = new Blob([byteArray], { type: att.type });
               const fd = new FormData();
               fd.append("file", blob, att.name);
-              await fetch(`/api/requests/${newRequestId}/attachments`, { method: "POST", body: fd });
+              await fetch(`/api/requests/${newRequestId}/upload`, { method: "POST", body: fd });
             } catch {
               // silent per-file failure — don't block confirmation
             }
@@ -610,6 +613,8 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
       queryClient.invalidateQueries({ queryKey: ["/api/requests/user", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
       queryClient.invalidateQueries({ queryKey: ["/api/requests/drafts", userId] });
+      // FIX-3: Immediately sync credits balance after submit
+      queryClient.invalidateQueries({ queryKey: ['/api/users', userId] });
       setSubmittedRequestId(newRequestId);
       setShowConfirmation(true);
     },
@@ -1386,12 +1391,14 @@ function ClientRatingSection({ request, userId }: { request: ExpertRequest; user
 // ─── Request Detail (type-specific) ───
 // ─── Request Timeline Component ───
 function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { requestId: number; userId: number; userName: string; expertIdByUserId?: Record<number, number> }) {
+  // FIX-12: Poll timeline every 10 seconds to pick up expert messages
   const { data: events } = useQuery<RequestEvent[]>({
     queryKey: ["/api/requests", requestId, "timeline"],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/requests/${requestId}/timeline`);
       return res.json();
     },
+    refetchInterval: 10000,
   });
   const [msg, setMsg] = useState("");
   const { toast } = useToast();
@@ -1462,41 +1469,76 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { re
     }
   }
 
+  // FIX-12: Separate messages (chat) from status events
+  const messageEvents = sortedEvents.filter(e => e.type === "message");
+  const statusEvents = sortedEvents.filter(e => e.type !== "message");
+
   return (
-    <Card className="mb-4" data-testid="request-timeline">
-      <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4" /> Request Timeline</CardTitle></CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          {sortedEvents.map((e, i) => (
-            <div key={e.id || i} className="flex items-start gap-3">
-              <div className="mt-0.5 shrink-0">{eventIcon(e.type)}</div>
-              <div className="flex-1 min-w-0">
-                <p className={`text-xs ${e.type === "message" ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/10 p-2 rounded" : ""}`}>{eventLabel(e)}</p>
-                <p className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</p>
-              </div>
+    <>
+      {/* FIX-12: Chat thread — client messages right (blue), expert messages left (green) */}
+      {messageEvents.length > 0 && (
+        <Card className="mb-4" data-testid="request-messages">
+          <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><MessageSquare className="h-4 w-4" /> Messages</CardTitle></CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {messageEvents.map((e, i) => {
+                const isClient = e.actorId === userId;
+                return (
+                  <div key={e.id || i} className={`flex ${isClient ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[80%] rounded-lg p-2.5 ${
+                      isClient
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-green-100 dark:bg-green-900/30 text-green-900 dark:text-green-100'
+                    }`}>
+                      <p className="text-xs font-medium mb-0.5 opacity-75">{e.actorName || (isClient ? 'You' : 'Expert')}</p>
+                      <p className="text-sm">{e.message}</p>
+                      <p className={`text-[10px] mt-1 opacity-60 ${isClient ? 'text-right' : 'text-left'}`}>
+                        {new Date(e.createdAt).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          ))}
-          {sortedEvents.length === 0 && <p className="text-xs text-muted-foreground">No events yet</p>}
-        </div>
-        {/* Messaging input */}
-        <div className="mt-4 pt-3 border-t">
-          <p className="text-xs font-medium mb-2">Send a message to the expert</p>
-          <div className="flex gap-2">
-            <Input
-              value={msg}
-              onChange={(e) => setMsg(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && msg.trim() && sendMsgMutation.mutate()}
-              placeholder="Ask the expert a question..."
-              className="flex-1 text-xs"
-              data-testid="input-timeline-message"
-            />
-            <Button size="sm" onClick={() => sendMsgMutation.mutate()} disabled={!msg.trim() || sendMsgMutation.isPending} data-testid="button-send-timeline-message">
-              <Send className="h-3 w-3" />
-            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className="mb-4" data-testid="request-timeline">
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4" /> Request Timeline</CardTitle></CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {statusEvents.map((e, i) => (
+              <div key={e.id || i} className="flex items-start gap-3">
+                <div className="mt-0.5 shrink-0">{eventIcon(e.type)}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs">{eventLabel(e)}</p>
+                  <p className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</p>
+                </div>
+              </div>
+            ))}
+            {statusEvents.length === 0 && <p className="text-xs text-muted-foreground">No events yet</p>}
           </div>
-        </div>
-      </CardContent>
-    </Card>
+          {/* Messaging input */}
+          <div className="mt-4 pt-3 border-t">
+            <p className="text-xs font-medium mb-2">Send a message to the expert</p>
+            <div className="flex gap-2">
+              <Input
+                value={msg}
+                onChange={(e) => setMsg(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && msg.trim() && sendMsgMutation.mutate()}
+                placeholder="Ask the expert a question..."
+                className="flex-1 text-xs"
+                data-testid="input-timeline-message"
+              />
+              <Button size="sm" onClick={() => sendMsgMutation.mutate()} disabled={!msg.trim() || sendMsgMutation.isPending} data-testid="button-send-timeline-message">
+                <Send className="h-3 w-3" />
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </>
   );
 }
 
@@ -1582,15 +1624,16 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
               { key: "under_a2a_verification", label: "A2A Verification", icon: <ShieldCheck className="h-4 w-4" /> },
               { key: "delivered", label: "Delivered", icon: <CheckCircle className="h-4 w-4" /> },
             ].map((step, i, arr) => {
+              // FIX-7: Map all status values to steps correctly
               const statusOrder = ["pending", "in_progress", "under_review", "awaiting_followup", "completed"];
               const currentIdx = statusOrder.indexOf(request.status);
               let isActive = false;
               let isCurrent = false;
-              if (step.key === "submitted") { isActive = currentIdx >= 0; }
-              else if (step.key === "expert_claimed") { isActive = currentIdx >= 1; }
+              if (step.key === "submitted") { isActive = currentIdx >= 0; isCurrent = request.status === "pending"; }
+              else if (step.key === "expert_claimed") { isActive = currentIdx >= 1; isCurrent = false; }
               else if (step.key === "expert_reviewing") { isActive = currentIdx >= 1; isCurrent = request.status === "in_progress"; }
               else if (step.key === "under_a2a_verification") { isActive = currentIdx >= 2; isCurrent = request.status === "under_review"; }
-              else if (step.key === "delivered") { isActive = currentIdx >= 3; }
+              else if (step.key === "delivered") { isActive = currentIdx >= 3; isCurrent = request.status === "awaiting_followup"; }
               return (
                 <div key={step.key} className="flex items-center gap-1">
                   <div className={`flex items-center gap-1.5 ${
@@ -1652,9 +1695,9 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
                 <details key={i} className="border rounded p-2">
                   <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
                     <FileText className="h-3 w-3" />
-                    {/* FIX-2: Clickable download link */}
+                    {/* FIX-5: Updated download link to new DB-based endpoint */}
                     <a
-                      href={`/api/attachments/${requestId}/${encodeURIComponent(a.name)}`}
+                      href={`/api/files/${requestId}/${encodeURIComponent(a.name)}`}
                       target="_blank"
                       download={a.name}
                       onClick={(e) => e.stopPropagation()}
@@ -1866,6 +1909,8 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
+      // FIX-3: Immediately sync credits balance after top-up
+      queryClient.invalidateQueries({ queryKey: ['/api/users', userId] });
       toast({ title: "Credits purchased!", description: `$${topUpAmount} added to your account.` });
       // Check for draft requests and show notification
       if (drafts && drafts.length > 0) {
@@ -2510,32 +2555,46 @@ export default function ClientDashboard() {
   const [view, setView] = useState<ClientView>(() => getPrefillData() ? "new-request" : "overview");
   const [selectedRequest, setSelectedRequest] = useState<number>(0);
   const [editDraftId, setEditDraftId] = useState<number | undefined>(undefined);
-  const [showTour, setShowTour] = useState(true);
+  // FIX-8+9: Default to hiding tour if user already completed it
+  const [showTour, setShowTour] = useState(() => {
+    // If user is already loaded (from cookie) and has completed tour, don't show
+    if (user?.tourCompleted === 1) return false;
+    return true;
+  });
   const [showConfetti, setShowConfetti] = useState(false);
 
-  // Fix 3: Live credit balance query (refreshes every 30s + on window focus)
+  // FIX-3: Live credit balance query (refreshes every 3s + on window focus, always fresh)
   const { data: liveCreditData } = useQuery<{ credits: number }>({
     queryKey: ['/api/users', user?.id, 'credits'],
     queryFn: () => apiRequest('GET', `/api/users/${user?.id}`).then(r => r.json()),
     enabled: !!user?.id,
-    refetchInterval: 30000,
+    refetchInterval: 3000,
     refetchOnWindowFocus: true,
+    staleTime: 0,
   });
   const displayCredits = liveCreditData?.credits ?? user?.credits ?? 0;
 
-  // Check tourCompleted on user load (change #10) + confetti
+  // FIX-8 + FIX-9: Confetti and walkthrough only on first-ever login (tourCompleted === 0)
+  // Use a ref to ensure this runs only once even if user object reference changes
+  const tourInitialized = useRef(false);
   useEffect(() => {
-    if (user?.tourCompleted === 1) setShowTour(false);
-    // Show confetti for first-time users
-    if (user?.tourCompleted === 0) {
+    if (!user || tourInitialized.current) return;
+    tourInitialized.current = true;
+    if (user.tourCompleted === 1) {
+      // Already completed — hide tour and confetti
+      setShowTour(false);
+      setShowConfetti(false);
+    } else if (user.tourCompleted === 0) {
+      // First-time user — show confetti
       setShowConfetti(true);
+      // After 2 seconds, mark tour as completed so it never shows again
       setTimeout(() => {
-        setShowConfetti(false);
-        // Mark tour as started
         apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
-      }, 4000);
+      }, 2000);
+      // Hide confetti after 4 seconds
+      setTimeout(() => setShowConfetti(false), 4000);
     }
-  }, [user]);
+  }, [user]); // re-run if user changes but gated by tourInitialized ref
   // BUG-009: Force light theme — remove dark class
   useEffect(() => {
     document.documentElement.classList.remove('dark');

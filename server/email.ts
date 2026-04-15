@@ -63,7 +63,8 @@ export async function sendVerificationEmail(expertName: string, requestTitle: st
         <p>Expert <strong>${expertName}</strong> submitted a response for request <strong>'${requestTitle}'</strong>.</p>
         <p>Please review in the admin panel.</p>
         <div style="margin:24px 0;">
-          <a href="https://a2a.global/admin" style="background:#0F3DD1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Open Admin Panel</a>
+          <!-- FIX-10: Use correct admin login URL, not Cloud Run URL -->
+          <a href="https://a2a.global/#/admin/login" style="background:#0F3DD1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Open Admin Panel</a>
         </div>
       </div>
       <div style="border-top:1px solid #eee;padding:16px 0;text-align:center;">

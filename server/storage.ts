@@ -221,7 +221,33 @@ sqlite.exec(`
     landing_page TEXT,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS file_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    data TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
+
+// FIX-5: Migration guard for file_attachments table on existing DBs
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS file_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    data TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  )`);
+  console.log("[DB] file_attachments table ensured.");
+} catch (e: any) {
+  // Table already exists or other non-critical error
+  console.log("[DB] file_attachments migration:", e.message);
+}
 
 // Auto-seed admin accounts on fresh database
 const adminCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM admins").get() as { cnt: number };

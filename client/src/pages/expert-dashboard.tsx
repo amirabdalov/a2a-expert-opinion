@@ -617,6 +617,15 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
     try { return JSON.parse(request.attachments || "[]"); } catch { return []; }
   })();
 
+  // FIX-6: Fetch DB-stored files for this request
+  const { data: requestFiles } = useQuery<Array<{ id: number; filename: string; size: number }>>(
+    {
+      queryKey: ['/api/files', currentReview.requestId],
+      queryFn: () => apiRequest('GET', `/api/files/${currentReview.requestId}`).then(r => r.json()),
+      enabled: !!currentReview.requestId,
+    }
+  );
+
   const isCompleted = currentReview.status === "completed";
 
   return (
@@ -653,9 +662,9 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                 <details key={i} className="border rounded p-2">
                   <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
                     <FileText className="h-3 w-3" />
-                    {/* FIX-2: Clickable download link */}
+                    {/* FIX-5: Updated download link to new DB-based endpoint */}
                     <a
-                      href={`/api/attachments/${currentReview?.requestId}/${encodeURIComponent(a.name)}`}
+                      href={`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`}
                       target="_blank"
                       download={a.name}
                       onClick={(e) => e.stopPropagation()}
@@ -666,6 +675,29 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                   </summary>
                   <pre className="mt-2 text-xs bg-muted/30 p-2 rounded whitespace-pre-wrap">{a.content}</pre>
                 </details>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* FIX-6: DB-stored file attachments (shows on mobile and desktop) */}
+      {requestFiles && requestFiles.length > 0 && (
+        <Card className="mt-4 mb-4">
+          <CardContent className="p-4">
+            <h4 className="font-semibold mb-2 text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Uploaded Files</h4>
+            <div className="space-y-2">
+              {requestFiles.map((f) => (
+                <a
+                  key={f.id}
+                  href={`/api/files/${currentReview.requestId}/${encodeURIComponent(f.filename)}`}
+                  target="_blank"
+                  download
+                  className="flex items-center gap-2 text-primary hover:underline text-sm"
+                >
+                  <Paperclip className="h-4 w-4 shrink-0" />
+                  {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                </a>
               ))}
             </div>
           </CardContent>
@@ -2105,7 +2137,11 @@ export default function ExpertDashboard() {
     return "overview";
   });
   const [selectedReview, setSelectedReview] = useState<number>(0);
-  const [showTour, setShowTour] = useState(true);
+  // FIX-8+9: Default to hiding tour if user already completed it
+  const [showTour, setShowTour] = useState(() => {
+    if (user?.tourCompleted === 1) return false;
+    return true;
+  });
   const [showConfetti, setShowConfetti] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
@@ -2116,13 +2152,23 @@ export default function ExpertDashboard() {
     document.documentElement.classList.remove("dark");
   }, []);
 
-  // Show confetti for first-time expert registrations
+  // FIX-8+9: Show confetti/tour only for first-time expert registrations
+  const expertTourInitialized = useRef(false);
   useEffect(() => {
-    if (user?.tourCompleted === 0) {
+    if (!user || expertTourInitialized.current) return;
+    expertTourInitialized.current = true;
+    if (user.tourCompleted === 1) {
+      setShowTour(false);
+      setShowConfetti(false);
+    } else if (user.tourCompleted === 0) {
       setShowConfetti(true);
+      // Mark tour as completed after 2 seconds
+      setTimeout(() => {
+        apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
+      }, 2000);
       setTimeout(() => setShowConfetti(false), 4000);
     }
-  }, [user]);
+  }, [user]); // gated by expertTourInitialized ref
 
   // SSE real-time notifications
   useSSE(user?.id);

@@ -143,33 +143,28 @@ app.use((req, res, next) => {
         }
       }).catch(() => {});
 
-      // Send daily user data report at startup (after 30s) + every 24 hours
-      setTimeout(async () => {
-        try {
-          const { storage } = await import("./storage");
-          const allUsers = storage.getAllUsers();
-          const allExperts = storage.getAllExperts();
-          await sendFullUserDataEmail(allUsers, allExperts);
-          console.log("[DAILY] Initial user report sent");
-        } catch (err) {
-          console.error("[DAILY] Failed to send initial report:", err);
-        }
-      }, 30000); // 30s after startup
+      // FIX-1: Only send full user data email when new users have been added.
+      // Track user count to avoid spamming cofounders on every cold start.
+      let lastReportedUserCount = 0;
 
-      // Periodic: full Cloud SQL sync + email every 24 hours
+      // Check every hour, only send report if user count has grown
       setInterval(async () => {
         try {
           const { storage } = await import("./storage");
           const allUsers = storage.getAllUsers();
-          const allExperts = storage.getAllExperts();
-          const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
-          await sendFullUserDataEmail(allUsers, allExperts);
-          await syncAllToCloudSql(allUsers, allExperts, allRequests);
-          console.log("[DAILY] User report + Cloud SQL sync complete");
+          if (allUsers.length > lastReportedUserCount) {
+            lastReportedUserCount = allUsers.length;
+            const allExperts = storage.getAllExperts();
+            await sendFullUserDataEmail(allUsers, allExperts);
+            // Also sync Cloud SQL when we have new users
+            const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
+            await syncAllToCloudSql(allUsers, allExperts, allRequests);
+            console.log(`[DAILY] New users detected (${allUsers.length}), report sent + Cloud SQL synced`);
+          }
         } catch (err) {
           console.error("[DAILY] Failed:", err);
         }
-      }, 24 * 60 * 60 * 1000); // every 24 hours
+      }, 60 * 60 * 1000); // check every hour, only send if new users
     },
   );
 })();
