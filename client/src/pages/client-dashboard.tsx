@@ -2685,7 +2685,11 @@ export default function ClientDashboard() {
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                 </span>
-                {user.name}
+                <span className="hidden sm:inline">{user.name}</span>
+              </button>
+              {/* Mobile logout button */}
+              <button onClick={handleLogout} className="md:hidden text-red-500 p-1" title="Log out" data-testid="mobile-logout">
+                <LogOut className="h-5 w-5" />
               </button>
             </div>
           </header>

@@ -38,7 +38,7 @@ import type { Request as ExpertRequest, Expert, ExpertReview, Message, CreditTra
 type ExpertView = "overview" | "queue" | "active" | "completed" | "earnings" | "profile" | "review-detail";
 
 // ─── Mobile Bottom Tab Bar ───
-function MobileBottomTabs({ view, setView }: { view: ExpertView; setView: (v: ExpertView) => void }) {
+function MobileBottomTabs({ view, setView, onLogout }: { view: ExpertView; setView: (v: ExpertView) => void; onLogout: () => void }) {
   const tabs = [
     { id: "overview" as const, icon: Home, label: "Home" },
     { id: "queue" as const, icon: Inbox, label: "Queue" },
@@ -61,6 +61,14 @@ function MobileBottomTabs({ view, setView }: { view: ExpertView; setView: (v: Ex
             {tab.label}
           </button>
         ))}
+        <button
+          onClick={onLogout}
+          className="flex flex-col items-center py-2 px-3 text-[10px] text-red-500 transition-colors"
+          data-testid="mobile-tab-logout"
+        >
+          <LogOut className="h-5 w-5 mb-0.5" />
+          Logout
+        </button>
       </div>
     </div>
   );
@@ -266,8 +274,10 @@ function PendingReviewCards({ reviews, onClaim, isPending, onSkip }: { reviews: 
 }
 
 function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }: { requestId: number; reviews: ExpertReview[]; onClaim: (id: number) => void; isPending: boolean; onSkip?: (requestId: number) => void }) {
+  const [expanded, setExpanded] = useState(false);
   const { data: request } = useQuery<ExpertRequest>({ queryKey: ["/api/requests", requestId] });
   const { data: allReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/request", requestId] });
+  const { data: requestFiles } = useQuery({ queryKey: ["/api/files", requestId], queryFn: () => apiRequest("GET", `/api/files/${requestId}`).then(r => r.json()).catch(() => []), enabled: expanded });
 
   if (!request) return null;
 
@@ -276,42 +286,84 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
   const claimableReview = reviews[0];
   const payout = getEstimatedPayout(request.serviceType, request.tier || "standard");
 
-  // FIX-3: Compute expert payout from creditsCost and tier take rate
   const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
   const takeRate = TAKE_RATES[(request.tier || "standard").toLowerCase()] ?? 0.50;
-  // Use expertPayout from API if available, otherwise compute client-side
   const expertPayoutAmount = (request as any).expertPayout != null
     ? Number((request as any).expertPayout).toFixed(2)
     : (request.creditsCost * (1 - takeRate)).toFixed(2);
 
   return (
-    <Card data-testid={`queue-request-${requestId}`}>
+    <Card data-testid={`queue-request-${requestId}`} className="hover:shadow-md transition">
       <CardContent className="p-4">
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <h3 className="text-sm font-semibold">{request.title}</h3>
-              <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
-              <Badge variant="secondary" className="text-xs capitalize">{request.category}</Badge>
+        {/* Clickable header — preview the request */}
+        <div className="cursor-pointer" onClick={() => setExpanded(!expanded)} data-testid={`preview-toggle-${requestId}`}>
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <h3 className="text-sm font-semibold">{request.title}</h3>
+                <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
+                <Badge variant="secondary" className="text-xs capitalize">{request.category}</Badge>
+                <span className="text-[10px] text-muted-foreground">{expanded ? "▲ Less" : "▼ Preview"}</span>
+              </div>
+              <p className={`text-sm text-muted-foreground mb-2 ${expanded ? "" : "line-clamp-2"}`}>{request.description}</p>
             </div>
-            <p className="text-sm text-muted-foreground line-clamp-2 mb-2">{request.description}</p>
-            <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
-              <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{request.createdAt ? new Date(request.createdAt).toLocaleDateString() : "—"}</span>
-              <span className="flex items-center gap-1 text-green-600 font-semibold" data-testid={`payout-${requestId}`}>
-                <DollarSign className="h-3 w-3" />Your payout: ${expertPayoutAmount}
-              </span>
-              <span className="flex items-center gap-1" data-testid={`time-${requestId}`}>
-                <Clock className="h-3 w-3" />{payout.time}
-              </span>
-              {request.serviceType === "rate" && (
-                <span className="flex items-center gap-1"><User className="h-3 w-3" />{completedCount}/{totalCount} responded</span>
-              )}
+            <div className="flex items-center gap-2 ml-3">
+              <span className="text-green-600 font-semibold text-sm">${expertPayoutAmount}</span>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-2 ml-3">
-            <Button size="sm" onClick={() => onClaim(claimableReview.id)} disabled={isPending} data-testid={`button-claim-review-${claimableReview.id}`}>
-              Claim
-            </Button>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
+            <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{request.createdAt ? new Date(request.createdAt).toLocaleDateString() : "—"}</span>
+            <span className="flex items-center gap-1" data-testid={`time-${requestId}`}><Clock className="h-3 w-3" />{payout.time}</span>
+            {request.serviceType === "rate" && (
+              <span className="flex items-center gap-1"><User className="h-3 w-3" />{completedCount}/{totalCount} responded</span>
+            )}
+          </div>
+        </div>
+
+        {/* Expanded preview — full request details before claiming */}
+        {expanded && (
+          <div className="mt-3 pt-3 border-t border-gray-100 space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-1">Full Description</p>
+              <p className="text-sm whitespace-pre-wrap">{request.description}</p>
+            </div>
+            {request.aiResponse && (
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">AI-Generated Draft</p>
+                <div className="text-sm bg-blue-50 rounded p-3 whitespace-pre-wrap">{request.aiResponse}</div>
+              </div>
+            )}
+            {request.instructions && (
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">Client Instructions</p>
+                <p className="text-sm">{request.instructions}</p>
+              </div>
+            )}
+            {requestFiles && requestFiles.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">Attachments ({requestFiles.length})</p>
+                <div className="space-y-1">
+                  {requestFiles.map((f: any) => (
+                    <a key={f.id} href={`/api/files/${requestId}/${encodeURIComponent(f.filename)}`} target="_blank" download className="flex items-center gap-1 text-primary hover:underline text-sm">
+                      📎 {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="flex items-center gap-3 text-xs">
+              <span><strong>Tier:</strong> {request.tier}</span>
+              <span><strong>Category:</strong> {request.category}</span>
+              <span className="text-green-600 font-semibold">Your payout: ${expertPayoutAmount}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Action buttons */}
+        <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-gray-50">
+          <Button size="sm" onClick={(e) => { e.stopPropagation(); onClaim(claimableReview.id); }} disabled={isPending} data-testid={`button-claim-review-${claimableReview.id}`}>
+            Claim
+          </Button>
             {onSkip && (
               <button
                 onClick={() => onSkip(requestId)}
@@ -2406,7 +2458,7 @@ export default function ExpertDashboard() {
           </main>
         </div>
         {/* Mobile bottom tab bar */}
-        <MobileBottomTabs view={view} setView={setView} />
+        <MobileBottomTabs view={view} setView={setView} onLogout={handleLogout} />
         {showTour && <OnboardingTour steps={EXPERT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}
         {showConfetti && <ExpertConfetti />}
         <FloatingHelp />
