@@ -12,7 +12,7 @@ import type { Response } from "express";
 import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql } from "./user-data-persist";
 
 // Multer config: memory storage, 5MB limit, images only
 const photoUpload = multer({
@@ -407,17 +407,15 @@ export async function registerRoutes(
       // Trigger backup after new user registration
       triggerBackup();
 
-      // MISSION CRITICAL: Persist user to BigQuery + send email
-      writeUserToBigQuery({
+      // MISSION CRITICAL: 4-layer data persistence
+      const userData = {
         id: user.id, name: user.name, email: user.email, role: user.role,
         company: user.company, credits: user.credits,
         utmSource: utmSource || null, utmMedium: utmMedium || null, utmCampaign: utmCampaign || null,
-      }).catch(() => {});
-
-      sendUserRegistrationEmail({
-        id: user.id, name: user.name, email: user.email, role: user.role,
-        company: user.company, credits: user.credits,
-      }).catch(() => {});
+      };
+      writeUserToBigQuery(userData).catch(() => {});      // Layer 2: BigQuery
+      writeUserToCloudSql(userData).catch(() => {});       // Layer 4: Cloud SQL
+      sendUserRegistrationEmail(userData).catch(() => {}); // Layer 3: Excel email
 
       // Generate and send OTP
       const otp = generateOtp();

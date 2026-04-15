@@ -1,8 +1,198 @@
 import XLSX from "xlsx";
 import { Resend } from "resend";
+import pg from "pg";
 
 const resend = new Resend("re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
 const COFOUNDER_EMAILS = ["amir@a2a.global", "oleg@a2a.global"];
+
+// ─── Cloud SQL PostgreSQL (Layer 4) ───
+const CLOUD_SQL_CONNECTION = "winter-jet-492110-g9:us-central1:a2a-global-db";
+const PG_CONFIG = {
+  user: "postgres",
+  password: "A2A$ecureDB2026!",
+  database: "a2a_production",
+  // On Cloud Run, connect via Unix socket
+  host: `/cloudsql/${CLOUD_SQL_CONNECTION}`,
+};
+
+let pgPool: pg.Pool | null = null;
+let pgReady = false;
+
+async function getPgPool(): Promise<pg.Pool | null> {
+  if (pgPool && pgReady) return pgPool;
+  try {
+    pgPool = new pg.Pool({ ...PG_CONFIG, max: 3, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000 });
+    // Test connection
+    const client = await pgPool.connect();
+    client.release();
+    pgReady = true;
+    console.log("[CLOUD-SQL] ✅ Connected to PostgreSQL");
+    return pgPool;
+  } catch (err) {
+    console.log("[CLOUD-SQL] Not available (local dev or no Cloud SQL proxy):", (err as Error).message?.substring(0, 80));
+    pgPool = null;
+    pgReady = false;
+    return null;
+  }
+}
+
+async function ensurePgTables(pool: pg.Pool): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL DEFAULT 'client',
+      company TEXT,
+      credits INTEGER NOT NULL DEFAULT 5,
+      account_type TEXT DEFAULT 'individual',
+      wallet_balance INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      utm_source TEXT,
+      utm_medium TEXT,
+      utm_campaign TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS experts (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      bio TEXT DEFAULT '',
+      expertise TEXT DEFAULT '',
+      credentials TEXT DEFAULT '',
+      rating INTEGER DEFAULT 50,
+      total_reviews INTEGER DEFAULT 0,
+      verified INTEGER DEFAULT 0,
+      categories TEXT DEFAULT '[]',
+      rate_per_minute TEXT,
+      rate_tier TEXT,
+      education TEXT DEFAULT '',
+      years_experience INTEGER DEFAULT 0,
+      onboarding_complete INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS requests (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      expert_id INTEGER,
+      title TEXT NOT NULL,
+      description TEXT,
+      category TEXT NOT NULL,
+      tier TEXT DEFAULT 'standard',
+      status TEXT DEFAULT 'pending',
+      credits_cost INTEGER DEFAULT 0,
+      service_type TEXT DEFAULT 'review',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS credit_transactions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      amount INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  console.log("[CLOUD-SQL] Tables ensured");
+}
+
+export async function initCloudSql(): Promise<void> {
+  const pool = await getPgPool();
+  if (pool) await ensurePgTables(pool);
+}
+
+export async function writeUserToCloudSql(user: {
+  id: number; name: string; email: string; role: string;
+  company?: string | null; credits: number;
+  utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO users (id, name, email, role, company, credits, utm_source, utm_medium, utm_campaign, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name, email = EXCLUDED.email, role = EXCLUDED.role,
+         company = EXCLUDED.company, credits = EXCLUDED.credits,
+         utm_source = EXCLUDED.utm_source, utm_medium = EXCLUDED.utm_medium,
+         utm_campaign = EXCLUDED.utm_campaign, updated_at = NOW()`,
+      [user.id, user.name, user.email, user.role, user.company || null, user.credits,
+       user.utmSource || null, user.utmMedium || null, user.utmCampaign || null]
+    );
+    console.log(`[CLOUD-SQL] ✅ User ${user.email} synced`);
+  } catch (err) {
+    console.error("[CLOUD-SQL] ❌ User write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+export async function writeExpertToCloudSql(expert: {
+  id: number; userId: number; bio: string; expertise: string; credentials: string;
+  rating: number; totalReviews: number; verified: number; categories: string;
+  rateTier?: string | null; ratePerMinute?: string | null;
+  education: string; yearsExperience: number; onboardingComplete: number;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, rate_per_minute, rate_tier, education, years_experience, onboarding_complete)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (id) DO UPDATE SET
+         bio=EXCLUDED.bio, expertise=EXCLUDED.expertise, credentials=EXCLUDED.credentials,
+         rating=EXCLUDED.rating, total_reviews=EXCLUDED.total_reviews, verified=EXCLUDED.verified,
+         categories=EXCLUDED.categories, rate_per_minute=EXCLUDED.rate_per_minute,
+         rate_tier=EXCLUDED.rate_tier, education=EXCLUDED.education,
+         years_experience=EXCLUDED.years_experience, onboarding_complete=EXCLUDED.onboarding_complete`,
+      [expert.id, expert.userId, expert.bio, expert.expertise, expert.credentials,
+       expert.rating, expert.totalReviews, expert.verified, expert.categories,
+       expert.ratePerMinute || null, expert.rateTier || null, expert.education,
+       expert.yearsExperience, expert.onboardingComplete]
+    );
+    console.log(`[CLOUD-SQL] ✅ Expert ${expert.id} synced`);
+  } catch (err) {
+    console.error("[CLOUD-SQL] ❌ Expert write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+export async function writeRequestToCloudSql(request: {
+  id: number; userId: number; expertId?: number | null; title: string;
+  description?: string | null; category: string; tier: string;
+  status: string; creditsCost: number; serviceType: string;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (id) DO UPDATE SET
+         expert_id=EXCLUDED.expert_id, status=EXCLUDED.status, credits_cost=EXCLUDED.credits_cost`,
+      [request.id, request.userId, request.expertId || null, request.title,
+       request.description || null, request.category, request.tier,
+       request.status, request.creditsCost, request.serviceType]
+    );
+    console.log(`[CLOUD-SQL] ✅ Request ${request.id} synced`);
+  } catch (err) {
+    console.error("[CLOUD-SQL] ❌ Request write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+export async function syncAllToCloudSql(allUsers: any[], allExperts: any[], allRequests: any[]): Promise<void> {
+  const pool = await getPgPool();
+  if (!pool) return;
+  console.log(`[CLOUD-SQL] Full sync: ${allUsers.length} users, ${allExperts.length} experts, ${allRequests.length} requests`);
+  for (const u of allUsers) {
+    await writeUserToCloudSql(u).catch(() => {});
+  }
+  for (const e of allExperts) {
+    await writeExpertToCloudSql(e).catch(() => {});
+  }
+  for (const r of allRequests) {
+    await writeRequestToCloudSql(r).catch(() => {});
+  }
+  console.log("[CLOUD-SQL] ✅ Full sync complete");
+}
 
 // ─── BigQuery Dual-Write ───
 async function getGcpToken(): Promise<string | null> {

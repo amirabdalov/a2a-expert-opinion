@@ -29,6 +29,7 @@ const allowlist = [
   "zod",
   "zod-validation-error",
   "bcryptjs",
+  "pg",
 ];
 
 async function buildAll() {

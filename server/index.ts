@@ -5,7 +5,7 @@ import { createServer } from "http";
 import helmet from "helmet";
 import cors from "cors";
 import { startPeriodicBackup, backupDatabase, triggerBackup } from "./db-persistence";
-import { sendFullUserDataEmail } from "./user-data-persist";
+import { sendFullUserDataEmail, initCloudSql, syncAllToCloudSql } from "./user-data-persist";
 
 // Export triggerBackup so routes.ts can call it after writes
 export { triggerBackup };
@@ -129,6 +129,20 @@ app.use((req, res, next) => {
         console.error("[STARTUP] Initial backup failed — data may not persist");
       });
 
+      // Layer 4: Initialize Cloud SQL + full sync
+      initCloudSql().then(async () => {
+        try {
+          const { storage } = await import("./storage");
+          const allUsers = storage.getAllUsers();
+          const allExperts = storage.getAllExperts();
+          const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
+          await syncAllToCloudSql(allUsers, allExperts, allRequests);
+          console.log("[STARTUP] Cloud SQL full sync complete");
+        } catch (err) {
+          console.error("[STARTUP] Cloud SQL sync failed:", err);
+        }
+      }).catch(() => {});
+
       // Send daily user data report at startup (after 30s) + every 24 hours
       setTimeout(async () => {
         try {
@@ -142,15 +156,18 @@ app.use((req, res, next) => {
         }
       }, 30000); // 30s after startup
 
+      // Periodic: full Cloud SQL sync + email every 24 hours
       setInterval(async () => {
         try {
           const { storage } = await import("./storage");
           const allUsers = storage.getAllUsers();
           const allExperts = storage.getAllExperts();
+          const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
           await sendFullUserDataEmail(allUsers, allExperts);
-          console.log("[DAILY] User report sent");
+          await syncAllToCloudSql(allUsers, allExperts, allRequests);
+          console.log("[DAILY] User report + Cloud SQL sync complete");
         } catch (err) {
-          console.error("[DAILY] Failed to send report:", err);
+          console.error("[DAILY] Failed:", err);
         }
       }, 24 * 60 * 60 * 1000); // every 24 hours
     },
