@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { FloatingHelp } from "@/components/floating-help";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, safeArray } from "@/lib/queryClient";
 import { getAdmin, setAdmin, clearAdmin } from "./admin-login";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -60,16 +60,19 @@ function buildChartDataFromReal(
     last30Days.push({ date: isoDate, label });
   }
 
+  const safeReqs = safeArray(requests);
+  const safeTxns = safeArray(transactions);
+
   return last30Days.map(({ date, label }) => {
-    const reqs = (requests || []).filter((r: any) => {
+    const reqs = safeReqs.filter((r: any) => {
       const created = r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : null;
       return created === date;
     }).length;
-    const rev = (transactions || []).filter((t: any) => {
+    const rev = safeTxns.filter((t: any) => {
       const created = t.createdAt ? new Date(t.createdAt).toISOString().slice(0, 10) : null;
       return created === date && t.amount > 0;
     }).reduce((s: number, t: any) => s + (t.amount || 0), 0);
-    const pay = (transactions || []).filter((t: any) => {
+    const pay = safeTxns.filter((t: any) => {
       const created = t.createdAt ? new Date(t.createdAt).toISOString().slice(0, 10) : null;
       return created === date && t.amount < 0;
     }).reduce((s: number, t: any) => s + Math.abs(t.amount || 0), 0);
@@ -185,7 +188,7 @@ export default function AdminDashboard() {
     },
     refetchInterval: 30000,
   });
-  const pendingReviewCount = pendingReviews?.length ?? 0;
+  const pendingReviewCount = safeArray(pendingReviews).length;
 
   // Cmd+K keyboard shortcut
   useEffect(() => {
@@ -362,7 +365,7 @@ function ReviewQueuePanel() {
         <div className="space-y-4">
           {[1,2].map(i => <div key={i} className="h-40 bg-zinc-800 animate-pulse rounded-lg" />)}
         </div>
-      ) : !pendingItems || pendingItems.length === 0 ? (
+      ) : safeArray(pendingItems).length === 0 ? (
         <div className="text-center py-16">
           <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-3" />
           <p className="text-zinc-300 font-medium">All clear!</p>
@@ -370,7 +373,7 @@ function ReviewQueuePanel() {
         </div>
       ) : (
         <div className="space-y-5">
-          {pendingItems.map((item: any) => (
+          {safeArray(pendingItems).map((item: any) => (
             <div key={item.id} className="bg-zinc-900 border border-zinc-700 rounded-xl overflow-hidden" data-testid={`review-item-${item.id}`}>
               {/* Header */}
               <div className="px-5 py-4 border-b border-zinc-800">
@@ -1128,7 +1131,7 @@ function DashboardOverview() {
 
 function RecentActivity() {
   const { data: notifications } = useQuery<any[]>({ queryKey: ["/api/admin/notifications"] });
-  const items = (notifications || []).slice(0, 10);
+  const items = safeArray(notifications).slice(0, 10);
   if (items.length === 0) return <p className="text-sm text-zinc-500">No recent activity</p>;
   return (
     <div className="space-y-2">
@@ -1181,10 +1184,10 @@ function UsersPage() {
     },
   });
 
-  const filtered = (users || []).filter((u: any) =>
-    !search || u.name.toLowerCase().includes(search.toLowerCase()) ||
-    u.username.toLowerCase().includes(search.toLowerCase()) ||
-    u.email.toLowerCase().includes(search.toLowerCase())
+  const filtered = safeArray(users).filter((u: any) =>
+    !search || u.name?.toLowerCase().includes(search.toLowerCase()) ||
+    u.username?.toLowerCase().includes(search.toLowerCase()) ||
+    u.email?.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -1323,7 +1326,7 @@ function ExpertsPage() {
   const [catFilter, setCatFilter] = useState("all");
   const [verifiedFilter, setVerifiedFilter] = useState("all");
 
-  const filtered = (experts || []).filter((e: any) => {
+  const filtered = safeArray(experts).filter((e: any) => {
     if (verifiedFilter === "verified" && !e.verified) return false;
     if (verifiedFilter === "unverified" && e.verified) return false;
     if (catFilter !== "all") {
@@ -1453,7 +1456,7 @@ function RequestsPage() {
     },
   });
 
-  const filtered = (requests || []).filter((r: any) => {
+  const filtered = safeArray(requests).filter((r: any) => {
     if (statusFilter !== "all" && r.status !== statusFilter) return false;
     if (typeFilter !== "all" && r.serviceType !== typeFilter) return false;
     if (catFilter !== "all" && r.category !== catFilter) return false;
@@ -1612,7 +1615,7 @@ function TransactionsPage() {
   });
   const [typeFilter, setTypeFilter] = useState("all");
 
-  const safeTransactions = Array.isArray(transactions) ? transactions : [];
+  const safeTransactions = safeArray(transactions);
 
   const filtered = safeTransactions.filter((t: any) =>
     typeFilter === "all" || t?.type === typeFilter
@@ -1760,7 +1763,7 @@ function WithdrawalsPage() {
               </tr>
             </thead>
             <tbody>
-              {(withdrawals || []).map((w: any) => (
+              {safeArray(withdrawals).map((w: any) => (
                 <tr key={w.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-withdrawal-${w.id}`}>
                   <td className="px-4 py-3 text-zinc-500">#{w.id}</td>
                   <td className="px-4 py-3 text-zinc-200 font-medium">{w.userName}</td>
@@ -1827,7 +1830,7 @@ function NotificationsPage() {
               </tr>
             </thead>
             <tbody>
-              {(notifications || []).map((n: any) => (
+              {safeArray(notifications).map((n: any) => (
                 <tr key={n.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
                   <td className="px-4 py-3 text-zinc-500">#{n.id}</td>
                   <td className="px-4 py-3 text-zinc-200">{n.userName}</td>
@@ -1901,7 +1904,7 @@ function SettingsPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {(settings?.admins || []).map((a: any) => (
+              {safeArray(settings?.admins).map((a: any) => (
                 <div key={a.id} className="flex items-center justify-between py-2 border-b border-zinc-800 last:border-0">
                   <div>
                     <div className="text-sm text-zinc-200">{a.name}</div>
