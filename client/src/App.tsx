@@ -1,10 +1,13 @@
 import { Switch, Route, Router, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
-import { useEffect, useCallback, useSyncExternalStore } from "react";
+import { Component, useEffect, useCallback, useSyncExternalStore } from "react";
+import type { ReactNode, ErrorInfo } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { Home, RefreshCw } from "lucide-react";
 
 // Custom hash location hook that strips query params from the path
 // so wouter matches /#/register?role=expert to the /register route.
@@ -41,6 +44,51 @@ function FaqRedirect() {
   return null;
 }
 
+// ─── Error Boundary ───
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("[ErrorBoundary]", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background" data-testid="error-boundary">
+          <div className="text-center max-w-md px-6">
+            <h1 className="text-5xl font-bold text-destructive mb-4">Oops!</h1>
+            <p className="text-lg font-semibold mb-2">Something went wrong</p>
+            <p className="text-sm text-muted-foreground mb-8">
+              An unexpected error occurred. Please try again or return to the home page.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <a href="/#/">
+                <Button size="lg" className="w-full sm:w-auto gap-2">
+                  <Home className="h-5 w-5" /> Return to Home Page
+                </Button>
+              </a>
+              <Button
+                variant="outline"
+                size="lg"
+                className="w-full sm:w-auto gap-2"
+                onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
+              >
+                <RefreshCw className="h-4 w-4" /> Try Again
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function AppRouter() {
   return (
     <Switch>
@@ -68,13 +116,15 @@ function AppRouter() {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Router hook={useCleanHashLocation}>
-          <AppRouter />
-        </Router>
-        <Toaster />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Router hook={useCleanHashLocation}>
+            <AppRouter />
+          </Router>
+          <Toaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

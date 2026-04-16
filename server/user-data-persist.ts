@@ -2,15 +2,16 @@ import XLSX from "xlsx";
 import { Resend } from "resend";
 import pg from "pg";
 
-const resend = new Resend("re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
 const COFOUNDER_EMAILS = ["amir@a2a.global", "oleg@a2a.global"];
 
 // ─── Cloud SQL PostgreSQL (Layer 4) ───
-const CLOUD_SQL_CONNECTION = "winter-jet-492110-g9:us-central1:a2a-global-db";
+const CLOUD_SQL_CONNECTION = process.env.CLOUD_SQL_CONNECTION || "winter-jet-492110-g9:us-central1:a2a-global-db";
+const PG_PASSWORD = process.env.CLOUD_SQL_PASSWORD || "A2A$ecureDB2026!";
 const PG_CONFIG = {
-  user: "postgres",
-  password: "A2A$ecureDB2026!",
-  database: "a2a_production",
+  user: process.env.CLOUD_SQL_USER || "postgres",
+  password: PG_PASSWORD,
+  database: process.env.CLOUD_SQL_DATABASE || "a2a_production",
   // On Cloud Run, connect via Unix socket
   host: `/cloudsql/${CLOUD_SQL_CONNECTION}`,
 };
@@ -24,7 +25,7 @@ async function getPgPool(): Promise<pg.Pool | null> {
   // Try Unix socket first (Cloud Run), then public IP fallback
   const configs = [
     { ...PG_CONFIG, host: `/cloudsql/${CLOUD_SQL_CONNECTION}` },
-    { user: "postgres", password: "A2A$ecureDB2026!", database: "a2a_production", host: "34.46.252.14", port: 5432 },
+    { user: process.env.CLOUD_SQL_USER || "postgres", password: PG_PASSWORD, database: process.env.CLOUD_SQL_DATABASE || "a2a_production", host: process.env.CLOUD_SQL_IP || "34.46.252.14", port: 5432 },
   ];
 
   for (const config of configs) {
@@ -207,6 +208,23 @@ export async function syncAllToCloudSql(allUsers: any[], allExperts: any[], allR
   console.log("[CLOUD-SQL] ✅ Full sync complete");
 }
 
+export async function writeCreditTransactionToCloudSql(tx: {
+  userId: number; amount: number; type: string; description: string;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO credit_transactions (user_id, amount, type, description, created_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [tx.userId, tx.amount, tx.type, tx.description]
+    );
+    console.log(`[CLOUD-SQL] ✅ Credit transaction synced: ${tx.type} ${tx.amount} for user ${tx.userId}`);
+  } catch (err) {
+    console.error("[CLOUD-SQL] ❌ Credit transaction write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
 // ─── BigQuery Dual-Write ───
 async function getGcpToken(): Promise<string | null> {
   try {
@@ -311,6 +329,75 @@ async function createBigQueryTable(token: string, project: string, dataset: stri
   });
   if (resp.ok) console.log(`[BQ] Created table ${dataset}.${table}`);
   else console.error(`[BQ] Table creation failed: ${resp.status} ${await resp.text()}`);
+}
+
+// ─── BigQuery Dual-Write: Experts ───
+export async function writeExpertToBigQuery(expert: {
+  id: number; userId: number; bio: string; expertise: string; credentials: string;
+  rating: number; verified: number; rateTier?: string | null; ratePerMinute?: string | null;
+}) {
+  try {
+    const token = await getGcpToken();
+    if (!token) return;
+    const PROJECT = "winter-jet-492110-g9";
+    const DATASET = "a2a_analytics";
+    const TABLE = "experts_persistent";
+    const url = `https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT}/datasets/${DATASET}/tables/${TABLE}/insertAll`;
+    const row = {
+      expert_id: expert.id, user_id: expert.userId, bio: (expert.bio || "").substring(0, 500),
+      expertise: expert.expertise || "", credentials: expert.credentials || "",
+      rating: expert.rating, verified: expert.verified,
+      rate_tier: expert.rateTier || "", rate_per_minute: expert.ratePerMinute || "",
+      last_synced_at: new Date().toISOString(),
+    };
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: [{ insertId: `expert_${expert.id}_${Date.now()}`, json: row }] }),
+    });
+    if (resp.ok) {
+      console.log(`[BQ] ✅ Expert ${expert.id} written to BigQuery`);
+    } else {
+      const text = await resp.text();
+      console.error(`[BQ] ❌ Expert BigQuery write failed: ${resp.status} — ${text.substring(0, 200)}`);
+    }
+  } catch (err) {
+    console.error("[BQ] Expert write exception:", err);
+  }
+}
+
+// ─── BigQuery Dual-Write: Requests ───
+export async function writeRequestToBigQuery(request: {
+  id: number; userId: number; title: string; category: string;
+  tier: string; status: string; creditsCost: number; serviceType: string;
+}) {
+  try {
+    const token = await getGcpToken();
+    if (!token) return;
+    const PROJECT = "winter-jet-492110-g9";
+    const DATASET = "a2a_analytics";
+    const TABLE = "requests_persistent";
+    const url = `https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT}/datasets/${DATASET}/tables/${TABLE}/insertAll`;
+    const row = {
+      request_id: request.id, user_id: request.userId, title: request.title,
+      category: request.category, tier: request.tier, status: request.status,
+      credits_cost: request.creditsCost, service_type: request.serviceType,
+      last_synced_at: new Date().toISOString(),
+    };
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: [{ insertId: `request_${request.id}_${Date.now()}`, json: row }] }),
+    });
+    if (resp.ok) {
+      console.log(`[BQ] ✅ Request ${request.id} written to BigQuery`);
+    } else {
+      const text = await resp.text();
+      console.error(`[BQ] ❌ Request BigQuery write failed: ${resp.status} — ${text.substring(0, 200)}`);
+    }
+  } catch (err) {
+    console.error("[BQ] Request write exception:", err);
+  }
 }
 
 // ─── Excel Email Report ───

@@ -12,7 +12,7 @@ import type { Response } from "express";
 import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, writeExpertToBigQuery, writeRequestToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql } from "./user-data-persist";
 
 // Multer config: memory storage, 5MB limit, images only
 const photoUpload = multer({
@@ -70,6 +70,30 @@ async function downloadFromGcs(path: string): Promise<Response> {
 
 // ─── SSE connections store ───
 const activeConnections = new Map<number, Set<(data: any) => void>>();
+
+// ─── 4-Layer Persistence Helpers ───
+// After every data mutation, call these to sync to layers 2-4 (Layer 1 = SQLite + GCS backup via triggerBackup)
+function syncUserToAllLayers(user: { id: number; name: string; email: string; role: string; company?: string | null; credits: number; utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null }) {
+  triggerBackup();
+  writeUserToBigQuery(user).catch(() => {});
+  writeUserToCloudSql(user).catch(() => {});
+}
+
+function syncExpertToAllLayers(expert: { id: number; userId: number; bio: string; expertise: string; credentials: string; rating: number; totalReviews: number; verified: number; categories: string; rateTier?: string | null; ratePerMinute?: string | null; education: string; yearsExperience: number; onboardingComplete: number }) {
+  triggerBackup();
+  writeExpertToBigQuery(expert).catch(() => {});
+  writeExpertToCloudSql(expert).catch(() => {});
+}
+
+function syncRequestToAllLayers(request: { id: number; userId: number; expertId?: number | null; title: string; description?: string | null; category: string; tier: string; status: string; creditsCost: number; serviceType: string }) {
+  triggerBackup();
+  writeRequestToBigQuery(request).catch(() => {});
+  writeRequestToCloudSql(request).catch(() => {});
+}
+
+function syncCreditTransactionToAllLayers(tx: { userId: number; amount: number; type: string; description: string }) {
+  writeCreditTransactionToCloudSql(tx).catch(() => {});
+}
 
 function normalizeTier(raw: string | null | undefined): string {
   if (!raw) return "Standard";
@@ -388,7 +412,7 @@ export async function registerRoutes(
       });
 
       if (role === "expert") {
-        storage.createExpert({
+        const newExpert = storage.createExpert({
           userId: user.id,
           bio: "", expertise: "", credentials: "",
           rating: 50, totalReviews: 0, verified: 0,
@@ -398,6 +422,7 @@ export async function registerRoutes(
           onboardingComplete: 0, verificationScore: null,
           ratePerMinute: null, rateTier: null,
         });
+        syncExpertToAllLayers({ ...newExpert, categories: newExpert.categories || "[]", bio: newExpert.bio || "", expertise: newExpert.expertise || "", credentials: newExpert.credentials || "", education: newExpert.education || "" });
       }
 
       // Save UTM / acquisition source
@@ -409,18 +434,15 @@ export async function registerRoutes(
         );
       }
 
-      // Trigger backup after new user registration
-      triggerBackup();
-
-      // MISSION CRITICAL: 4-layer data persistence
+      // MISSION CRITICAL: 4-layer data persistence for new registration
       const userData = {
         id: user.id, name: user.name, email: user.email, role: user.role,
         company: user.company, credits: user.credits,
         utmSource: utmSource || null, utmMedium: utmMedium || null, utmCampaign: utmCampaign || null,
       };
-      writeUserToBigQuery(userData).catch(() => {});      // Layer 2: BigQuery
-      writeUserToCloudSql(userData).catch(() => {});       // Layer 4: Cloud SQL
+      syncUserToAllLayers(userData);                       // Layers 1+2+4
       sendUserRegistrationEmail(userData).catch(() => {}); // Layer 3: Excel email
+      syncCreditTransactionToAllLayers({ userId: user.id, amount: 5, type: "bonus", description: "Welcome bonus — $5 free credits" });
 
       // Generate and send OTP
       const otp = generateOtp();
@@ -457,8 +479,12 @@ export async function registerRoutes(
       if (user.active === 0) {
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
+      // Create a 24-hour session token
+      const sessionToken = uuidv4();
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      storage.createSession(sessionToken, user.id, expiresAt);
       const { password: _, ...safeUser } = user;
-      return res.json(safeUser);
+      return res.json({ ...safeUser, sessionToken, expiresAt });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
@@ -513,8 +539,12 @@ export async function registerRoutes(
       if (user.active === 0) {
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
+      // Create a 24-hour session token
+      const sessionToken = uuidv4();
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      storage.createSession(sessionToken, user.id, expiresAt);
       const { password: _, ...safeUser } = user;
-      return res.json(safeUser);
+      return res.json({ ...safeUser, sessionToken, expiresAt });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
@@ -1010,6 +1040,8 @@ export async function registerRoutes(
         userId: user.id, amount, type: "admin_grant",
         description: `Admin granted ${amount} credits`,
       });
+      syncUserToAllLayers({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + amount });
+      syncCreditTransactionToAllLayers({ userId: user.id, amount, type: "admin_grant", description: `Admin granted ${amount} credits` });
       return res.json({ credits: user.credits + amount });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1049,6 +1081,9 @@ export async function registerRoutes(
         userId: user.id, amount: request.creditsCost, type: "refund",
         description: `Admin refund: ${request.title}`,
       });
+      syncUserToAllLayers({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + request.creditsCost });
+      syncRequestToAllLayers({ id: request.id, userId: request.userId, title: request.title, category: request.category, tier: request.tier, status: "refunded", creditsCost: request.creditsCost, serviceType: request.serviceType });
+      syncCreditTransactionToAllLayers({ userId: user.id, amount: request.creditsCost, type: "refund", description: `Admin refund: ${request.title}` });
       storage.createNotification({
         userId: user.id,
         title: "Refund Processed",
@@ -1104,6 +1139,7 @@ export async function registerRoutes(
   app.patch("/api/experts/:id", async (req, res) => {
     const expert = storage.updateExpert(parseInt(req.params.id), req.body);
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+    syncExpertToAllLayers({ ...expert, categories: expert.categories || "[]", bio: expert.bio || "", expertise: expert.expertise || "", credentials: expert.credentials || "", education: expert.education || "" });
     return res.json(expert);
   });
 
@@ -1299,6 +1335,11 @@ export async function registerRoutes(
         });
       }
 
+      // MISSION CRITICAL: 4-layer persistence for new request
+      syncUserToAllLayers({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits - cost });
+      syncRequestToAllLayers({ id: request.id, userId, title, category, tier, status: "pending", creditsCost: cost, serviceType: sType });
+      syncCreditTransactionToAllLayers({ userId, amount: -cost, type: "hold", description: `Credits frozen for request: ${title}` });
+
       // Log timeline event
       logRequestEvent(request.id, "submitted", userId, user.name);
 
@@ -1359,6 +1400,7 @@ export async function registerRoutes(
   app.patch("/api/requests/:id", async (req, res) => {
     const r = storage.updateRequest(parseInt(req.params.id), req.body);
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
+    syncRequestToAllLayers({ id: r.id, userId: r.userId, title: r.title, category: r.category, tier: r.tier, status: r.status, creditsCost: r.creditsCost, serviceType: r.serviceType });
     return res.json(r);
   });
 
@@ -1455,6 +1497,8 @@ export async function registerRoutes(
         stripePaymentId: `mock_${uuidv4().slice(0, 8)}`,
       });
       const updatedUser = storage.getUser(userId);
+      if (updatedUser) syncUserToAllLayers({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits });
+      syncCreditTransactionToAllLayers({ userId, amount: creditsToAdd, type: "purchase", description: `Custom top-up — $${amount} — ${creditsToAdd} credits` });
       return res.json({ credits: updatedUser?.credits, success: true });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1485,6 +1529,7 @@ export async function registerRoutes(
       requestId: r.id,
     });
     logRequestEvent(r.id, "claimed", expertId);
+    syncRequestToAllLayers({ id: r.id, userId: r.userId, title: r.title, category: r.category, tier: r.tier, status: r.status, creditsCost: r.creditsCost, serviceType: r.serviceType, expertId });
 
     return res.json(r);
   });
@@ -1518,7 +1563,7 @@ export async function registerRoutes(
     sendEmailNotification(r.userId, "Expert Response Ready", `Expert has responded to your request "${r.title}". View the response now.`);
 
     logRequestEvent(r.id, "responded", r.expertId || undefined);
-    triggerBackup();
+    syncRequestToAllLayers({ id: r.id, userId: r.userId, title: r.title, category: r.category, tier: r.tier, status: r.status, creditsCost: r.creditsCost, serviceType: r.serviceType, expertId: r.expertId });
     return res.json(r);
   });
 
@@ -1534,6 +1579,8 @@ export async function registerRoutes(
       userId: r.userId, amount: r.creditsCost, type: "charged",
       description: `Credits charged for completed request: ${r.title}`,
     });
+    syncRequestToAllLayers({ id: r.id, userId: r.userId, title: r.title, category: r.category, tier: r.tier, status: "completed", creditsCost: r.creditsCost, serviceType: r.serviceType, expertId: r.expertId });
+    syncCreditTransactionToAllLayers({ userId: r.userId, amount: r.creditsCost, type: "charged", description: `Credits charged for completed request: ${r.title}` });
 
     if (r.expertId) {
       const expert = storage.getExpert(r.expertId);
@@ -1548,6 +1595,9 @@ export async function registerRoutes(
             description: `Completed: ${r.title}`,
           });
           storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
+          syncUserToAllLayers({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits + earning });
+          syncCreditTransactionToAllLayers({ userId: expertUser.id, amount: earning, type: "earning", description: `Completed: ${r.title}` });
+          syncExpertToAllLayers({ ...expert, totalReviews: expert.totalReviews + 1, categories: expert.categories || "[]", bio: expert.bio || "", expertise: expert.expertise || "", credentials: expert.credentials || "", education: expert.education || "" });
         }
       }
     }
@@ -1601,6 +1651,7 @@ export async function registerRoutes(
         onboardingComplete: Math.max(expert.onboardingComplete, 1),
       });
       if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert profile" });
+      syncExpertToAllLayers({ ...updated, categories: updated.categories || "[]", bio: updated.bio || "", expertise: updated.expertise || "", credentials: updated.credentials || "", education: updated.education || "" });
       return res.json(updated);
     } catch (e: any) {
       console.error("[ONBOARDING/PROFILE]", e);
@@ -1645,12 +1696,13 @@ export async function registerRoutes(
       });
 
       if (passed) {
-        storage.updateExpert(expert.id, {
+        const verifiedExpert = storage.updateExpert(expert.id, {
           onboardingComplete: 3,
           verified: 1,
           verificationScore: 100,
           availability: 1,
         });
+        if (verifiedExpert) syncExpertToAllLayers({ ...verifiedExpert, categories: verifiedExpert.categories || "[]", bio: verifiedExpert.bio || "", expertise: verifiedExpert.expertise || "", credentials: verifiedExpert.credentials || "", education: verifiedExpert.education || "" });
       }
 
       return res.json({
@@ -1728,6 +1780,7 @@ export async function registerRoutes(
     const request = storage.getRequest(review.requestId);
     if (request && request.status === "pending") {
       storage.updateRequest(review.requestId, { expertId, status: "in_progress" });
+      syncRequestToAllLayers({ id: request.id, userId: request.userId, title: request.title, category: request.category, tier: request.tier, status: "in_progress", creditsCost: request.creditsCost, serviceType: request.serviceType, expertId });
     }
 
     // Log timeline event + notify
@@ -1784,6 +1837,8 @@ export async function registerRoutes(
             userId: completedRequest.userId, amount: completedRequest.creditsCost, type: "charged",
             description: `Credits charged for completed request: ${completedRequest.title}`,
           });
+          syncRequestToAllLayers({ id: completedRequest.id, userId: completedRequest.userId, title: completedRequest.title, category: completedRequest.category, tier: completedRequest.tier, status: "completed", creditsCost: completedRequest.creditsCost, serviceType: completedRequest.serviceType, expertId: completedRequest.expertId });
+          syncCreditTransactionToAllLayers({ userId: completedRequest.userId, amount: completedRequest.creditsCost, type: "charged", description: `Credits charged for completed request: ${completedRequest.title}` });
         }
       }
 
@@ -1816,6 +1871,10 @@ export async function registerRoutes(
               createdAt: new Date().toISOString(),
               stripePaymentId: null,
             });
+            // 4-layer sync for expert earnings
+            syncUserToAllLayers({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + earning });
+            syncCreditTransactionToAllLayers({ userId: user.id, amount: earning, type: "earning", description: `Completed review: ${request.title}` });
+            syncExpertToAllLayers({ ...expert, totalReviews: expert.totalReviews + 1, categories: expert.categories || "[]", bio: expert.bio || "", expertise: expert.expertise || "", credentials: expert.credentials || "", education: expert.education || "" });
           }
         }
       }
@@ -1877,6 +1936,8 @@ export async function registerRoutes(
 
       // Mark the REQUEST as under_review (not yet visible to client)
       storage.updateRequest(review.requestId, { status: "under_review" });
+      const reqForSync = storage.getRequest(review.requestId);
+      if (reqForSync) syncRequestToAllLayers({ id: reqForSync.id, userId: reqForSync.userId, title: reqForSync.title, category: reqForSync.category, tier: reqForSync.tier, status: "under_review", creditsCost: reqForSync.creditsCost, serviceType: reqForSync.serviceType, expertId: reqForSync.expertId });
 
       // Log timeline event
       if (updated?.expertId) {
@@ -1967,6 +2028,7 @@ export async function registerRoutes(
         status: newStatus,
         followup_deadline: followupDeadline,
       } as any);
+      syncRequestToAllLayers({ id: request.id, userId: request.userId, title: request.title, category: request.category, tier: request.tier, status: newStatus, creditsCost: request.creditsCost, serviceType: request.serviceType, expertId: request.expertId });
 
       // Charge credits and pay experts (same logic as before)
       if (allCompleted) {
@@ -1976,6 +2038,7 @@ export async function registerRoutes(
           type: "charged",
           description: `Credits charged for completed request: ${request.title}`,
         });
+        syncCreditTransactionToAllLayers({ userId: request.userId, amount: request.creditsCost, type: "charged", description: `Credits charged for completed request: ${request.title}` });
 
         for (const rev of allReviews) {
           if (rev.expertId && rev.status === "completed") {
@@ -2003,6 +2066,10 @@ export async function registerRoutes(
                   createdAt: new Date().toISOString(),
                   stripePaymentId: null,
                 });
+                // 4-layer sync for expert earnings
+                syncUserToAllLayers({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits + earning });
+                syncCreditTransactionToAllLayers({ userId: expertUser.id, amount: earning, type: "earning", description: `Completed review: ${request.title}` });
+                syncExpertToAllLayers({ ...expert, totalReviews: expert.totalReviews + 1, categories: expert.categories || "[]", bio: expert.bio || "", expertise: expert.expertise || "", credentials: expert.credentials || "", education: expert.education || "" });
               }
             }
           }
@@ -2031,7 +2098,7 @@ export async function registerRoutes(
       // Send approval emails to cofounders
       try {
         const { Resend } = await import("resend");
-        const resend = new Resend("re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
         await resend.emails.send({
           from: "A2A Global <noreply@a2a.global>",
           to: ["oleg@a2a.global", "amir@a2a.global"],
@@ -2175,6 +2242,8 @@ export async function registerRoutes(
       description: `${pkg.name} package — ${pkg.credits} credits ($${pkg.price})`,
     });
     const updatedUser = storage.getUser(userId);
+    if (updatedUser) syncUserToAllLayers({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits });
+    syncCreditTransactionToAllLayers({ userId, amount: pkg.credits, type: "purchase", description: `${pkg.name} package — ${pkg.credits} credits ($${pkg.price})` });
     return res.json({ credits: updatedUser?.credits });
   });
 
@@ -2204,6 +2273,8 @@ export async function registerRoutes(
       });
 
       const updatedUser = storage.getUser(userId);
+      if (updatedUser) syncUserToAllLayers({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits });
+      syncCreditTransactionToAllLayers({ userId, amount: pack.credits, type: "purchase", description: `${pack.name} — ${pack.credits} credits` });
       return res.json({ success: true, credits: updatedUser?.credits, mock: true });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -2285,6 +2356,7 @@ export async function registerRoutes(
   app.patch("/api/users/:id", async (req, res) => {
     const user = storage.updateUser(parseInt(req.params.id), req.body);
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
+    syncUserToAllLayers({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits });
     const { password: _, ...safeUser } = user;
     return res.json(safeUser);
   });
@@ -2552,6 +2624,8 @@ export async function registerRoutes(
         userId: user.id, amount: request.creditsCost, type: "refund",
         description: `Refund: ${request.title}`,
       });
+      syncUserToAllLayers({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + request.creditsCost });
+      syncCreditTransactionToAllLayers({ userId: user.id, amount: request.creditsCost, type: "refund", description: `Refund: ${request.title}` });
 
       storage.createNotification({
         userId: user.id,
@@ -2580,6 +2654,7 @@ export async function registerRoutes(
         onboardingComplete: Math.max(expert.onboardingComplete, 2),
       });
       if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert rate" });
+      syncExpertToAllLayers({ ...updated, categories: updated.categories || "[]", bio: updated.bio || "", expertise: updated.expertise || "", credentials: updated.credentials || "", education: updated.education || "" });
       return res.json(updated);
     } catch (e: any) {
       console.error("[ONBOARDING/RATE]", e);

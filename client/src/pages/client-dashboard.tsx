@@ -696,6 +696,18 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
 
   const canSubmit = title && category;
 
+  // T105: Multi-step wizard state
+  const [wizardStep, setWizardStep] = useState(1);
+  const WIZARD_STEPS = [
+    { num: 1, label: "Service" },
+    { num: 2, label: "Details" },
+    { num: 3, label: "Review & Submit" },
+  ];
+
+  // Step validation
+  const canProceedStep1 = !!serviceType;
+  const canProceedStep2 = !!title && !!category;
+
   // Confirmation screen (change #1)
   if (showConfirmation && submittedRequestId) {
     return (
@@ -726,264 +738,391 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
 
   return (
     <div className="p-6 max-w-3xl" data-testid="view-new-request">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-xl font-bold">New Request</h1>
-          <p className="text-sm text-muted-foreground">All fields on one page. Fill in and submit.</p>
+          <p className="text-sm text-muted-foreground">Step {wizardStep} of 3 — {WIZARD_STEPS[wizardStep - 1].label}</p>
         </div>
         {draftSaveStatus === "saving" && <span className="text-xs text-muted-foreground" data-testid="draft-saving">Saving...</span>}
         {draftSaveStatus === "saved" && <span className="text-xs text-green-600 font-medium" data-testid="draft-saved">Draft saved</span>}
       </div>
 
-      {/* Section A: Service Type Toggle */}
-      <div className="mb-6">
-        <Label className="text-sm font-medium mb-2 block">Service Type</Label>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" data-testid="service-type-toggle">
-          {([
-            { id: "sense_check" as const, label: "Sense Check", desc: "Quick verification of AI output" },
-            { id: "prompt_calibration" as const, label: "Prompt Calibration", desc: "Expert helps you ask better questions" },
-            { id: "full_review" as const, label: "Full Review", desc: "Detailed expert analysis" },
-            { id: "other" as const, label: "Other", desc: "Custom request" },
-          ]).map((s) => (
+      {/* Wizard Step Indicator */}
+      <div className="flex items-center gap-1 mb-6" data-testid="wizard-steps">
+        {WIZARD_STEPS.map((step, idx) => (
+          <div key={step.num} className="flex items-center flex-1">
             <button
-              key={s.id}
-              onClick={() => { setServiceType(s.id); setTierOverride(null); }}
-              className={`p-3 rounded-lg border text-left transition-all ${
-                serviceType === s.id
-                  ? "border-primary bg-primary/5 ring-2 ring-primary/20"
-                  : "border-border hover:border-primary/30"
+              onClick={() => { if (step.num < wizardStep) setWizardStep(step.num); }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                step.num === wizardStep
+                  ? "bg-primary text-primary-foreground"
+                  : step.num < wizardStep
+                  ? "bg-primary/10 text-primary cursor-pointer hover:bg-primary/20"
+                  : "bg-muted text-muted-foreground"
               }`}
-              data-testid={`toggle-service-${s.id}`}
+              data-testid={`wizard-step-${step.num}`}
             >
-              <p className="text-xs font-semibold">{s.label}</p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">{s.desc}</p>
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                step.num < wizardStep ? "bg-primary text-primary-foreground" : step.num === wizardStep ? "bg-primary-foreground text-primary" : "bg-muted-foreground/20"
+              }`}>
+                {step.num < wizardStep ? "✓" : step.num}
+              </span>
+              <span className="hidden sm:inline">{step.label}</span>
             </button>
-          ))}
-        </div>
+            {idx < WIZARD_STEPS.length - 1 && (
+              <div className={`flex-1 h-0.5 mx-2 rounded ${step.num < wizardStep ? "bg-primary" : "bg-muted"}`} />
+            )}
+          </div>
+        ))}
       </div>
 
-      {/* Templates (change #6) */}
-      <div className="mb-6" data-testid="request-templates">
-        <Label className="text-sm font-medium mb-2 block">Quick Templates</Label>
-        <div className="flex gap-2 overflow-x-auto pb-2">
-          {REQUEST_TEMPLATES.map((tpl) => (
-            <button
-              key={tpl.id}
-              onClick={() => applyTemplate(tpl)}
-              className="flex-shrink-0 p-3 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/5 transition-all text-left w-44"
-              data-testid={`template-${tpl.id}`}
-            >
-              <p className="text-xs font-semibold truncate">{tpl.label}</p>
-              <p className="text-[10px] text-muted-foreground mt-0.5 capitalize">{tpl.serviceType.replace('_', ' ')} · {tpl.category}</p>
-              <Button variant="ghost" size="sm" className="h-5 text-[10px] px-2 mt-1.5">Use</Button>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Section B: Request Details */}
-      <div className="space-y-4 mb-6">
-        <div>
-          <div className="flex items-center">
-            <Label className="text-sm">Title *</Label>
-            <InfoTooltip text="A clear, specific title helps experts understand your request quickly" />
-          </div>
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Brief title for your request" className="mt-1" data-testid="input-request-title" />
-        </div>
-
-        <div>
-          <div className="flex items-center">
-            <Label className="text-sm">Category *</Label>
-            <InfoTooltip text="Select the field most relevant to your question" />
-          </div>
-          <Select value={category} onValueChange={setCategory}>
-            <SelectTrigger className="mt-1" data-testid="select-category"><SelectValue placeholder="Select category" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="finance">Finance</SelectItem>
-              <SelectItem value="business">Business & Strategy</SelectItem>
-              <SelectItem value="entrepreneurship">Entrepreneurship</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* FEAT-010: My question field */}
-        <div>
-          <div className="flex items-center">
-            <Label className="text-sm">My question *</Label>
-            <InfoTooltip text="Describe exactly what you want the expert to answer or verify" />
-          </div>
-          <Textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="What do you want the expert to answer or verify? Be specific about your concerns..."
-            rows={3}
-            className="mt-1"
-            required
-            data-testid="input-question"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center">
-            <Label className="text-sm">{aiResponseLabel}</Label>
-            <InfoTooltip text="Provide context for the expert" />
-          </div>
-          <Textarea
-            value={aiResponse}
-            onChange={(e) => setAiResponse(e.target.value)}
-            placeholder={aiResponseLabel + "..."}
-            rows={6}
-            className="mt-1 font-mono text-xs"
-            data-testid="input-ai-response"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center mb-2">
-            <Label className="text-sm">Which AI generated this? (optional)</Label>
-            <InfoTooltip text="Knowing which AI generated this helps us track accuracy patterns" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Select value={llmProvider} onValueChange={setLlmProvider}>
-              <SelectTrigger data-testid="select-llm-provider"><SelectValue placeholder="AI Provider" /></SelectTrigger>
-              <SelectContent>
-                {LLM_PROVIDERS.map((p) => (
-                  <SelectItem key={p} value={p}>{p}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="e.g. GPT-4o, Claude 3.5 Sonnet" data-testid="input-llm-model" />
-          </div>
-        </div>
-
-        <div>
-          <div className="flex items-center">
-            <Label className="text-sm">Instructions for expert (optional)</Label>
-            <InfoTooltip text="Specific guidance for what you want the expert to focus on" />
-          </div>
-          <Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Any specific instructions or focus areas..." rows={3} className="mt-1" data-testid="input-instructions" />
-        </div>
-
-        {/* File Upload - Drag & Drop (change #5) */}
-        <div data-testid="file-upload-section">
-          <Label className="text-sm mb-2 block">Attachments ({attachments.length} file{attachments.length !== 1 ? 's' : ''})</Label>
-          <div
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all ${
-              dragActive
-                ? "border-primary bg-primary/5"
-                : "border-border hover:border-primary/40 hover:bg-muted/30"
-            }`}
-            data-testid="dropzone"
-          >
-            <Paperclip className="h-6 w-6 mx-auto mb-2 text-muted-foreground" />
-            <p className="text-sm font-medium">Drop files here or click to upload</p>
-            <p className="text-xs text-muted-foreground mt-1">Any format accepted — 50MB total limit</p>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => handleFileUpload(e.target.files)}
-            data-testid="input-file-upload"
-          />
-          {attachments.length > 0 && (
-            <div className="mt-2 space-y-1">
-              {attachments.map((a, i) => (
-                <div key={i} className="flex items-center gap-2 p-2 bg-muted/50 rounded text-xs" data-testid={`attached-file-${i}`}>
-                  <span className="text-base">{fileIcon(a.type)}</span>
-                  <span className="font-medium flex-1 truncate">{a.name}</span>
-                  <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)} KB</span>
-                  <button onClick={() => removeAttachment(i)} className="text-muted-foreground hover:text-destructive" data-testid={`button-remove-attachment-${i}`}><X className="h-3 w-3" /></button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Section D: Dynamic Pricing */}
-      <Card className="mb-6" data-testid="card-dynamic-pricing">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <DollarSign className="h-4 w-4 text-primary" /> Estimated Price
-            <InfoTooltip text="Price is estimated based on request complexity and expert tier. Final price may vary based on actual time spent." />
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid sm:grid-cols-3 gap-4 mb-4">
-            <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <p className="text-2xl font-bold text-primary" data-testid="text-estimated-price">${estimatedPrice.toFixed(2)}</p>
-              <p className="text-[10px] text-muted-foreground">AI-Determined Price</p>
-            </div>
-            <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <Badge className={`${
-                activeTier === "standard" ? "bg-blue-500" : activeTier === "pro" ? "bg-indigo-500" : "bg-amber-500"
-              } text-white`} data-testid="badge-expected-tier">
-                {activeTier.charAt(0).toUpperCase() + activeTier.slice(1)}
-              </Badge>
-              <p className="text-[10px] text-muted-foreground mt-1">Expected Expert Category</p>
-            </div>
-            <div className="text-center p-3 bg-muted/30 rounded-lg">
-              <p className="text-sm font-semibold" data-testid="text-completion-time">{completionTime}</p>
-              <p className="text-[10px] text-muted-foreground">Expected Completion</p>
-            </div>
-          </div>
-
-          {/* Expert Tier Override */}
-          <div>
-            <Label className="text-xs text-muted-foreground mb-2 block">Override Expert Tier</Label>
-            <div className="inline-flex bg-muted rounded-lg p-1" data-testid="tier-override-toggle">
-              {(["standard", "pro", "guru"] as ExpertTierOverride[]).map((t) => (
+      {/* ─── Step 1: Service Type & Templates ─── */}
+      {wizardStep === 1 && (
+        <div data-testid="wizard-step-1-content">
+          <div className="mb-6">
+            <Label className="text-sm font-medium mb-2 block">Service Type</Label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" data-testid="service-type-toggle">
+              {([
+                { id: "sense_check" as const, label: "Sense Check", desc: "Quick verification of AI output" },
+                { id: "prompt_calibration" as const, label: "Prompt Calibration", desc: "Expert helps you ask better questions" },
+                { id: "full_review" as const, label: "Full Review", desc: "Detailed expert analysis" },
+                { id: "other" as const, label: "Other", desc: "Custom request" },
+              ]).map((s) => (
                 <button
-                  key={t}
-                  onClick={() => setTierOverride(t)}
-                  className={`px-4 py-1.5 text-xs rounded-md transition font-medium ${
-                    activeTier === t ? "bg-background shadow text-foreground" : "text-muted-foreground"
+                  key={s.id}
+                  onClick={() => { setServiceType(s.id); setTierOverride(null); }}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    serviceType === s.id
+                      ? "border-primary bg-primary/5 ring-2 ring-primary/20"
+                      : "border-border hover:border-primary/30"
                   }`}
-                  data-testid={`tier-override-${t}`}
+                  data-testid={`toggle-service-${s.id}`}
                 >
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                  <p className="text-xs font-semibold">{s.label}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{s.desc}</p>
                 </button>
               ))}
             </div>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Section E: Balance & Submit */}
-      <Card className="bg-muted/50" data-testid="card-submit">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <p className="text-sm">Your balance: <span className="font-bold">${balance.toFixed(2)}</span></p>
+          {/* Templates (change #6) */}
+          <div className="mb-6" data-testid="request-templates">
+            <Label className="text-sm font-medium mb-2 block">Quick Templates</Label>
+            <div className="flex gap-2 overflow-x-auto pb-2">
+              {REQUEST_TEMPLATES.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  onClick={() => { applyTemplate(tpl); setWizardStep(2); }}
+                  className="flex-shrink-0 p-3 rounded-lg border border-border hover:border-primary/40 hover:bg-primary/5 transition-all text-left w-44"
+                  data-testid={`template-${tpl.id}`}
+                >
+                  <p className="text-xs font-semibold truncate">{tpl.label}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 capitalize">{tpl.serviceType.replace('_', ' ')} · {tpl.category}</p>
+                  <Button variant="ghost" size="sm" className="h-5 text-[10px] px-2 mt-1.5">Use</Button>
+                </button>
+              ))}
             </div>
-            {!hasEnoughBalance && (
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-orange-500" />
-                <span className="text-xs text-orange-600 font-medium">Insufficient balance</span>
-                <Button size="sm" variant="outline" onClick={() => setView("credits")} data-testid="button-buy-credits">
-                  <CreditCard className="h-3 w-3 mr-1" /> Buy Credits
-                </Button>
-              </div>
-            )}
           </div>
-          <Button
-            className="w-full bg-gradient-to-r from-[#0F3DD1] to-[#171717] text-white"
-            size="lg"
-            onClick={() => submitMutation.mutate()}
-            disabled={submitMutation.isPending || uploading || !canSubmit}
-            data-testid="button-submit-request"
-          >
-            {uploading ? "Uploading files..." : submitMutation.isPending ? "Submitting..." : `Submit Request — $${estimatedPrice.toFixed(2)}`}
-          </Button>
-        </CardContent>
-      </Card>
+
+          {/* Pricing preview */}
+          <Card className="mb-6 bg-muted/30">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">Estimated from <span className="font-bold">${estimatedPrice.toFixed(2)}</span></p>
+                  <p className="text-xs text-muted-foreground">{completionTime} · {activeTier.charAt(0).toUpperCase() + activeTier.slice(1)} tier</p>
+                </div>
+                <Badge className={`${activeTier === "standard" ? "bg-blue-500" : activeTier === "pro" ? "bg-indigo-500" : "bg-amber-500"} text-white`}>
+                  {activeTier.charAt(0).toUpperCase() + activeTier.slice(1)}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end">
+            <Button onClick={() => setWizardStep(2)} disabled={!canProceedStep1} data-testid="button-next-step-1">
+              Next: Add Details <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Step 2: Request Details ─── */}
+      {wizardStep === 2 && (
+        <div data-testid="wizard-step-2-content">
+          <div className="space-y-4 mb-6">
+            <div>
+              <div className="flex items-center">
+                <Label className="text-sm">Title *</Label>
+                <InfoTooltip text="A clear, specific title helps experts understand your request quickly" />
+              </div>
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Brief title for your request" className="mt-1" data-testid="input-request-title" />
+            </div>
+
+            <div>
+              <div className="flex items-center">
+                <Label className="text-sm">Category *</Label>
+                <InfoTooltip text="Select the field most relevant to your question" />
+              </div>
+              <Select value={category} onValueChange={setCategory}>
+                <SelectTrigger className="mt-1" data-testid="select-category"><SelectValue placeholder="Select category" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="finance">Finance</SelectItem>
+                  <SelectItem value="business">Business & Strategy</SelectItem>
+                  <SelectItem value="entrepreneurship">Entrepreneurship</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* FEAT-010: My question field */}
+            <div>
+              <div className="flex items-center">
+                <Label className="text-sm">My question *</Label>
+                <InfoTooltip text="Describe exactly what you want the expert to answer or verify" />
+              </div>
+              <Textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="What do you want the expert to answer or verify? Be specific about your concerns..."
+                rows={3}
+                className="mt-1"
+                required
+                data-testid="input-question"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center">
+                <Label className="text-sm">{aiResponseLabel}</Label>
+                <InfoTooltip text="Provide context for the expert" />
+              </div>
+              <Textarea
+                value={aiResponse}
+                onChange={(e) => setAiResponse(e.target.value)}
+                placeholder={aiResponseLabel + "..."}
+                rows={6}
+                className="mt-1 font-mono text-xs"
+                data-testid="input-ai-response"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center mb-2">
+                <Label className="text-sm">Which AI generated this? (optional)</Label>
+                <InfoTooltip text="Knowing which AI generated this helps us track accuracy patterns" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Select value={llmProvider} onValueChange={setLlmProvider}>
+                  <SelectTrigger data-testid="select-llm-provider"><SelectValue placeholder="AI Provider" /></SelectTrigger>
+                  <SelectContent>
+                    {LLM_PROVIDERS.map((p) => (
+                      <SelectItem key={p} value={p}>{p}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="e.g. GPT-4o, Claude 3.5 Sonnet" data-testid="input-llm-model" />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center">
+                <Label className="text-sm">Instructions for expert (optional)</Label>
+                <InfoTooltip text="Specific guidance for what you want the expert to focus on" />
+              </div>
+              <Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Any specific instructions or focus areas..." rows={3} className="mt-1" data-testid="input-instructions" />
+            </div>
+
+            {/* File Upload - Drag & Drop (change #5) */}
+            <div data-testid="file-upload-section">
+              <Label className="text-sm mb-2 block">Attachments ({attachments.length} file{attachments.length !== 1 ? 's' : ''})</Label>
+              <div
+                onDragEnter={handleDrag}
+                onDragOver={handleDrag}
+                onDragLeave={handleDrag}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all ${
+                  dragActive
+                    ? "border-primary bg-primary/5"
+                    : "border-border hover:border-primary/40 hover:bg-muted/30"
+                }`}
+                data-testid="dropzone"
+              >
+                <Paperclip className="h-6 w-6 mx-auto mb-2 text-muted-foreground" />
+                <p className="text-sm font-medium">Drop files here or click to upload</p>
+                <p className="text-xs text-muted-foreground mt-1">Any format accepted — 50MB total limit</p>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => handleFileUpload(e.target.files)}
+                data-testid="input-file-upload"
+              />
+              {attachments.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {attachments.map((a, i) => (
+                    <div key={i} className="flex items-center gap-2 p-2 bg-muted/50 rounded text-xs" data-testid={`attached-file-${i}`}>
+                      <span className="text-base">{fileIcon(a.type)}</span>
+                      <span className="font-medium flex-1 truncate">{a.name}</span>
+                      <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)} KB</span>
+                      <button onClick={() => removeAttachment(i)} className="text-muted-foreground hover:text-destructive" data-testid={`button-remove-attachment-${i}`}><X className="h-3 w-3" /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-between">
+            <Button variant="outline" onClick={() => setWizardStep(1)} data-testid="button-back-step-2">
+              <ArrowLeft className="mr-2 h-4 w-4" /> Back
+            </Button>
+            <Button onClick={() => setWizardStep(3)} disabled={!canProceedStep2} data-testid="button-next-step-2">
+              Next: Review & Submit <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Step 3: Review & Submit ─── */}
+      {wizardStep === 3 && (
+        <div data-testid="wizard-step-3-content">
+          {/* Review summary */}
+          <Card className="mb-4">
+            <CardContent className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Service</span>
+                <span className="text-sm font-medium capitalize">{serviceType.replace('_', ' ')}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Title</span>
+                <span className="text-sm font-medium truncate ml-4">{title}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Category</span>
+                <span className="text-sm font-medium capitalize">{category}</span>
+              </div>
+              {question && (
+                <div>
+                  <span className="text-xs text-muted-foreground block mb-1">Question</span>
+                  <p className="text-sm bg-muted/30 p-2 rounded line-clamp-3">{question}</p>
+                </div>
+              )}
+              {aiResponse && (
+                <div>
+                  <span className="text-xs text-muted-foreground block mb-1">AI Response</span>
+                  <p className="text-xs font-mono bg-muted/30 p-2 rounded line-clamp-3">{aiResponse}</p>
+                </div>
+              )}
+              {instructions && (
+                <div>
+                  <span className="text-xs text-muted-foreground block mb-1">Instructions</span>
+                  <p className="text-sm bg-muted/30 p-2 rounded line-clamp-2">{instructions}</p>
+                </div>
+              )}
+              {attachments.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Attachments</span>
+                  <span className="text-sm font-medium">{attachments.length} file{attachments.length !== 1 ? 's' : ''}</span>
+                </div>
+              )}
+              {(llmProvider || llmModel) && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">AI Source</span>
+                  <span className="text-sm font-medium">{[llmProvider, llmModel].filter(Boolean).join(' · ')}</span>
+                </div>
+              )}
+              <button onClick={() => setWizardStep(2)} className="text-xs text-primary hover:underline" data-testid="button-edit-details">Edit details</button>
+            </CardContent>
+          </Card>
+
+          {/* Dynamic Pricing */}
+          <Card className="mb-4" data-testid="card-dynamic-pricing">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <DollarSign className="h-4 w-4 text-primary" /> Estimated Price
+                <InfoTooltip text="Price is estimated based on request complexity and expert tier. Final price may vary based on actual time spent." />
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid sm:grid-cols-3 gap-4 mb-4">
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <p className="text-2xl font-bold text-primary" data-testid="text-estimated-price">${estimatedPrice.toFixed(2)}</p>
+                  <p className="text-[10px] text-muted-foreground">AI-Determined Price</p>
+                </div>
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <Badge className={`${
+                    activeTier === "standard" ? "bg-blue-500" : activeTier === "pro" ? "bg-indigo-500" : "bg-amber-500"
+                  } text-white`} data-testid="badge-expected-tier">
+                    {activeTier.charAt(0).toUpperCase() + activeTier.slice(1)}
+                  </Badge>
+                  <p className="text-[10px] text-muted-foreground mt-1">Expected Expert Category</p>
+                </div>
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <p className="text-sm font-semibold" data-testid="text-completion-time">{completionTime}</p>
+                  <p className="text-[10px] text-muted-foreground">Expected Completion</p>
+                </div>
+              </div>
+
+              {/* Expert Tier Override */}
+              <div>
+                <Label className="text-xs text-muted-foreground mb-2 block">Override Expert Tier</Label>
+                <div className="inline-flex bg-muted rounded-lg p-1" data-testid="tier-override-toggle">
+                  {(["standard", "pro", "guru"] as ExpertTierOverride[]).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTierOverride(t)}
+                      className={`px-4 py-1.5 text-xs rounded-md transition font-medium ${
+                        activeTier === t ? "bg-background shadow text-foreground" : "text-muted-foreground"
+                      }`}
+                      data-testid={`tier-override-${t}`}
+                    >
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Balance & Submit */}
+          <Card className="bg-muted/50 mb-4" data-testid="card-submit">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-sm">Your balance: <span className="font-bold">${balance.toFixed(2)}</span></p>
+                </div>
+                {!hasEnoughBalance && (
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-orange-500" />
+                    <span className="text-xs text-orange-600 font-medium">Insufficient balance</span>
+                    <Button size="sm" variant="outline" onClick={() => setView("credits")} data-testid="button-buy-credits">
+                      <CreditCard className="h-3 w-3 mr-1" /> Buy Credits
+                    </Button>
+                  </div>
+                )}
+              </div>
+              <Button
+                className="w-full bg-gradient-to-r from-[#0F3DD1] to-[#171717] text-white"
+                size="lg"
+                onClick={() => submitMutation.mutate()}
+                disabled={submitMutation.isPending || uploading || !canSubmit}
+                data-testid="button-submit-request"
+              >
+                {uploading ? "Uploading files..." : submitMutation.isPending ? "Submitting..." : `Submit Request — $${estimatedPrice.toFixed(2)}`}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-start">
+            <Button variant="outline" onClick={() => setWizardStep(2)} data-testid="button-back-step-3">
+              <ArrowLeft className="mr-2 h-4 w-4" /> Back
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

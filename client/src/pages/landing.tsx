@@ -16,7 +16,7 @@ import {
   MessageSquare, Send, ArrowRight, Lock, Briefcase, TrendingUp,
   Lightbulb, ChevronRight, Globe, Award, Zap, ShieldCheck, CreditCard,
   AlertTriangle, BookOpen, MapPin, Calculator, ThumbsUp, EyeOff,
-  FileSearch, Scale, ExternalLink,
+  FileSearch, Scale, ExternalLink, ChevronLeft,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -668,6 +668,32 @@ function FlipCard({ mistake }: { mistake: typeof AI_MISTAKES[0] }) {
 }
 
 function AIMistakes() {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollToCard = (index: number) => {
+    const clamped = Math.max(0, Math.min(index, AI_MISTAKES.length - 1));
+    setActiveIndex(clamped);
+    if (scrollRef.current) {
+      const card = scrollRef.current.children[clamped] as HTMLElement;
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    }
+  };
+
+  // Track scroll position to update active dot on mobile
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const scrollLeft = el.scrollLeft;
+      const cardWidth = el.scrollWidth / AI_MISTAKES.length;
+      const idx = Math.round(scrollLeft / cardWidth);
+      setActiveIndex(Math.max(0, Math.min(idx, AI_MISTAKES.length - 1)));
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
   return (
     <section id="section-ai-mistakes" className="py-12 sm:py-16 px-4 sm:px-6" data-testid="section-ai-mistakes">
       <div className="max-w-6xl mx-auto">
@@ -678,8 +704,50 @@ function AIMistakes() {
           AI is powerful but unreliable for high-stakes decisions. Here are the six most dangerous failure modes — and how human experts solve them.
         </p>
 
-        {/* 6 Mistake Cards: 3x2 grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-14">
+        {/* Mobile: horizontal scroll carousel with arrows */}
+        <div className="relative sm:hidden mb-4">
+          <button
+            onClick={() => scrollToCard(activeIndex - 1)}
+            disabled={activeIndex === 0}
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-600 rounded-full p-1.5 shadow-md disabled:opacity-30 disabled:cursor-not-allowed"
+            aria-label="Previous card"
+          >
+            <ChevronLeft className="h-5 w-5 text-gray-700 dark:text-gray-300" />
+          </button>
+          <button
+            onClick={() => scrollToCard(activeIndex + 1)}
+            disabled={activeIndex === AI_MISTAKES.length - 1}
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 bg-white/90 dark:bg-gray-800/90 border border-gray-200 dark:border-gray-600 rounded-full p-1.5 shadow-md disabled:opacity-30 disabled:cursor-not-allowed"
+            aria-label="Next card"
+          >
+            <ChevronRight className="h-5 w-5 text-gray-700 dark:text-gray-300" />
+          </button>
+          <div
+            ref={scrollRef}
+            className="flex gap-4 overflow-x-auto snap-x snap-mandatory scrollbar-hide px-8"
+            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+          >
+            {AI_MISTAKES.map((mistake) => (
+              <div key={mistake.title} className="snap-center flex-shrink-0 w-[85%]">
+                <FlipCard mistake={mistake} />
+              </div>
+            ))}
+          </div>
+          {/* Dot indicators */}
+          <div className="flex justify-center gap-2 mt-4">
+            {AI_MISTAKES.map((_, idx) => (
+              <button
+                key={idx}
+                onClick={() => scrollToCard(idx)}
+                className={`w-2.5 h-2.5 rounded-full transition-all ${idx === activeIndex ? "bg-[#0F3DD1] scale-110" : "bg-gray-300 dark:bg-gray-600"}`}
+                aria-label={`Go to card ${idx + 1}`}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Desktop: 3x2 grid */}
+        <div className="hidden sm:grid sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-14">
           {AI_MISTAKES.map((mistake) => (
             <FlipCard key={mistake.title} mistake={mistake} />
           ))}
