@@ -912,6 +912,30 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         </Card>
       )}
 
+      {/* OB-3: Verification status + pending credits banner */}
+      {isCompleted && request.status === "under_review" && (
+        <Card className="mt-4 border-amber-300 bg-amber-50/50 dark:bg-amber-900/10 dark:border-amber-900/30">
+          <CardContent className="p-4 flex items-center gap-3">
+            <Clock className="h-5 w-5 text-amber-500 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-400">Under A2A Global Verification</p>
+              <p className="text-xs text-muted-foreground">{request.creditsCost} credits pending after A2A Global verification</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {isCompleted && (request.status === "awaiting_followup" || request.status === "completed") && (
+        <Card className="mt-4 border-green-300 bg-green-50/50 dark:bg-green-900/10 dark:border-green-900/30">
+          <CardContent className="p-4 flex items-center gap-3">
+            <CheckCircle className="h-5 w-5 text-green-500 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-green-800 dark:text-green-400">Verified & Approved</p>
+              <p className="text-xs text-green-600">{request.creditsCost} credits earned</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* FIX-5: Full conversation/chat history for this request + Follow-up reply form */}
       <Card className="mt-4">
         <CardHeader className="pb-2">
@@ -1020,6 +1044,11 @@ function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClic
   const { data: request } = useQuery<ExpertRequest>({ queryKey: ["/api/requests", review.requestId] });
   if (!request) return null;
 
+  // Determine verification status and credits display
+  const isUnderReview = request.status === "under_review";
+  const isApproved = request.status === "awaiting_followup" || request.status === "completed";
+  const isRejected = request.status === "in_progress" && review.status === "completed";
+
   return (
     <Card className="cursor-pointer hover:shadow-md transition" onClick={onClick} data-testid={`completed-review-${review.id}`}>
       <CardContent className="p-4">
@@ -1029,13 +1058,27 @@ function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClic
               <h3 className="text-sm font-semibold">{request.title}</h3>
               <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">{request.category} · Completed {review.completedAt ? new Date(review.completedAt).toLocaleDateString() : ""}</p>
+            <p className="text-xs text-muted-foreground">{request.category} · Submitted {review.completedAt ? new Date(review.completedAt).toLocaleDateString() : ""}</p>
           </div>
-          <div className="text-right">
+          <div className="text-right space-y-1">
             {request.serviceType === "rate" && review.rating && (
               <span className="text-lg font-bold text-amber-600">{review.rating}/10</span>
             )}
-            <Badge className="bg-green-100 text-green-800 text-xs">Completed</Badge>
+            {isUnderReview && (
+              <>
+                <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 text-xs">Under A2A Global Verification</Badge>
+                <p className="text-[10px] text-muted-foreground">{request.creditsCost} credits pending after verification</p>
+              </>
+            )}
+            {isApproved && (
+              <>
+                <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 text-xs">Approved</Badge>
+                <p className="text-[10px] text-green-600 font-medium">{request.creditsCost} credits earned</p>
+              </>
+            )}
+            {!isUnderReview && !isApproved && (
+              <Badge className="bg-green-100 text-green-800 text-xs">Completed</Badge>
+            )}
           </div>
         </div>
       </CardContent>

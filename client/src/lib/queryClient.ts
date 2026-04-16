@@ -18,6 +18,12 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+/** Safely coerce a value to an array. Handles null, undefined, objects, and non-array types. */
+export function safeArray<T = any>(val: unknown): T[] {
+  if (Array.isArray(val)) return val;
+  return [];
+}
+
 export async function apiRequest(
   method: string,
   url: string,
