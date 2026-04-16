@@ -9,16 +9,29 @@ import { useToast } from "@/hooks/use-toast";
 import { Shield, Loader2 } from "lucide-react";
 
 // In-memory admin state
-let currentAdmin: { id: number; email: string; name: string } | null = null;
+let currentAdmin: { id: number; email: string; name: string; token?: string } | null = null;
 const adminListeners: Array<() => void> = [];
 
 export function setAdmin(admin: typeof currentAdmin) {
   currentAdmin = admin;
+  if (admin?.token) {
+    sessionStorage.setItem("adminToken", admin.token);
+  }
   adminListeners.forEach(fn => fn());
 }
 
 export function getAdmin() {
   return currentAdmin;
+}
+
+export function getAdminToken(): string | null {
+  return currentAdmin?.token || sessionStorage.getItem("adminToken") || null;
+}
+
+export function clearAdmin() {
+  currentAdmin = null;
+  sessionStorage.removeItem("adminToken");
+  adminListeners.forEach(fn => fn());
 }
 
 export default function AdminLogin() {

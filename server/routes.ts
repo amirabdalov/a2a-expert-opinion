@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request as ExpressRequest, Response as ExpressResponse, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, sqlite } from "./storage";
 import { otpRegisterSchema, otpVerifySchema, otpLoginSchema } from "@shared/schema";
@@ -11,8 +11,49 @@ import rateLimit from "express-rate-limit";
 import type { Response } from "express";
 import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
+import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql } from "./user-data-persist";
+
+// ─── JWT Admin Auth ───
+const JWT_SECRET = process.env.JWT_SECRET || "a2a-admin-jwt-secret-2026-build31";
+
+function signAdminToken(admin: { id: number; email: string; name: string }): string {
+  return jwt.sign({ id: admin.id, email: admin.email, name: admin.name, role: "admin" }, JWT_SECRET, { expiresIn: "24h" });
+}
+
+function adminAuth(req: ExpressRequest, res: ExpressResponse, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: true, message: "Admin authentication required", code: "ADMIN_AUTH_REQUIRED" });
+  }
+  const token = authHeader.substring(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { id: number; email: string; role: string };
+    if (decoded.role !== "admin") {
+      return res.status(403).json({ error: true, message: "Admin access required", code: "ADMIN_FORBIDDEN" });
+    }
+    (req as any).admin = decoded;
+    next();
+  } catch {
+    return res.status(401).json({ error: true, message: "Invalid or expired admin token", code: "ADMIN_TOKEN_INVALID" });
+  }
+}
+
+function userOrAdminAuth(req: ExpressRequest, res: ExpressResponse, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: true, message: "Authentication required", code: "AUTH_REQUIRED" });
+  }
+  const token = authHeader.substring(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { id: number; email: string; role: string };
+    (req as any).authUser = decoded;
+    next();
+  } catch {
+    return res.status(401).json({ error: true, message: "Invalid or expired token", code: "TOKEN_INVALID" });
+  }
+}
 
 // Multer config: memory storage, 5MB limit, images only
 const photoUpload = multer({
@@ -304,6 +345,40 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // ─── Cloud SQL sync helper — fire-and-forget after SQLite mutations ───
+  function syncUserToCloud(userId: number) {
+    const u = storage.getUser(userId);
+    if (!u) return;
+    writeUserToCloudSql({
+      id: u.id, name: u.name, email: u.email, role: u.role,
+      company: u.company, credits: u.credits,
+    }).catch(() => {});
+  }
+  function syncRequestToCloud(requestId: number) {
+    const r = storage.getRequest(requestId);
+    if (!r) return;
+    writeRequestToCloudSql({
+      id: r.id, userId: r.userId, expertId: r.expertId, title: r.title,
+      description: r.description, category: r.category, tier: r.tier,
+      status: r.status, creditsCost: r.creditsCost, serviceType: r.serviceType,
+    }).catch(() => {});
+  }
+  function syncExpertToCloud(expertId: number) {
+    const e = storage.getExpert(expertId);
+    if (!e) return;
+    writeExpertToCloudSql({
+      id: e.id, userId: e.userId, bio: e.bio, expertise: e.expertise,
+      credentials: e.credentials, rating: e.rating, totalReviews: e.totalReviews,
+      verified: e.verified, categories: e.categories,
+      rateTier: e.rateTier, ratePerMinute: e.ratePerMinute,
+      education: e.education, yearsExperience: e.yearsExperience,
+      onboardingComplete: e.onboardingComplete,
+    }).catch(() => {});
+  }
+  function syncCreditTxToCloud(tx: { userId: number; amount: number; type: string; description: string }) {
+    writeCreditTransactionToCloudSql(tx).catch(() => {});
+  }
+
   // Rate limiting on auth endpoints
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15-minute window
@@ -458,7 +533,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
       const { password: _, ...safeUser } = user;
-      return res.json(safeUser);
+      const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+      return res.json({ ...safeUser, token });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
@@ -514,7 +590,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
       const { password: _, ...safeUser } = user;
-      return res.json(safeUser);
+      const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+      return res.json({ ...safeUser, token });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
@@ -536,8 +613,14 @@ export async function registerRoutes(
     return res.json(safeUser);
   });
 
-  app.get("/api/auth/user/:id", async (req, res) => {
-    const user = storage.getUser(parseInt(req.params.id));
+  app.get("/api/auth/user/:id", userOrAdminAuth, async (req, res) => {
+    const requestedId = parseInt(String(req.params.id));
+    const authUser = (req as any).authUser;
+    // Allow if admin or if the authenticated user is requesting their own profile
+    if (authUser.role !== "admin" && authUser.id !== requestedId) {
+      return res.status(403).json({ error: true, message: "Access denied" });
+    }
+    const user = storage.getUser(requestedId);
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
     const { password: _, ...safeUser } = user;
     return res.json(safeUser);
@@ -661,7 +744,7 @@ export async function registerRoutes(
   });
 
   // ─── BACKUP TEST & HEALTH ───
-  app.get("/api/admin/backup-test", async (_req, res) => {
+  app.get("/api/admin/backup-test", adminAuth, async (_req, res) => {
     try {
       const { backupDatabase, isBackupHealthy } = await import("./db-persistence");
       const beforeStatus = isBackupHealthy();
@@ -703,7 +786,7 @@ export async function registerRoutes(
   });
 
   // ─── ADMIN OPERATIONAL METRICS ───
-  app.get("/api/admin/metrics", async (_req, res) => {
+  app.get("/api/admin/metrics", adminAuth, async (_req, res) => {
     const allRequests = storage.getAllRequests();
     const allExperts = storage.getAllExperts();
     const allEvents = allRequests.flatMap((r) => {
@@ -789,7 +872,8 @@ export async function registerRoutes(
       const valid = await bcrypt.compare(password, admin.password);
       if (!valid) return res.status(401).json({ error: true, message: "Invalid credentials" });
       const { password: _, ...safeAdmin } = admin;
-      return res.json(safeAdmin);
+      const token = signAdminToken(safeAdmin);
+      return res.json({ ...safeAdmin, token });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
     }
@@ -797,7 +881,7 @@ export async function registerRoutes(
 
   // ─── ADMIN DATA ROUTES ───
 
-  app.get("/api/admin/stats", async (_req, res) => {
+  app.get("/api/admin/stats", adminAuth, async (_req, res) => {
     try {
       const allUsers = storage.getAllUsers();
       const allExperts = storage.getAllExperts();
@@ -850,7 +934,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/admin/users", async (_req, res) => {
+  app.get("/api/admin/users", adminAuth, async (_req, res) => {
     const allUsers = storage.getAllUsers();
     return res.json(allUsers.map(u => {
       const { password: _, ...safe } = u;
@@ -858,7 +942,7 @@ export async function registerRoutes(
     }));
   });
 
-  app.get("/api/admin/experts", async (_req, res) => {
+  app.get("/api/admin/experts", adminAuth, async (_req, res) => {
     const allExperts = storage.getAllExperts();
     const allUsers = storage.getAllUsers();
     const userMap = new Map(allUsers.map(u => [u.id, u]));
@@ -869,7 +953,7 @@ export async function registerRoutes(
     })));
   });
 
-  app.get("/api/admin/requests", async (_req, res) => {
+  app.get("/api/admin/requests", adminAuth, async (_req, res) => {
     const allRequests = storage.getAllRequests();
     const allUsers = storage.getAllUsers();
     const userMap = new Map(allUsers.map(u => [u.id, u]));
@@ -879,7 +963,7 @@ export async function registerRoutes(
     })));
   });
 
-  app.get("/api/admin/transactions", async (_req, res) => {
+  app.get("/api/admin/transactions", adminAuth, async (_req, res) => {
     try {
     // FIX-11: Use safeArray to ensure arrays are always iterable
     const allTx = safeArray(storage.getAllCreditTransactions());
@@ -934,7 +1018,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/admin/wallet-transactions", async (_req, res) => {
+  app.get("/api/admin/wallet-transactions", adminAuth, async (_req, res) => {
     const allTx = storage.getAllWalletTransactions();
     const allUsers = storage.getAllUsers();
     const userMap = new Map(allUsers.map(u => [u.id, u]));
@@ -944,7 +1028,7 @@ export async function registerRoutes(
     })));
   });
 
-  app.get("/api/admin/withdrawals", async (_req, res) => {
+  app.get("/api/admin/withdrawals", adminAuth, async (_req, res) => {
     const allW = storage.getAllWithdrawals();
     const allUsers = storage.getAllUsers();
     const userMap = new Map(allUsers.map(u => [u.id, u]));
@@ -954,9 +1038,9 @@ export async function registerRoutes(
     })));
   });
 
-  app.post("/api/admin/withdrawals/:id/approve", async (req, res) => {
+  app.post("/api/admin/withdrawals/:id/approve", adminAuth, async (req, res) => {
     try {
-      const w = storage.updateWithdrawal(parseInt(req.params.id), {
+      const w = storage.updateWithdrawal(parseInt(String(req.params.id)), {
         status: "approved",
         processedAt: new Date().toISOString(),
       });
@@ -974,16 +1058,16 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/admin/withdrawals/:id/reject", async (req, res) => {
+  app.post("/api/admin/withdrawals/:id/reject", adminAuth, async (req, res) => {
     try {
-      const wOld = storage.getAllWithdrawals().find(w => w.id === parseInt(req.params.id));
+      const wOld = storage.getAllWithdrawals().find(w => w.id === parseInt(String(req.params.id)));
       if (!wOld) return res.status(404).json({ error: true, message: "Withdrawal not found" });
       // Refund the user's wallet
       const user = storage.getUser(wOld.userId);
       if (user) {
         storage.updateUser(user.id, { walletBalance: user.walletBalance + wOld.amountCents });
       }
-      const w = storage.updateWithdrawal(parseInt(req.params.id), {
+      const w = storage.updateWithdrawal(parseInt(String(req.params.id)), {
         status: "rejected",
         processedAt: new Date().toISOString(),
       });
@@ -1000,45 +1084,49 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/admin/users/:id/add-credits", async (req, res) => {
+  app.post("/api/admin/users/:id/add-credits", adminAuth, async (req, res) => {
     try {
       const { amount } = req.body;
-      const user = storage.getUser(parseInt(req.params.id));
+      const user = storage.getUser(parseInt(String(req.params.id)));
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
       storage.updateUser(user.id, { credits: user.credits + amount });
       storage.createTransaction({
         userId: user.id, amount, type: "admin_grant",
         description: `Admin granted ${amount} credits`,
       });
+      syncUserToCloud(user.id);
+      syncCreditTxToCloud({ userId: user.id, amount, type: "admin_grant", description: `Admin granted ${amount} credits` });
       return res.json({ credits: user.credits + amount });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
   });
 
-  app.post("/api/admin/users/:id/deactivate", async (req, res) => {
+  app.post("/api/admin/users/:id/deactivate", adminAuth, async (req, res) => {
     try {
-      const user = storage.updateUser(parseInt(req.params.id), { active: 0 } as any);
+      const user = storage.updateUser(parseInt(String(req.params.id)), { active: 0 } as any);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
+      syncUserToCloud(user.id);
       return res.json(user);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
   });
 
-  app.post("/api/admin/users/:id/activate", async (req, res) => {
+  app.post("/api/admin/users/:id/activate", adminAuth, async (req, res) => {
     try {
-      const user = storage.updateUser(parseInt(req.params.id), { active: 1 } as any);
+      const user = storage.updateUser(parseInt(String(req.params.id)), { active: 1 } as any);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
+      syncUserToCloud(user.id);
       return res.json(user);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
   });
 
-  app.post("/api/admin/requests/:id/refund", async (req, res) => {
+  app.post("/api/admin/requests/:id/refund", adminAuth, async (req, res) => {
     try {
-      const request = storage.getRequest(parseInt(req.params.id));
+      const request = storage.getRequest(parseInt(String(req.params.id)));
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
       if (request.refunded === 1) return res.status(400).json({ error: true, message: "Already refunded" });
       const user = storage.getUser(request.userId);
@@ -1056,13 +1144,16 @@ export async function registerRoutes(
         read: 0,
         createdAt: new Date().toISOString(),
       });
+      syncUserToCloud(user.id);
+      syncRequestToCloud(request.id);
+      syncCreditTxToCloud({ userId: user.id, amount: request.creditsCost, type: "refund", description: `Admin refund: ${request.title}` });
       return res.json({ message: "Refunded" });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
   });
 
-  app.get("/api/admin/settings", async (_req, res) => {
+  app.get("/api/admin/settings", adminAuth, async (_req, res) => {
     return res.json({
       takeRates: TAKE_RATES,
       creditPacks: CREDIT_PACKS,
@@ -1070,7 +1161,7 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/notifications", async (_req, res) => {
+  app.get("/api/admin/notifications", adminAuth, async (_req, res) => {
     // Get last 100 notifications across all users
     const allUsers = storage.getAllUsers();
     const allNotifs: any[] = [];
@@ -1104,6 +1195,7 @@ export async function registerRoutes(
   app.patch("/api/experts/:id", async (req, res) => {
     const expert = storage.updateExpert(parseInt(req.params.id), req.body);
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+    syncExpertToCloud(expert.id);
     return res.json(expert);
   });
 
@@ -1350,6 +1442,11 @@ export async function registerRoutes(
         }
       }
 
+      // Sync to Cloud SQL
+      syncUserToCloud(userId);
+      syncRequestToCloud(request.id);
+      syncCreditTxToCloud({ userId, amount: -cost, type: "hold", description: `Credits frozen for request: ${title}` });
+
       return res.json(request);
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -1359,6 +1456,7 @@ export async function registerRoutes(
   app.patch("/api/requests/:id", async (req, res) => {
     const r = storage.updateRequest(parseInt(req.params.id), req.body);
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
+    syncRequestToCloud(r.id);
     return res.json(r);
   });
 
@@ -1454,6 +1552,8 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         stripePaymentId: `mock_${uuidv4().slice(0, 8)}`,
       });
+      syncUserToCloud(userId);
+      syncCreditTxToCloud({ userId, amount: creditsToAdd, type: "purchase", description: `Custom top-up — $${amount}` });
       const updatedUser = storage.getUser(userId);
       return res.json({ credits: updatedUser?.credits, success: true });
     } catch (e: any) {
@@ -1485,6 +1585,7 @@ export async function registerRoutes(
       requestId: r.id,
     });
     logRequestEvent(r.id, "claimed", expertId);
+    syncRequestToCloud(r.id);
 
     return res.json(r);
   });
@@ -1519,6 +1620,7 @@ export async function registerRoutes(
 
     logRequestEvent(r.id, "responded", r.expertId || undefined);
     triggerBackup();
+    syncRequestToCloud(r.id);
     return res.json(r);
   });
 
@@ -1568,6 +1670,17 @@ export async function registerRoutes(
     });
     logRequestEvent(requestId, "completed");
     triggerBackup();
+    // Sync to Cloud SQL
+    syncRequestToCloud(requestId);
+    syncUserToCloud(r.userId);
+    syncCreditTxToCloud({ userId: r.userId, amount: r.creditsCost, type: "charged", description: `Completed: ${r.title}` });
+    if (r.expertId) {
+      const expAfter = storage.getExpert(r.expertId);
+      if (expAfter) {
+        syncExpertToCloud(expAfter.id);
+        syncUserToCloud(expAfter.userId);
+      }
+    }
   }
 
   // Client can mark request as done (manually close after follow-ups)
@@ -1601,6 +1714,7 @@ export async function registerRoutes(
         onboardingComplete: Math.max(expert.onboardingComplete, 1),
       });
       if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert profile" });
+      syncExpertToCloud(updated.id);
       return res.json(updated);
     } catch (e: any) {
       console.error("[ONBOARDING/PROFILE]", e);
@@ -1908,7 +2022,7 @@ export async function registerRoutes(
   // ─── ADMIN REVIEW QUEUE ───
 
   // GET /api/admin/pending-reviews — returns all requests with status "under_review"
-  app.get("/api/admin/pending-reviews", async (_req, res) => {
+  app.get("/api/admin/pending-reviews", adminAuth, async (_req, res) => {
     try {
       // FIX-11: Use safeArray to prevent '(t || []).filter is not a function'
       const allRequests = safeArray(storage.getAllRequests());
@@ -1948,9 +2062,9 @@ export async function registerRoutes(
   });
 
   // POST /api/admin/reviews/:requestId/approve — approve response, send to client
-  app.post("/api/admin/reviews/:requestId/approve", async (req, res) => {
+  app.post("/api/admin/reviews/:requestId/approve", adminAuth, async (req, res) => {
     try {
-      const requestId = parseInt(req.params.requestId);
+      const requestId = parseInt(String(req.params.requestId));
       const request = storage.getRequest(requestId);
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
       if (request.status !== "under_review") {
@@ -2050,9 +2164,9 @@ export async function registerRoutes(
   });
 
   // POST /api/admin/reviews/:requestId/reject — send back to expert for revision
-  app.post("/api/admin/reviews/:requestId/reject", async (req, res) => {
+  app.post("/api/admin/reviews/:requestId/reject", adminAuth, async (req, res) => {
     try {
-      const requestId = parseInt(req.params.requestId);
+      const requestId = parseInt(String(req.params.requestId));
       const { feedback } = req.body;
       const request = storage.getRequest(requestId);
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
@@ -2174,6 +2288,8 @@ export async function registerRoutes(
       userId, amount: pkg.credits, type: "purchase",
       description: `${pkg.name} package — ${pkg.credits} credits ($${pkg.price})`,
     });
+    syncUserToCloud(userId);
+    syncCreditTxToCloud({ userId, amount: pkg.credits, type: "purchase", description: `${pkg.name} package` });
     const updatedUser = storage.getUser(userId);
     return res.json({ credits: updatedUser?.credits });
   });
@@ -2202,6 +2318,8 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         stripePaymentId: `mock_${uuidv4().slice(0, 8)}`,
       });
+      syncUserToCloud(userId);
+      syncCreditTxToCloud({ userId, amount: pack.credits, type: "purchase", description: `${pack.name}` });
 
       const updatedUser = storage.getUser(userId);
       return res.json({ success: true, credits: updatedUser?.credits, mock: true });
@@ -2244,6 +2362,7 @@ export async function registerRoutes(
         processedAt: null,
       });
 
+      syncUserToCloud(userId);
       return res.json({ message: "Withdrawal submitted", walletBalance: user.walletBalance - amountCents });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -2285,6 +2404,7 @@ export async function registerRoutes(
   app.patch("/api/users/:id", async (req, res) => {
     const user = storage.updateUser(parseInt(req.params.id), req.body);
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
+    syncUserToCloud(user.id);
     const { password: _, ...safeUser } = user;
     return res.json(safeUser);
   });
@@ -2518,8 +2638,10 @@ export async function registerRoutes(
           // Store as integer 0-50 (where 50 = 5.0 stars, matching existing schema convention)
           const newAvgRating = Math.round((totalRatings / countRatings) * 10);
           storage.updateExpert(request.expertId, { rating: newAvgRating });
+          syncExpertToCloud(request.expertId);
         }
       }
+      syncRequestToCloud(requestId);
 
       return res.json(updated);
     } catch (e: any) {
@@ -2561,6 +2683,9 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
       });
 
+      syncUserToCloud(user.id);
+      syncRequestToCloud(requestId);
+      syncCreditTxToCloud({ userId: user.id, amount: request.creditsCost, type: "refund", description: `Refund: ${request.title}` });
       return res.json({ message: "Refund processed", credits: user.credits + request.creditsCost });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -2580,6 +2705,7 @@ export async function registerRoutes(
         onboardingComplete: Math.max(expert.onboardingComplete, 2),
       });
       if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert rate" });
+      syncExpertToCloud(updated.id);
       return res.json(updated);
     } catch (e: any) {
       console.error("[ONBOARDING/RATE]", e);
@@ -3079,7 +3205,7 @@ export async function registerRoutes(
 
   // ===== RL CORE & BUSINESS INTELLIGENCE =====
 
-  app.get("/api/admin/rl-metrics", async (_req, res) => {
+  app.get("/api/admin/rl-metrics", adminAuth, async (_req, res) => {
     try {
       const allUsers = storage.getAllUsers();
       const allExperts = storage.getAllExperts();
@@ -3221,7 +3347,7 @@ export async function registerRoutes(
 
   // ─── ADMIN ACQUISITION ANALYTICS ───
 
-  app.get("/api/admin/acquisition", (req, res) => {
+  app.get("/api/admin/acquisition", adminAuth, (req, res) => {
     try {
       const now = new Date();
       const thirtyDaysAgo = new Date(now.getTime() - 30*24*60*60*1000).toISOString();
@@ -3347,7 +3473,7 @@ export async function registerRoutes(
   }, 5 * 60 * 1000); // every 5 minutes
 
   // GET /api/admin/send-user-report — trigger on-demand full user data email
-  app.get("/api/admin/send-user-report", async (_req, res) => {
+  app.get("/api/admin/send-user-report", adminAuth, async (_req, res) => {
     try {
       const allUsers = storage.getAllUsers();
       const allExperts = storage.getAllExperts();

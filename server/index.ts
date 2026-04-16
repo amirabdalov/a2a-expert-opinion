@@ -5,7 +5,7 @@ import { createServer } from "http";
 import helmet from "helmet";
 import cors from "cors";
 import { startPeriodicBackup, backupDatabase, triggerBackup } from "./db-persistence";
-import { sendFullUserDataEmail, initCloudSql, syncAllToCloudSql } from "./user-data-persist";
+import { sendFullUserDataEmail, initCloudSql, syncAllToCloudSql, restoreFromCloudSql } from "./user-data-persist";
 
 // Export triggerBackup so routes.ts can call it after writes
 export { triggerBackup };
@@ -107,6 +107,18 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
+  // MISSION CRITICAL: Restore data from Cloud SQL BEFORE listening
+  // Cloud Run ephemeral disk means SQLite only has seed data on cold start.
+  // This restores all production data (users, experts, requests, transactions).
+  try {
+    const { sqlite: sqliteDb } = await import("./storage");
+    await initCloudSql();
+    await restoreFromCloudSql(sqliteDb);
+    console.log("[STARTUP] Cloud SQL → SQLite restore complete");
+  } catch (err) {
+    console.error("[STARTUP] Cloud SQL restore failed — starting with seed data:", err);
+  }
+
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
@@ -129,19 +141,19 @@ app.use((req, res, next) => {
         console.error("[STARTUP] Initial backup failed — data may not persist");
       });
 
-      // Layer 4: Initialize Cloud SQL + full sync
-      initCloudSql().then(async () => {
+      // Layer 4: Sync SQLite → Cloud SQL (restore already happened pre-listen)
+      (async () => {
         try {
-          const { storage } = await import("./storage");
-          const allUsers = storage.getAllUsers();
-          const allExperts = storage.getAllExperts();
-          const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
+          const { storage: stor } = await import("./storage");
+          const allUsers = stor.getAllUsers();
+          const allExperts = stor.getAllExperts();
+          const allRequests = stor.getAllRequests ? stor.getAllRequests() : [];
           await syncAllToCloudSql(allUsers, allExperts, allRequests);
           console.log("[STARTUP] Cloud SQL full sync complete");
         } catch (err) {
           console.error("[STARTUP] Cloud SQL sync failed:", err);
         }
-      }).catch(() => {});
+      })();
 
       // FIX-1: Only send full user data email when new users have been added.
       // Track user count to avoid spamming cofounders on every cold start.

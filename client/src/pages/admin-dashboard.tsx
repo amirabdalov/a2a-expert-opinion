@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { FloatingHelp } from "@/components/floating-help";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { getAdmin, setAdmin } from "./admin-login";
+import { getAdmin, setAdmin, clearAdmin } from "./admin-login";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -273,7 +273,7 @@ export default function AdminDashboard() {
         <div className="p-2 border-t border-zinc-800">
           <button
             data-testid="button-admin-logout"
-            onClick={() => { setAdmin(null); setLocation("/admin/login"); }}
+            onClick={() => { clearAdmin(); setLocation("/admin/login"); }}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition-colors"
           >
             <LogOut className="w-4 h-4" />
