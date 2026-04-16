@@ -2,7 +2,7 @@ import XLSX from "xlsx";
 import { Resend } from "resend";
 import pg from "pg";
 
-const resend = new Resend("re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
 const COFOUNDER_EMAILS = ["amir@a2a.global", "oleg@a2a.global"];
 
 // ─── Cloud SQL PostgreSQL (Layer 4) ───
@@ -188,6 +188,167 @@ export async function writeRequestToCloudSql(request: {
     console.log(`[CLOUD-SQL] ✅ Request ${request.id} synced`);
   } catch (err) {
     console.error("[CLOUD-SQL] ❌ Request write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+// ─── Restore from Cloud SQL to SQLite on startup ───
+export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
+  const pool = await getPgPool();
+  if (!pool) {
+    console.log("[RESTORE] Cloud SQL not available — skipping restore, using seed data only");
+    return;
+  }
+
+  try {
+    // Restore users
+    const usersResult = await pool.query("SELECT * FROM users ORDER BY id");
+    const pgUsers = usersResult.rows;
+    console.log(`[RESTORE] Found ${pgUsers.length} users in Cloud SQL`);
+
+    for (const u of pgUsers) {
+      try {
+        sqliteDb.prepare(`
+          INSERT OR REPLACE INTO users (id, username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed, photo, utm_source, utm_medium, utm_campaign)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          u.id,
+          u.email || '',       // use email as username if not present
+          '',                   // password — Cloud SQL doesn't store it
+          u.name,
+          u.email,
+          u.role || 'client',
+          u.credits ?? 5,
+          u.company || null,
+          u.account_type || 'individual',
+          u.wallet_balance ?? 0,
+          u.active ?? 1,
+          0,                    // tour_completed default
+          null,                 // photo
+          u.utm_source || null,
+          u.utm_medium || null,
+          u.utm_campaign || null
+        );
+      } catch (err) {
+        console.error(`[RESTORE] User ${u.id} insert failed:`, (err as Error).message?.substring(0, 80));
+      }
+    }
+    console.log(`[RESTORE] Restored ${pgUsers.length} users`);
+
+    // Restore experts
+    const expertsResult = await pool.query("SELECT * FROM experts ORDER BY id");
+    const pgExperts = expertsResult.rows;
+    for (const e of pgExperts) {
+      try {
+        sqliteDb.prepare(`
+          INSERT OR REPLACE INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          e.id,
+          e.user_id,
+          e.bio || '',
+          e.expertise || '',
+          e.credentials || '',
+          e.rating ?? 50,
+          e.total_reviews ?? 0,
+          e.verified ?? 0,
+          e.categories || '[]',
+          1,                     // availability default
+          null,                  // hourly_rate
+          null,                  // response_time
+          e.education || '',
+          e.years_experience ?? 0,
+          e.onboarding_complete ?? 0,
+          null,                  // verification_score
+          e.rate_per_minute || null,
+          e.rate_tier || null
+        );
+      } catch (err) {
+        console.error(`[RESTORE] Expert ${e.id} insert failed:`, (err as Error).message?.substring(0, 80));
+      }
+    }
+    console.log(`[RESTORE] Restored ${pgExperts.length} experts`);
+
+    // Restore requests
+    const requestsResult = await pool.query("SELECT * FROM requests ORDER BY id");
+    const pgRequests = requestsResult.rows;
+    for (const r of pgRequests) {
+      try {
+        sqliteDb.prepare(`
+          INSERT OR REPLACE INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          r.id,
+          r.user_id,
+          r.expert_id || null,
+          r.title,
+          r.description || '',
+          r.category,
+          r.tier || 'standard',
+          r.status || 'pending',
+          r.credits_cost ?? 0,
+          r.service_type || 'review',
+          r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+        );
+      } catch (err) {
+        console.error(`[RESTORE] Request ${r.id} insert failed:`, (err as Error).message?.substring(0, 80));
+      }
+    }
+    console.log(`[RESTORE] Restored ${pgRequests.length} requests`);
+
+    // Restore credit_transactions
+    const txResult = await pool.query("SELECT * FROM credit_transactions ORDER BY id");
+    const pgTx = txResult.rows;
+    for (const t of pgTx) {
+      try {
+        sqliteDb.prepare(`
+          INSERT OR REPLACE INTO credit_transactions (id, user_id, amount, type, description, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          t.id,
+          t.user_id,
+          t.amount,
+          t.type,
+          t.description || '',
+          t.created_at ? new Date(t.created_at).toISOString() : new Date().toISOString()
+        );
+      } catch (err) {
+        console.error(`[RESTORE] Transaction ${t.id} insert failed:`, (err as Error).message?.substring(0, 80));
+      }
+    }
+    console.log(`[RESTORE] Restored ${pgTx.length} credit transactions`);
+
+    // Verify
+    const countResult = sqliteDb.prepare("SELECT COUNT(*) as cnt FROM users").get() as { cnt: number };
+    console.log(`[RESTORE] ✅ Complete — SQLite now has ${countResult.cnt} users`);
+  } catch (err) {
+    console.error("[RESTORE] ❌ Cloud SQL restore failed:", (err as Error).message);
+  }
+}
+
+// ─── Write credit transaction to Cloud SQL ───
+export async function writeCreditTransactionToCloudSql(tx: {
+  id?: number; userId: number; amount: number; type: string; description: string;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    if (tx.id) {
+      await pool.query(
+        `INSERT INTO credit_transactions (id, user_id, amount, type, description, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           amount = EXCLUDED.amount, type = EXCLUDED.type, description = EXCLUDED.description`,
+        [tx.id, tx.userId, tx.amount, tx.type, tx.description]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO credit_transactions (user_id, amount, type, description, created_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [tx.userId, tx.amount, tx.type, tx.description]
+      );
+    }
+  } catch (err) {
+    console.error("[CLOUD-SQL] Credit tx write failed:", (err as Error).message?.substring(0, 100));
   }
 }
 
