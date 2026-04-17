@@ -13,7 +13,7 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql } from "./user-data-persist";
 
 // ─── JWT Admin Auth ───
 const JWT_SECRET = process.env.JWT_SECRET || "a2a-admin-jwt-secret-2026-build31";
@@ -131,7 +131,7 @@ function notifyUser(userId: number, event: { type: string; title: string; messag
 }
 
 function logRequestEvent(requestId: number, type: string, actorId?: number, actorName?: string, message?: string) {
-  storage.createRequestEvent({
+  const evt = storage.createRequestEvent({
     requestId,
     type,
     actorId: actorId ?? null,
@@ -139,6 +139,7 @@ function logRequestEvent(requestId: number, type: string, actorId?: number, acto
     message: message ?? null,
     createdAt: new Date().toISOString(),
   });
+  writeRequestEventToCloudSql(evt).catch(() => {});
 }
 
 // Groq primary (free, commercial use), Anthropic fallback (sandbox)
@@ -532,8 +533,13 @@ export async function registerRoutes(
       if (user.active === 0) {
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
-      const { password: _, ...safeUser } = user;
+      // OB-B: Increment login count
+      const newLoginCount = (user.loginCount ?? 0) + 1;
+      storage.updateUser(user.id, { loginCount: newLoginCount } as any);
+      const updatedUser = storage.getUser(user.id)!;
+      const { password: _, ...safeUser } = updatedUser;
       const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+      syncUserToCloud(user.id);
       return res.json({ ...safeUser, token });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -589,8 +595,13 @@ export async function registerRoutes(
       if (user.active === 0) {
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
-      const { password: _, ...safeUser } = user;
+      // OB-B: Increment login count
+      const newLoginCount = (user.loginCount ?? 0) + 1;
+      storage.updateUser(user.id, { loginCount: newLoginCount } as any);
+      const updatedUser = storage.getUser(user.id)!;
+      const { password: _, ...safeUser } = updatedUser;
       const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+      syncUserToCloud(user.id);
       return res.json({ ...safeUser, token });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -1183,7 +1194,9 @@ export async function registerRoutes(
   app.get("/api/experts/:id", async (req, res) => {
     const expert = storage.getExpert(parseInt(req.params.id));
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
-    return res.json(expert);
+    // OB-G: Include user name so public profile and other views can show actual name
+    const expertUser = storage.getUser(expert.userId);
+    return res.json({ ...expert, userName: expertUser?.name || null });
   });
 
   app.get("/api/experts/user/:userId", async (req, res) => {
@@ -1624,19 +1637,14 @@ export async function registerRoutes(
     return res.json(r);
   });
 
-  // Helper to finalize a request: charge credits and credit the expert
+  // OB-I: finalizeRequest now ONLY credits the expert (client was already charged on admin approval)
   async function finalizeRequest(requestId: number): Promise<void> {
     const r = storage.getRequest(requestId);
     if (!r || r.status === "completed" || r.refunded) return;
 
     storage.updateRequest(requestId, { status: "completed" } as any);
 
-    // FEAT-011: Mark held credits as charged on completion
-    storage.createTransaction({
-      userId: r.userId, amount: r.creditsCost, type: "charged",
-      description: `Credits charged for completed request: ${r.title}`,
-    });
-
+    // OB-I: Credit expert on completion (client was already charged on admin verification)
     if (r.expertId) {
       const expert = storage.getExpert(r.expertId);
       if (expert) {
@@ -1650,6 +1658,21 @@ export async function registerRoutes(
             description: `Completed: ${r.title}`,
           });
           storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
+          // OB-I: Also update wallet balance for expert
+          const earningCents = earning * 100;
+          const freshExpertUser = storage.getUser(expertUser.id);
+          storage.updateUser(expertUser.id, { walletBalance: (freshExpertUser?.walletBalance || 0) + earningCents });
+          storage.createWalletTransaction({
+            userId: expertUser.id,
+            amountCents: earningCents,
+            type: "earning",
+            description: `Earned from completed request: ${r.title}`,
+            createdAt: new Date().toISOString(),
+            stripePaymentId: null,
+          });
+          syncCreditTxToCloud({ userId: expertUser.id, amount: earning, type: "earning", description: `Completed: ${r.title}` });
+          syncExpertToCloud(expert.id);
+          syncUserToCloud(expertUser.id);
         }
       }
     }
@@ -1670,17 +1693,8 @@ export async function registerRoutes(
     });
     logRequestEvent(requestId, "completed");
     triggerBackup();
-    // Sync to Cloud SQL
     syncRequestToCloud(requestId);
     syncUserToCloud(r.userId);
-    syncCreditTxToCloud({ userId: r.userId, amount: r.creditsCost, type: "charged", description: `Completed: ${r.title}` });
-    if (r.expertId) {
-      const expAfter = storage.getExpert(r.expertId);
-      if (expAfter) {
-        syncExpertToCloud(expAfter.id);
-        syncUserToCloud(expAfter.userId);
-      }
-    }
   }
 
   // Client can mark request as done (manually close after follow-ups)
@@ -2062,6 +2076,7 @@ export async function registerRoutes(
   });
 
   // POST /api/admin/reviews/:requestId/approve — approve response, send to client
+  // OB-I: Charge client on admin approval. Expert credited later on completion.
   app.post("/api/admin/reviews/:requestId/approve", adminAuth, async (req, res) => {
     try {
       const requestId = parseInt(String(req.params.requestId));
@@ -2071,10 +2086,6 @@ export async function registerRoutes(
         return res.status(400).json({ error: true, message: "Request is not under review" });
       }
 
-      // Check if all reviews completed — if so set awaiting_followup, else completed
-      const allReviews = storage.getReviewsByRequest(requestId);
-      const allCompleted = allReviews.every((r) => r.status === "completed");
-
       const newStatus = "awaiting_followup";
       const followupDeadline = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
       storage.updateRequest(requestId, {
@@ -2082,45 +2093,18 @@ export async function registerRoutes(
         followup_deadline: followupDeadline,
       } as any);
 
-      // Charge credits and pay experts (same logic as before)
-      if (allCompleted) {
+      // OB-I: Charge client NOW on admin verification (not on completion)
+      const clientUser = storage.getUser(request.userId);
+      if (clientUser) {
+        storage.updateUser(request.userId, { credits: Math.max(0, clientUser.credits - request.creditsCost) });
         storage.createTransaction({
           userId: request.userId,
-          amount: request.creditsCost,
+          amount: -request.creditsCost,
           type: "charged",
-          description: `Credits charged for completed request: ${request.title}`,
+          description: `Credits charged for verified response: ${request.title}`,
         });
-
-        for (const rev of allReviews) {
-          if (rev.expertId && rev.status === "completed") {
-            const expert = storage.getExpert(rev.expertId);
-            if (expert) {
-              const expertUser = storage.getUser(expert.userId);
-              if (expertUser) {
-                const takeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
-                const perReviewCost = request.creditsCost / Math.max(allReviews.length, 1);
-                const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
-                storage.updateUser(expertUser.id, { credits: expertUser.credits + earning });
-                storage.createTransaction({
-                  userId: expertUser.id, amount: earning, type: "earning",
-                  description: `Completed review: ${request.title}`,
-                });
-                storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
-                const earningCents = earning * 100;
-                const freshExpertUser = storage.getUser(expertUser.id);
-                storage.updateUser(expertUser.id, { walletBalance: (freshExpertUser?.walletBalance || 0) + earningCents });
-                storage.createWalletTransaction({
-                  userId: expertUser.id,
-                  amountCents: earningCents,
-                  type: "earning",
-                  description: `Earned from review: ${request.title}`,
-                  createdAt: new Date().toISOString(),
-                  stripePaymentId: null,
-                });
-              }
-            }
-          }
-        }
+        syncUserToCloud(request.userId);
+        syncCreditTxToCloud({ userId: request.userId, amount: -request.creditsCost, type: "charged", description: `Credits charged: ${request.title}` });
       }
 
       // Log timeline event
@@ -2145,7 +2129,7 @@ export async function registerRoutes(
       // Send approval emails to cofounders
       try {
         const { Resend } = await import("resend");
-        const resend = new Resend("re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
         await resend.emails.send({
           from: "A2A Global <noreply@a2a.global>",
           to: ["oleg@a2a.global", "amir@a2a.global"],
@@ -2157,6 +2141,7 @@ export async function registerRoutes(
       }
 
       triggerBackup();
+      syncRequestToCloud(requestId);
       return res.json({ ok: true, status: newStatus });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -3481,6 +3466,277 @@ export async function registerRoutes(
       res.json({ ok: true, message: `Report sent with ${allUsers.length} users` });
     } catch (err: any) {
       res.json({ ok: false, error: err.message });
+    }
+  });
+
+  // ─── OB-J: EXPERT VERIFICATION & WITHDRAWAL CYCLE ───
+
+  // Upload passport file for expert verification
+  app.post("/api/experts/:expertId/upload-passport", attachmentUpload.single("passport"), async (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      if (!req.file) return res.status(400).json({ error: true, message: "Passport file is required" });
+      // Store as base64 data URL
+      const base64 = req.file.buffer.toString("base64");
+      const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
+      return res.json({ url: dataUrl, filename: req.file.originalname });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Submit expert bank/verification details
+  app.post("/api/experts/:expertId/verification", async (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      const expert = storage.getExpert(expertId);
+      if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+      const expertUser = storage.getUser(expert.userId);
+
+      const { passportFileUrl, accountNumber, swiftCode, bankName, bankAddress } = req.body;
+      if (!accountNumber || !swiftCode || !bankName) {
+        return res.status(400).json({ error: true, message: "Bank details are required" });
+      }
+
+      const existing = storage.getExpertVerificationByExpert(expertId);
+      const now = new Date().toISOString();
+      let verification;
+      if (existing) {
+        verification = storage.updateExpertVerification(existing.id, {
+          passportFileUrl: passportFileUrl || existing.passportFileUrl,
+          accountNumber, swiftCode, bankName,
+          bankAddress: bankAddress || null,
+          updatedAt: now,
+        });
+      } else {
+        verification = storage.createExpertVerification({
+          expertId,
+          passportFileUrl: passportFileUrl || null,
+          accountNumber, swiftCode, bankName,
+          bankAddress: bankAddress || null,
+          verifiedByAdmin: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      writeExpertVerificationToCloudSql(verification).catch(() => {});
+
+      // OB-K: Email notification to cofounders
+      try {
+        const { Resend } = await import("resend");
+        const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        await resend.emails.send({
+          from: "A2A Global <noreply@a2a.global>",
+          to: ["oleg@a2a.global", "amir@a2a.global"],
+          subject: `Verification data for Expert ${expertUser?.name || "Unknown"} uploaded`,
+          html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+            <div style="text-align:center;padding:15px;border-bottom:2px solid #0F3DD1;">
+              <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="36" />
+            </div>
+            <h2 style="color:#0F3DD1;margin-top:20px;">Expert Verification Details Uploaded</h2>
+            <p>Expert <strong>${expertUser?.name || "Unknown"}</strong> has uploaded their verification and bank details.</p>
+            <table style="width:100%;border-collapse:collapse;margin:15px 0;">
+              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Bank</td><td style="padding:8px;border-bottom:1px solid #eee;">${bankName}</td></tr>
+              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">SWIFT/BIC</td><td style="padding:8px;border-bottom:1px solid #eee;">${swiftCode}</td></tr>
+              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Has Passport</td><td style="padding:8px;border-bottom:1px solid #eee;">${passportFileUrl ? "Yes" : "No"}</td></tr>
+            </table>
+            <div style="margin:24px 0;">
+              <a href="https://a2a.global/#/admin/login" style="background:#0F3DD1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Open Admin Panel</a>
+            </div>
+          </div>`,
+        });
+      } catch (emailErr) {
+        console.error("[VERIFICATION EMAIL] Failed:", emailErr);
+      }
+
+      triggerBackup();
+      return res.json(verification);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Get expert verification details
+  app.get("/api/experts/:expertId/verification", async (req, res) => {
+    const expertId = parseInt(req.params.expertId);
+    const verification = storage.getExpertVerificationByExpert(expertId);
+    return res.json(verification || null);
+  });
+
+  // Submit withdrawal request
+  app.post("/api/experts/:expertId/withdrawal-request", async (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      const expert = storage.getExpert(expertId);
+      if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+      const expertUser = storage.getUser(expert.userId);
+
+      // Check if bank details exist
+      const verification = storage.getExpertVerificationByExpert(expertId);
+      if (!verification || !verification.accountNumber) {
+        return res.status(400).json({ error: true, message: "Please upload your verification details first" });
+      }
+
+      const { amount } = req.body;
+      if (!amount || parseFloat(amount) <= 0) {
+        return res.status(400).json({ error: true, message: "Invalid withdrawal amount" });
+      }
+
+      // Generate invoice number
+      const allWR = storage.getAllWithdrawalRequests();
+      const invoiceNumber = `INV-${new Date().getFullYear()}-${String(allWR.length + 1).padStart(4, "0")}`;
+
+      const now = new Date().toISOString();
+      const wr = storage.createWithdrawalRequest({
+        expertId,
+        amount: String(amount),
+        invoiceNumber,
+        status: "pending",
+        adminNotes: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      writeWithdrawalRequestToCloudSql(wr).catch(() => {});
+
+      // OB-K: Email to cofounders
+      try {
+        const { Resend } = await import("resend");
+        const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        await resend.emails.send({
+          from: "A2A Global <noreply@a2a.global>",
+          to: ["oleg@a2a.global", "amir@a2a.global"],
+          subject: `Withdrawal for ${expertUser?.name || "Unknown"} Expert Requested – Invoice # ${invoiceNumber}`,
+          html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+            <div style="text-align:center;padding:15px;border-bottom:2px solid #0F3DD1;">
+              <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="36" />
+            </div>
+            <h2 style="color:#0F3DD1;margin-top:20px;">Withdrawal Request</h2>
+            <p>Expert <strong>${expertUser?.name || "Unknown"}</strong> has requested a withdrawal.</p>
+            <table style="width:100%;border-collapse:collapse;margin:15px 0;">
+              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Amount</td><td style="padding:8px;border-bottom:1px solid #eee;">$${amount}</td></tr>
+              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Invoice #</td><td style="padding:8px;border-bottom:1px solid #eee;">${invoiceNumber}</td></tr>
+            </table>
+            <div style="margin:24px 0;">
+              <a href="https://a2a.global/#/admin/login" style="background:#0F3DD1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Open Admin Panel</a>
+            </div>
+          </div>`,
+        });
+      } catch (emailErr) {
+        console.error("[WITHDRAWAL EMAIL] Failed:", emailErr);
+      }
+
+      triggerBackup();
+      return res.json(wr);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Get withdrawal requests for expert
+  app.get("/api/experts/:expertId/withdrawal-requests", async (req, res) => {
+    const expertId = parseInt(req.params.expertId);
+    return res.json(storage.getWithdrawalRequestsByExpert(expertId));
+  });
+
+  // Admin: Get all expert verifications
+  app.get("/api/admin/expert-verifications", adminAuth, async (_req, res) => {
+    const verifications = storage.getAllExpertVerifications();
+    const allExperts = storage.getAllExperts();
+    const allUsers = storage.getAllUsers();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+    const expertMap = new Map(allExperts.map(e => [e.id, e]));
+    return res.json(verifications.map(v => ({
+      ...v,
+      expertName: userMap.get(expertMap.get(v.expertId)?.userId || 0)?.name || "Unknown",
+      expertEmail: userMap.get(expertMap.get(v.expertId)?.userId || 0)?.email || "",
+    })));
+  });
+
+  // Admin: Get all withdrawal requests
+  app.get("/api/admin/withdrawal-requests", adminAuth, async (_req, res) => {
+    const wrs = storage.getAllWithdrawalRequests();
+    const allExperts = storage.getAllExperts();
+    const allUsers = storage.getAllUsers();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+    const expertMap = new Map(allExperts.map(e => [e.id, e]));
+    return res.json(wrs.map(w => ({
+      ...w,
+      expertName: userMap.get(expertMap.get(w.expertId)?.userId || 0)?.name || "Unknown",
+      expertEmail: userMap.get(expertMap.get(w.expertId)?.userId || 0)?.email || "",
+      verification: storage.getExpertVerificationByExpert(w.expertId),
+    })));
+  });
+
+  // Admin: Mark payout as initiated
+  app.post("/api/admin/withdrawal-requests/:id/payout", adminAuth, async (req, res) => {
+    try {
+      const wrId = parseInt(req.params.id);
+      const wr = storage.updateWithdrawalRequest(wrId, {
+        status: "payout_initiated",
+        updatedAt: new Date().toISOString(),
+      });
+      if (!wr) return res.status(404).json({ error: true, message: "Withdrawal request not found" });
+
+      writeWithdrawalRequestToCloudSql(wr).catch(() => {});
+
+      // Find expert to send notification email
+      const expert = storage.getExpert(wr.expertId);
+      const expertUser = expert ? storage.getUser(expert.userId) : null;
+      if (expertUser) {
+        storage.createNotification({
+          userId: expertUser.id,
+          title: "Payout Initiated",
+          message: `Your withdrawal of $${wr.amount} (Invoice ${wr.invoiceNumber}) has been initiated. Please allow up to 3 business days.`,
+          read: 0,
+          link: `/expert`,
+          createdAt: new Date().toISOString(),
+        });
+
+        // OB-K: Email to expert
+        try {
+          const { Resend } = await import("resend");
+          const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+          await resend.emails.send({
+            from: "A2A Global <noreply@a2a.global>",
+            to: expertUser.email,
+            subject: "Payout Initiated",
+            html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+              <div style="text-align:center;padding:15px;border-bottom:2px solid #0F3DD1;">
+                <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="36" />
+              </div>
+              <h2 style="color:#0F3DD1;margin-top:20px;">Payout Initiated</h2>
+              <p>Hi ${expertUser.name},</p>
+              <p>Your requested payout of <strong>$${wr.amount}</strong> (Invoice ${wr.invoiceNumber}) is initiated. Please allow up to 3 business days for the funds to arrive into your bank account.</p>
+              <p style="color:#6b7280;font-size:13px;">If you have any questions, please contact us at support@a2a.global.</p>
+            </div>`,
+          });
+        } catch (emailErr) {
+          console.error("[PAYOUT EMAIL] Failed:", emailErr);
+        }
+      }
+
+      triggerBackup();
+      return res.json(wr);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Admin: Verify expert bank details
+  app.post("/api/admin/expert-verifications/:id/verify", adminAuth, async (req, res) => {
+    try {
+      const vId = parseInt(req.params.id);
+      const v = storage.updateExpertVerification(vId, {
+        verifiedByAdmin: 1,
+        updatedAt: new Date().toISOString(),
+      });
+      if (!v) return res.status(404).json({ error: true, message: "Verification not found" });
+      writeExpertVerificationToCloudSql(v).catch(() => {});
+      return res.json(v);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
     }
   });
 

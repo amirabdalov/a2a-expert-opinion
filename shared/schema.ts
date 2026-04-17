@@ -16,6 +16,7 @@ export const users = sqliteTable("users", {
   active: integer("active").notNull().default(1),
   tourCompleted: integer("tour_completed").notNull().default(0),
   photo: text("photo"),
+  loginCount: integer("login_count").notNull().default(0),
 });
 
 export const sessions = sqliteTable("sessions", {
@@ -294,3 +295,37 @@ export const legalAcceptances = sqliteTable("legal_acceptances", {
 
 export type LegalAcceptance = typeof legalAcceptances.$inferSelect;
 export type InsertLegalAcceptance = typeof legalAcceptances.$inferInsert;
+
+// OB-J: Expert bank/verification details for withdrawal cycle
+export const expertVerifications = sqliteTable("expert_verifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  expertId: integer("expert_id").notNull(),
+  passportFileUrl: text("passport_file_url"),
+  accountNumber: text("account_number"),
+  swiftCode: text("swift_code"),
+  bankName: text("bank_name"),
+  bankAddress: text("bank_address"),
+  verifiedByAdmin: integer("verified_by_admin").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const insertExpertVerificationSchema = createInsertSchema(expertVerifications).omit({ id: true });
+export type ExpertVerification = typeof expertVerifications.$inferSelect;
+export type InsertExpertVerification = z.infer<typeof insertExpertVerificationSchema>;
+
+// OB-J: Withdrawal requests with invoice numbers
+export const withdrawalRequests = sqliteTable("withdrawal_requests", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  expertId: integer("expert_id").notNull(),
+  amount: text("amount").notNull(),
+  invoiceNumber: text("invoice_number").notNull(),
+  status: text("status").notNull().default("pending"),
+  adminNotes: text("admin_notes"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const insertWithdrawalRequestSchema = createInsertSchema(withdrawalRequests).omit({ id: true });
+export type WithdrawalRequest = typeof withdrawalRequests.$inferSelect;
+export type InsertWithdrawalRequest = z.infer<typeof insertWithdrawalRequestSchema>;

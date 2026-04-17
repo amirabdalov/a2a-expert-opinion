@@ -13,6 +13,8 @@ import {
   type RequestEvent, type InsertRequestEvent, requestEvents,
   type Withdrawal, type InsertWithdrawal, withdrawals,
   type Invoice, type InsertInvoice, invoices,
+  type ExpertVerification, type InsertExpertVerification, expertVerifications,
+  type WithdrawalRequest, type InsertWithdrawalRequest, withdrawalRequests,
   sessions,
 } from "@shared/schema";
 import { inArray, sql } from "drizzle-orm";
@@ -230,6 +232,28 @@ sqlite.exec(`
     size INTEGER NOT NULL,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS expert_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    expert_id INTEGER NOT NULL,
+    passport_file_url TEXT,
+    account_number TEXT,
+    swift_code TEXT,
+    bank_name TEXT,
+    bank_address TEXT,
+    verified_by_admin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS withdrawal_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    expert_id INTEGER NOT NULL,
+    amount TEXT NOT NULL,
+    invoice_number TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 // FIX-5: Migration guard for file_attachments table on existing DBs
@@ -320,6 +344,8 @@ try { sqlite.exec("ALTER TABLE users ADD COLUMN utm_campaign TEXT"); } catch {}
 // Follow-up tracking columns for requests (migration for existing DBs)
 try { sqlite.exec("ALTER TABLE requests ADD COLUMN followup_count INTEGER NOT NULL DEFAULT 0"); } catch {}
 try { sqlite.exec("ALTER TABLE requests ADD COLUMN followup_deadline TEXT"); } catch {}
+// OB-B: Login count column
+try { sqlite.exec("ALTER TABLE users ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0"); } catch {}
 console.log("[DB] All tables ensured.");
 
 export const db = drizzle(sqlite);
@@ -411,6 +437,16 @@ export interface IStorage {
   getInvoiceCount(): number;
   getUninvoicedReviewsByExpert(expertId: number): ExpertReview[];
   markReviewsInvoiced(reviewIds: number[]): void;
+  // Expert Verifications (OB-J)
+  createExpertVerification(v: InsertExpertVerification): ExpertVerification;
+  getExpertVerificationByExpert(expertId: number): ExpertVerification | undefined;
+  updateExpertVerification(id: number, data: Partial<InsertExpertVerification>): ExpertVerification | undefined;
+  getAllExpertVerifications(): ExpertVerification[];
+  // Withdrawal Requests (OB-J)
+  createWithdrawalRequest(w: InsertWithdrawalRequest): WithdrawalRequest;
+  getWithdrawalRequestsByExpert(expertId: number): WithdrawalRequest[];
+  getAllWithdrawalRequests(): WithdrawalRequest[];
+  updateWithdrawalRequest(id: number, data: Partial<InsertWithdrawalRequest>): WithdrawalRequest | undefined;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -714,6 +750,34 @@ export class DatabaseStorage implements IStorage {
         takeRatePercent,
       };
     });
+  }
+
+  // Expert Verifications (OB-J)
+  createExpertVerification(v: InsertExpertVerification): ExpertVerification {
+    return db.insert(expertVerifications).values(v).returning().get();
+  }
+  getExpertVerificationByExpert(expertId: number): ExpertVerification | undefined {
+    return db.select().from(expertVerifications).where(eq(expertVerifications.expertId, expertId)).get();
+  }
+  updateExpertVerification(id: number, data: Partial<InsertExpertVerification>): ExpertVerification | undefined {
+    return db.update(expertVerifications).set(data).where(eq(expertVerifications.id, id)).returning().get();
+  }
+  getAllExpertVerifications(): ExpertVerification[] {
+    return db.select().from(expertVerifications).orderBy(desc(expertVerifications.id)).all();
+  }
+
+  // Withdrawal Requests (OB-J)
+  createWithdrawalRequest(w: InsertWithdrawalRequest): WithdrawalRequest {
+    return db.insert(withdrawalRequests).values(w).returning().get();
+  }
+  getWithdrawalRequestsByExpert(expertId: number): WithdrawalRequest[] {
+    return db.select().from(withdrawalRequests).where(eq(withdrawalRequests.expertId, expertId)).orderBy(desc(withdrawalRequests.id)).all();
+  }
+  getAllWithdrawalRequests(): WithdrawalRequest[] {
+    return db.select().from(withdrawalRequests).orderBy(desc(withdrawalRequests.id)).all();
+  }
+  updateWithdrawalRequest(id: number, data: Partial<InsertWithdrawalRequest>): WithdrawalRequest | undefined {
+    return db.update(withdrawalRequests).set(data).where(eq(withdrawalRequests.id, id)).returning().get();
   }
 }
 

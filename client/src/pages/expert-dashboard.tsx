@@ -220,9 +220,14 @@ function AvailableQueue({ expertId, setView, setSelectedReview }: { expertId: nu
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
+      // OB-E: Invalidate the specific review query to prevent blank page
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/request", data.requestId] });
       toast({ title: "Review claimed!" });
-      setSelectedReview(data.id);
-      setView("review-detail");
+      // OB-E: Set review and navigate to detail view (fixes blank page on mobile)
+      setTimeout(() => {
+        setSelectedReview(data.id);
+        setView("review-detail");
+      }, 100);
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -736,7 +741,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
       {requestFiles && requestFiles.length > 0 && (
         <Card className="mt-4 mb-4">
           <CardContent className="p-4">
-            <h4 className="font-semibold mb-2 text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Uploaded Files</h4>
+            <h4 className="font-semibold mb-2 text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</h4>
             <div className="space-y-2">
               {requestFiles.map((f) => (
                 <a
@@ -1310,12 +1315,114 @@ function Earnings({ userId }: { userId: number }) {
   const [showInvoiceDialog, setShowInvoiceDialog] = useState(false);
   const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
   const [withdrawAmount, setWithdrawAmount] = useState(0);
+  const [showBankDetailsDialog, setShowBankDetailsDialog] = useState(false);
+  const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [bankSwiftCode, setBankSwiftCode] = useState("");
+  const [bankName, setBankName] = useState("");
+  const [bankAddress, setBankAddress] = useState("");
+  const [passportFile, setPassportFile] = useState<File | null>(null);
+  const [passportUploading, setPassportUploading] = useState(false);
+  const passportInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
   // Get expert for invoice data
   const { data: expert } = useQuery<Expert>({
     queryKey: ["/api/experts/user", userId],
     enabled: !!userId,
+  });
+
+  // OB-J: Fetch bank/verification details
+  const { data: verification, refetch: refetchVerification } = useQuery<any>({
+    queryKey: ["/api/experts", expert?.id, "verification"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/experts/${expert!.id}/verification`);
+      return res.json();
+    },
+    enabled: !!expert?.id,
+  });
+
+  // OB-J: Fetch withdrawal requests
+  const { data: withdrawalRequests, refetch: refetchWithdrawals } = useQuery<any[]>({
+    queryKey: ["/api/experts", expert?.id, "withdrawal-requests"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/experts/${expert!.id}/withdrawal-requests`);
+      return res.json();
+    },
+    enabled: !!expert?.id,
+  });
+
+  const hasBankDetails = !!verification?.accountNumber;
+
+  // OB-J: Upload passport
+  async function handlePassportUpload(file: File) {
+    if (!expert) return;
+    setPassportUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("passport", file);
+      const res = await fetch(`/api/experts/${expert.id}/upload-passport`, {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const result = await res.json();
+      toast({ title: "Passport uploaded", description: "Your ID document has been uploaded successfully." });
+      return result.fileUrl;
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+      return null;
+    } finally {
+      setPassportUploading(false);
+    }
+  }
+
+  // OB-J: Save bank details
+  const saveBankDetailsMutation = useMutation({
+    mutationFn: async () => {
+      if (!expert) throw new Error("Expert not found");
+      let passportFileUrl = verification?.passportFileUrl || "";
+      if (passportFile) {
+        const uploaded = await handlePassportUpload(passportFile);
+        if (uploaded) passportFileUrl = uploaded;
+      }
+      const res = await apiRequest("POST", `/api/experts/${expert.id}/verification`, {
+        passportFileUrl,
+        accountNumber: bankAccountNumber,
+        swiftCode: bankSwiftCode,
+        bankName,
+        bankAddress,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      refetchVerification();
+      setShowBankDetailsDialog(false);
+      toast({ title: "Details saved", description: "Your bank details have been submitted for verification." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // OB-J: Create withdrawal request
+  const createWithdrawalMutation = useMutation({
+    mutationFn: async () => {
+      if (!expert) throw new Error("Expert not found");
+      const res = await apiRequest("POST", `/api/experts/${expert.id}/withdrawal-request`, {
+        amount: withdrawAmount,
+      });
+      return res.json();
+    },
+    onSuccess: (result: any) => {
+      refetchWithdrawals();
+      queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
+      setShowWithdrawDialog(false);
+      toast({ title: "Withdrawal requested", description: `Invoice ${result.invoiceNumber} created. You will be notified when payout is initiated.` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
   });
 
   const earningsTxs = data?.transactions?.filter((t) => t.type === "earning") ?? [];
@@ -1531,7 +1638,7 @@ function Earnings({ userId }: { userId: number }) {
         <Card><CardContent className="p-4 text-center"><p className="text-2xl font-bold">{earningsTxs.length}</p><p className="text-xs text-muted-foreground">Completed Reviews</p></CardContent></Card>
       </div>
 
-      {/* Fix 6: Withdraw Funds with $50 minimum */}
+      {/* OB-J: Bank details + Withdraw Funds */}
       <Card className="mb-8">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
@@ -1546,23 +1653,47 @@ function Earnings({ userId }: { userId: number }) {
                 <p className="text-xs text-muted-foreground">Withdrawals are available for a minimum of $50.</p>
                 <p className="text-xs text-muted-foreground italic mt-0.5">We are working on reducing the withdrawal limits</p>
               </div>
-              <Button
-                onClick={() => {
-                  if (balance < 50) {
-                    toast({
-                      title: "Minimum not reached",
-                      description: "Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits",
-                    });
-                    return;
-                  }
-                  setWithdrawAmount(balance);
-                  setShowWithdrawDialog(true);
-                }}
-                data-testid="button-withdraw"
-              >
-                <Wallet className="mr-2 h-4 w-4" /> Withdraw Funds
-              </Button>
+              {!hasBankDetails ? (
+                <Button
+                  onClick={() => setShowBankDetailsDialog(true)}
+                  variant="outline"
+                  data-testid="button-finalise-details"
+                >
+                  <FileText className="mr-2 h-4 w-4" /> Finalise your details before initiating a withdrawal
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => {
+                    if (balance < 50) {
+                      toast({
+                        title: "Minimum not reached",
+                        description: "Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits",
+                      });
+                      return;
+                    }
+                    setWithdrawAmount(balance);
+                    setShowWithdrawDialog(true);
+                  }}
+                  data-testid="button-withdraw"
+                >
+                  <Wallet className="mr-2 h-4 w-4" /> Withdraw Funds
+                </Button>
+              )}
             </div>
+            {hasBankDetails && (
+              <div className="flex items-center gap-2 text-xs text-green-600">
+                <CheckCircle className="h-3.5 w-3.5" />
+                Bank details submitted
+                {verification?.verifiedByAdmin ? " — Verified by admin" : " — Pending admin verification"}
+                <Button variant="ghost" size="sm" className="text-xs h-6 px-2" onClick={() => {
+                  setBankAccountNumber(verification?.accountNumber || "");
+                  setBankSwiftCode(verification?.swiftCode || "");
+                  setBankName(verification?.bankName || "");
+                  setBankAddress(verification?.bankAddress || "");
+                  setShowBankDetailsDialog(true);
+                }}>Edit</Button>
+              </div>
+            )}
             {balance < 50 && balance > 0 && (
               <p className="text-xs text-amber-600" data-testid="text-withdrawal-threshold">
                 Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits
@@ -1572,46 +1703,134 @@ function Earnings({ userId }: { userId: number }) {
         </CardContent>
       </Card>
 
-      {/* Withdrawal Dialog */}
-      <Dialog open={showWithdrawDialog} onOpenChange={setShowWithdrawDialog}>
-        <DialogContent data-testid="dialog-withdrawal">
+      {/* OB-J: Bank Details Dialog */}
+      <Dialog open={showBankDetailsDialog} onOpenChange={setShowBankDetailsDialog}>
+        <DialogContent data-testid="dialog-bank-details">
           <DialogHeader>
-            <DialogTitle>Withdraw Funds</DialogTitle>
-            <DialogDescription>Request a withdrawal and generate a payout statement.</DialogDescription>
+            <DialogTitle>Verification & Bank Details</DialogTitle>
+            <DialogDescription>Upload your ID and enter bank details to enable withdrawals.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <Label className="text-sm">Amount (credits)</Label>
+              <Label className="text-sm">Copy of Passport / ID</Label>
+              <input
+                ref={passportInputRef}
+                type="file"
+                accept="image/*,.pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) setPassportFile(file);
+                }}
+              />
+              <div className="mt-1 flex items-center gap-3">
+                <Button variant="outline" size="sm" onClick={() => passportInputRef.current?.click()} disabled={passportUploading}>
+                  <Paperclip className="mr-2 h-3.5 w-3.5" /> {passportFile ? passportFile.name : (verification?.passportFileUrl ? "Replace document" : "Upload document")}
+                </Button>
+                {(passportFile || verification?.passportFileUrl) && (
+                  <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle className="h-3 w-3" /> {passportFile ? "Ready to upload" : "Document on file"}</span>
+                )}
+              </div>
+            </div>
+            <div>
+              <Label className="text-sm">Account Number</Label>
+              <Input
+                value={bankAccountNumber}
+                onChange={(e) => setBankAccountNumber(e.target.value)}
+                placeholder="e.g., 12345678"
+                className="mt-1"
+                data-testid="input-account-number"
+              />
+            </div>
+            <div>
+              <Label className="text-sm">SWIFT / BIC Code</Label>
+              <Input
+                value={bankSwiftCode}
+                onChange={(e) => setBankSwiftCode(e.target.value)}
+                placeholder="e.g., ABCDEF12"
+                className="mt-1"
+                data-testid="input-swift-code"
+              />
+            </div>
+            <div>
+              <Label className="text-sm">Bank Name</Label>
+              <Input
+                value={bankName}
+                onChange={(e) => setBankName(e.target.value)}
+                placeholder="e.g., HSBC"
+                className="mt-1"
+                data-testid="input-bank-name"
+              />
+            </div>
+            <div>
+              <Label className="text-sm">Bank Address</Label>
+              <Input
+                value={bankAddress}
+                onChange={(e) => setBankAddress(e.target.value)}
+                placeholder="Full bank branch address"
+                className="mt-1"
+                data-testid="input-bank-address"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBankDetailsDialog(false)}>Cancel</Button>
+            <Button
+              onClick={() => saveBankDetailsMutation.mutate()}
+              disabled={!bankAccountNumber || !bankSwiftCode || !bankName || saveBankDetailsMutation.isPending}
+              data-testid="button-save-bank-details"
+            >
+              {saveBankDetailsMutation.isPending ? "Saving..." : "Save Details"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* OB-J: Withdrawal Request Dialog */}
+      <Dialog open={showWithdrawDialog} onOpenChange={setShowWithdrawDialog}>
+        <DialogContent data-testid="dialog-withdrawal">
+          <DialogHeader>
+            <DialogTitle>Request Withdrawal</DialogTitle>
+            <DialogDescription>Submit a withdrawal request. An invoice will be generated automatically.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label className="text-sm">Amount ($)</Label>
               <Input
                 type="number"
-                min={1}
+                min={50}
                 max={balance}
                 value={withdrawAmount}
                 onChange={(e) => setWithdrawAmount(Math.min(balance, Math.max(0, parseInt(e.target.value) || 0)))}
                 className="mt-1"
                 data-testid="input-withdraw-amount"
               />
-              <p className="text-xs text-muted-foreground mt-1">= ${withdrawAmount.toFixed(2)}</p>
+              <p className="text-xs text-muted-foreground mt-1">Available: ${balance}</p>
             </div>
-            <div>
-              <Label className="text-sm">Payment Method</Label>
-              <div className="mt-1 p-3 bg-muted/50 rounded-lg flex items-center gap-2">
-                <DollarSign className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm">Bank Transfer (Mercury)</span>
+            {verification && (
+              <div className="p-3 bg-muted/50 rounded-lg text-xs space-y-1">
+                <p className="font-medium">Bank details on file:</p>
+                <p>Account: {verification.accountNumber}</p>
+                <p>SWIFT: {verification.swiftCode}</p>
+                <p>Bank: {verification.bankName}</p>
               </div>
-            </div>
+            )}
             <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800/30">
               <p className="text-xs text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
                 <Receipt className="h-3.5 w-3.5" />
-                A payout statement will be generated with all uninvoiced completed reviews.
+                An invoice will be generated and sent to admin for processing. Please allow up to 3 business days for payout.
               </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowWithdrawDialog(false)}>Cancel</Button>
-            <Button onClick={() => generateInvoiceMutation.mutate()} disabled={withdrawAmount <= 0 || generateInvoiceMutation.isPending} data-testid="button-confirm-withdraw">
+            <Button
+              onClick={() => createWithdrawalMutation.mutate()}
+              disabled={withdrawAmount < 50 || createWithdrawalMutation.isPending}
+              data-testid="button-confirm-withdraw"
+            >
               <Receipt className="mr-2 h-4 w-4" />
-              {generateInvoiceMutation.isPending ? "Generating..." : "Generate Statement & Withdraw"}
+              {createWithdrawalMutation.isPending ? "Submitting..." : "Submit Withdrawal Request"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1644,6 +1863,42 @@ function Earnings({ userId }: { userId: number }) {
 
       {/* Withdrawal History */}
       <WithdrawalHistory expertId={expert?.id} />
+
+      {/* OB-J: Withdrawal Requests */}
+      {withdrawalRequests && withdrawalRequests.length > 0 && (
+        <div className="mb-8">
+          <h2 className="text-base font-semibold mb-4">Withdrawal Requests</h2>
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left p-3 font-medium text-xs">Date</th>
+                  <th className="text-left p-3 font-medium text-xs">Invoice #</th>
+                  <th className="text-right p-3 font-medium text-xs">Amount</th>
+                  <th className="text-right p-3 font-medium text-xs">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {withdrawalRequests.map((wr: any) => (
+                  <tr key={wr.id} className="border-t">
+                    <td className="p-3 text-xs text-muted-foreground">{new Date(wr.createdAt).toLocaleDateString()}</td>
+                    <td className="p-3 text-sm font-mono">{wr.invoiceNumber}</td>
+                    <td className="p-3 text-right text-sm font-medium">${wr.amount}</td>
+                    <td className="p-3 text-right">
+                      <Badge variant="secondary" className={`text-[10px] ${
+                        wr.status === "payout_initiated" ? "bg-blue-100 text-blue-700" :
+                        wr.status === "completed" ? "bg-green-100 text-green-700" : ""
+                      }`}>
+                        {wr.status === "pending" ? "Pending" : wr.status === "payout_initiated" ? "Payout Initiated" : wr.status === "completed" ? "Completed" : wr.status}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <h2 className="text-base font-semibold mb-4">Earning History</h2>
       <div className="border rounded-lg overflow-hidden">
