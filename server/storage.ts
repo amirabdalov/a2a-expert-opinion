@@ -300,30 +300,36 @@ if (adminCount.cnt === 0) {
   sqlite.prepare("INSERT INTO admins (email, password, name) VALUES (?, ?, ?)").run("oleg@a2a.global", hash, "Oleg (Admin)");
   console.log("[DB] Admin accounts seeded.");
 }
-// Auto-seed demo accounts on fresh database
+// Auto-seed demo accounts on fresh database — LOCAL DEV ONLY
+// On staging/production, real data comes from GCS/Cloud SQL restore.
+// Seeding on Cloud Run caused ID collisions: seed users claimed IDs 1-6 and
+// credit_transactions IDs 1-2, then INSERT OR IGNORE silently dropped real
+// production data at those same IDs. This also inflated wallet_balance for
+// demo users (5000, 15000, 8500, 22000, 2500) which bled into staging Cloud SQL.
+const nodeEnv = process.env.NODE_ENV || "development";
 const userCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM users").get() as { cnt: number };
-if (userCount.cnt === 0) {
+if (userCount.cnt === 0 && nodeEnv === "development") {
   const pwHash = bcryptPkg.hashSync("password123", 10);
   const now = new Date().toISOString();
 
   // demo_client — Alex Johnson
-  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_client", pwHash, "Alex Johnson", "alex@example.com", "client", 50, "TechCorp", "individual", 5000, 1, 0);
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_client", pwHash, "Alex Johnson", "alex@example.com", "client", 50, "TechCorp", "individual", 0, 1, 0);
   const clientId = (sqlite.prepare("SELECT id FROM users WHERE username='demo_client'").get() as any).id;
   sqlite.prepare(`INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, ?, ?, ?)`).run(clientId, 5, "bonus", "Welcome bonus — $5 free credits", now);
   sqlite.prepare(`INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, ?, ?, ?)`).run(clientId, 45, "purchase", "Business package — 30 credits ($199)", now);
 
   // demo_expert — Dr. Sarah Chen (Pro tier, verified)
-  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert", pwHash, "Dr. Sarah Chen", "sarah@example.com", "expert", 25, "A2A Global", "individual", 15000, 1, 0);
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert", pwHash, "Dr. Sarah Chen", "sarah@example.com", "expert", 25, "A2A Global", "individual", 0, 1, 0);
   const expertUserId = (sqlite.prepare("SELECT id FROM users WHERE username='demo_expert'").get() as any).id;
   sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(expertUserId, "15+ years in financial advisory and wealth management. Former VP at Goldman Sachs.", "Investment Strategy, Tax Planning, Retirement Planning, Portfolio Management", "CFA, CFP, MBA Wharton", 48, 127, 1, JSON.stringify(["finance", "business"]), 1, 250, "< 12 hours", "MBA, Wharton School", 15, 3, 100, "2.50", "pro");
 
   // demo_expert2 — James Rivera (Pro tier, verified)
-  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert2", pwHash, "James Rivera", "james@example.com", "expert", 18, null, "individual", 8500, 1, 0);
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert2", pwHash, "James Rivera", "james@example.com", "expert", 18, null, "individual", 0, 1, 0);
   const expertUser2Id = (sqlite.prepare("SELECT id FROM users WHERE username='demo_expert2'").get() as any).id;
   sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(expertUser2Id, "Serial entrepreneur with 3 successful exits. Angel investor in 20+ startups.", "Startup Strategy, Fundraising, Product-Market Fit, Growth Hacking", "MBA Stanford, YC Alumni", 47, 89, 1, JSON.stringify(["entrepreneurship", "business"]), 1, 200, "< 24 hours", "MBA, Stanford Graduate School of Business", 10, 3, 90, "1.50", "pro");
 
   // demo_expert3 — Maria Lopez (Pro tier, verified)
-  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert3", pwHash, "Maria Lopez", "maria@example.com", "expert", 12, "FinTech Advisors", "individual", 22000, 1, 0);
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("demo_expert3", pwHash, "Maria Lopez", "maria@example.com", "expert", 12, "FinTech Advisors", "individual", 0, 1, 0);
   const expertUser3Id = (sqlite.prepare("SELECT id FROM users WHERE username='demo_expert3'").get() as any).id;
   sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(expertUser3Id, "Tax optimization specialist with 10+ years at Big 4. Expert in international tax structures.", "Tax Planning, International Tax, Corporate Finance, Compliance", "CPA, LLM Tax, CGMA", 46, 65, 1, JSON.stringify(["finance"]), 1, 180, "< 8 hours", "LLM in Taxation, NYU School of Law", 12, 3, 95, "3.00", "pro");
 
@@ -333,7 +339,7 @@ if (userCount.cnt === 0) {
   sqlite.prepare(`INSERT INTO experts (user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newExpertId, "", "", "", 50, 0, 0, "[]", 0, null, null, "", 0, 0, null, null, null);
 
   // beta_user — Mike Thompson (client)
-  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("beta_user", pwHash, "Mike Thompson", "mike@startup.io", "client", 15, "StartupIO", "individual", 2500, 1, 0);
+  sqlite.prepare(`INSERT INTO users (username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("beta_user", pwHash, "Mike Thompson", "mike@startup.io", "client", 15, "StartupIO", "individual", 0, 1, 0);
 
   // Add demo requests for the available queue
   sqlite.prepare(`INSERT INTO requests (user_id, title, description, category, tier, status, credits_cost, created_at, service_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -347,6 +353,8 @@ if (userCount.cnt === 0) {
   );
 
   console.log("[DB] Demo accounts seeded (demo_client, demo_expert, demo_expert2, demo_expert3, new_expert, beta_user).");
+} else if (userCount.cnt === 0) {
+  console.log(`[DB] Skipping demo seed — NODE_ENV=${nodeEnv}. Real data will arrive from GCS/Cloud SQL restore.`);
 }
 
 // Add photo column to users if it doesn't exist (migration for existing DBs)
