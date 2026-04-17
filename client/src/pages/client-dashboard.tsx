@@ -1245,6 +1245,53 @@ function ExpertProfileCard({ expert, compact }: { expert: Expert & { userName: s
   );
 }
 
+// ─── OB-H: Client Post-Verification Actions ───
+function ClientPostVerificationActions({ request, userId, setView }: { request: ExpertRequest; userId: number; setView: (v: ClientView) => void }) {
+  const [showRating, setShowRating] = useState(false);
+  const { toast } = useToast();
+
+  const completeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/requests/${request.id}/complete`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Request marked as complete" });
+      queryClient.invalidateQueries({ queryKey: ["/api/requests", request.id] });
+    },
+  });
+
+  if (showRating) return null; // Rating section handles it below
+
+  return (
+    <Card className="mb-4">
+      <CardContent className="p-4">
+        <p className="text-sm font-medium mb-3">What would you like to do?</p>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Button
+            className="flex-1"
+            onClick={() => {
+              completeMutation.mutate();
+              setShowRating(true);
+            }}
+          >
+            <Star className="h-4 w-4 mr-2" /> Rate the response and mark complete
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1"
+          >
+            <MessageSquare className="h-4 w-4 mr-2" /> Ask follow-up questions (up to 2)
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground mt-2">
+          Follow-up questions: You may ask up to 2 follow-up messages. Use the timeline below to send messages.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Client Rating Component ───
 function ClientRatingSection({ request, userId }: { request: ExpertRequest; userId: number }) {
   const [starRating, setStarRating] = useState(request.clientRating ?? 0);
@@ -1857,6 +1904,40 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
         </div>
       )}
 
+      {/* OB-H: Client post-verification flow */}
+      {request.status === "awaiting_followup" && request.expertResponse && (
+        <Card className="mb-4 border-green-200 bg-green-50/50 dark:bg-green-900/10 dark:border-green-900/30">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-green-800 dark:text-green-400 flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4" /> Verified Expert Response
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-sm whitespace-pre-wrap bg-white dark:bg-zinc-900 p-4 rounded border">{request.expertResponse}</div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* OB-H: Action buttons after admin verification */}
+      {request.status === "awaiting_followup" && (
+        <ClientPostVerificationActions request={request} userId={userId} setView={setView} />
+      )}
+
+      {/* OB-H: After completion, show Dispute link */}
+      {request.status === "completed" && request.clientRating && (
+        <div className="mb-4 text-center">
+          <button
+            onClick={() => {
+              const helpBtn = document.querySelector('[data-testid="floating-help-button"]') as HTMLElement;
+              if (helpBtn) helpBtn.click();
+            }}
+            className="text-xs text-muted-foreground underline hover:text-primary cursor-pointer"
+          >
+            Dispute?
+          </button>
+        </div>
+      )}
+
       {/* Resubmit button (change #3) */}
       {request.status === "completed" && (
         <div className="mb-4">
@@ -1875,8 +1956,8 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
         </div>
       )}
 
-      {/* Client Rating (only on completed requests) */}
-      {request.status === "completed" && (
+      {/* Client Rating (on completed or awaiting_followup requests) */}
+      {(request.status === "completed" || request.status === "awaiting_followup") && (
         <ClientRatingSection request={request} userId={userId} />
       )}
 
@@ -2104,7 +2185,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
                 <td className="p-3 text-xs text-muted-foreground">{new Date(tx.createdAt).toLocaleDateString()}</td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3"><Badge variant="secondary" className="text-xs capitalize">{tx.type}</Badge></td>
-                <td className={`p-3 text-right text-sm font-medium ${tx.amount > 0 ? "text-green-600" : "text-red-600"}`}>{tx.amount > 0 ? "+" : ""}${Math.abs(tx.amount)} credits</td>
+                <td className={`p-3 text-right text-sm font-medium ${["charged", "hold", "debit", "withdrawal"].includes(tx.type) ? "text-red-600" : tx.amount < 0 ? "text-red-600" : "text-green-600"}`}>{["charged", "hold", "debit", "withdrawal"].includes(tx.type) || tx.amount < 0 ? "-" : "+"}${Math.abs(tx.amount)} credits</td>
               </tr>
             ))}
           </tbody>
@@ -2580,21 +2661,20 @@ export default function ClientDashboard() {
   useEffect(() => {
     if (!user || tourInitialized.current) return;
     tourInitialized.current = true;
-    if (user.tourCompleted === 1) {
-      // Already completed — hide tour and confetti
+    // OB-B: Use loginCount to decide confetti (show only on first visit)
+    const isFirstLogin = (user as any).loginCount <= 1;
+    if (!isFirstLogin) {
       setShowTour(false);
       setShowConfetti(false);
-    } else if (user.tourCompleted === 0) {
-      // First-time user — show confetti
+    } else {
+      // First-time user — show confetti and walkthrough
       setShowConfetti(true);
-      // After 2 seconds, mark tour as completed so it never shows again
       setTimeout(() => {
         apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
       }, 2000);
-      // Hide confetti after 4 seconds
       setTimeout(() => setShowConfetti(false), 4000);
     }
-  }, [user]); // re-run if user changes but gated by tourInitialized ref
+  }, [user]);
   // BUG-009: Force light theme — remove dark class
   useEffect(() => {
     document.documentElement.classList.remove('dark');

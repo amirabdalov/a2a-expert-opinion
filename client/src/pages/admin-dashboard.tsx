@@ -1721,6 +1721,12 @@ function WithdrawalsPage() {
   const { toast } = useToast();
   const { data: withdrawals } = useQuery<any[]>({ queryKey: ["/api/admin/withdrawals"] });
 
+  // OB-J: Expert verifications
+  const { data: verifications } = useQuery<any[]>({ queryKey: ["/api/admin/expert-verifications"] });
+
+  // OB-J: Withdrawal requests (new table)
+  const { data: withdrawalRequests } = useQuery<any[]>({ queryKey: ["/api/admin/withdrawal-requests"] });
+
   const approveMut = useMutation({
     mutationFn: (id: number) => apiRequest("POST", `/api/admin/withdrawals/${id}/approve`),
     onSuccess: () => {
@@ -1738,15 +1744,179 @@ function WithdrawalsPage() {
     },
   });
 
+  // OB-J: Mark payout initiated
+  const payoutMut = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/admin/withdrawal-requests/${id}/payout`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/withdrawal-requests"] });
+      toast({ title: "Payout initiated", description: "Expert has been notified via email." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // OB-J: Verify bank details
+  const verifyBankMut = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/admin/expert-verifications/${id}/verify`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/expert-verifications"] });
+      toast({ title: "Bank details verified" });
+    },
+  });
+
   const statusColor: Record<string, string> = {
     pending: "bg-amber-500/10 text-amber-400 border-amber-500/20",
     approved: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
     rejected: "bg-red-500/10 text-red-400 border-red-500/20",
+    payout_initiated: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+    completed: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
   };
+
+  const [selectedVerification, setSelectedVerification] = useState<any>(null);
 
   return (
     <div data-testid="admin-withdrawals-page">
-      <h1 className="text-lg font-semibold mb-4">Withdrawals</h1>
+      {/* OB-J: Expert ID / Bank Verification Section */}
+      <h1 className="text-lg font-semibold mb-4">Expert ID / Bank Verification</h1>
+      <Card className="bg-zinc-900 border-zinc-800 overflow-hidden mb-8">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
+                <th className="text-left px-4 py-3">Expert</th>
+                <th className="text-left px-4 py-3">Passport/ID</th>
+                <th className="text-left px-4 py-3">Account #</th>
+                <th className="text-left px-4 py-3">SWIFT</th>
+                <th className="text-left px-4 py-3">Bank</th>
+                <th className="text-left px-4 py-3">Status</th>
+                <th className="text-right px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {safeArray(verifications).length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-6 text-center text-zinc-500 text-xs">No expert verifications submitted yet.</td></tr>
+              ) : safeArray(verifications).map((v: any) => (
+                <tr key={v.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
+                  <td className="px-4 py-3 text-zinc-200 font-medium">{v.expertName || `Expert #${v.expertId}`}</td>
+                  <td className="px-4 py-3">
+                    {v.passportFileUrl ? (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs text-blue-400" onClick={() => setSelectedVerification(v)}>
+                        View Document
+                      </Button>
+                    ) : (
+                      <span className="text-zinc-500 text-xs">Not uploaded</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-300 text-xs font-mono">{v.accountNumber || "—"}</td>
+                  <td className="px-4 py-3 text-zinc-300 text-xs font-mono">{v.swiftCode || "—"}</td>
+                  <td className="px-4 py-3 text-zinc-300 text-xs">{v.bankName || "—"}{v.bankAddress ? `, ${v.bankAddress}` : ""}</td>
+                  <td className="px-4 py-3">
+                    <Badge className={`text-xs ${v.verifiedByAdmin ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"}`}>
+                      {v.verifiedByAdmin ? "Verified" : "Pending"}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {!v.verifiedByAdmin && (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10" onClick={() => verifyBankMut.mutate(v.id)}>
+                        <CheckCircle2 className="w-3 h-3 mr-1" /> Verify
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {/* OB-J: Passport/ID Viewer Dialog */}
+      <Dialog open={!!selectedVerification} onOpenChange={() => setSelectedVerification(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Expert Verification Document</DialogTitle>
+          </DialogHeader>
+          {selectedVerification?.passportFileUrl && (
+            <div className="space-y-4">
+              <img src={selectedVerification.passportFileUrl} alt="Passport/ID" className="w-full rounded-lg border" />
+              <div className="text-sm space-y-1 text-zinc-300">
+                <p><strong>Account:</strong> {selectedVerification.accountNumber}</p>
+                <p><strong>SWIFT:</strong> {selectedVerification.swiftCode}</p>
+                <p><strong>Bank:</strong> {selectedVerification.bankName}</p>
+                <p><strong>Address:</strong> {selectedVerification.bankAddress}</p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectedVerification(null)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* OB-J: Withdrawal Requests Section */}
+      <h1 className="text-lg font-semibold mb-4">Withdrawal Requests</h1>
+      <Card className="bg-zinc-900 border-zinc-800 overflow-hidden mb-8">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
+                <th className="text-left px-4 py-3">Invoice #</th>
+                <th className="text-left px-4 py-3">Expert</th>
+                <th className="text-right px-4 py-3">Amount</th>
+                <th className="text-left px-4 py-3">Bank Details</th>
+                <th className="text-left px-4 py-3">Status</th>
+                <th className="text-left px-4 py-3">Requested</th>
+                <th className="text-right px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {safeArray(withdrawalRequests).length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-6 text-center text-zinc-500 text-xs">No withdrawal requests yet.</td></tr>
+              ) : safeArray(withdrawalRequests).map((wr: any) => (
+                <tr key={wr.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-withdrawal-req-${wr.id}`}>
+                  <td className="px-4 py-3 text-zinc-300 font-mono text-xs">{wr.invoiceNumber}</td>
+                  <td className="px-4 py-3 text-zinc-200 font-medium">{wr.expertName || `Expert #${wr.expertId}`}</td>
+                  <td className="px-4 py-3 text-right text-zinc-200 font-medium">${wr.amount}</td>
+                  <td className="px-4 py-3 text-xs text-zinc-400">
+                    {wr.verification ? (
+                      <span>{wr.verification.bankName} — {wr.verification.accountNumber}</span>
+                    ) : (
+                      <span className="text-amber-400">No bank details</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge className={`text-xs ${statusColor[wr.status] || ""}`}>
+                      {wr.status === "pending" ? "Pending" : wr.status === "payout_initiated" ? "Payout Initiated" : wr.status === "completed" ? "Completed" : wr.status}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{new Date(wr.createdAt).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-right">
+                    {wr.status === "pending" && (
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-zinc-500 mb-1">Please make a payout to the expert from your bank account</p>
+                        <Button
+                          size="sm" variant="ghost"
+                          className="h-7 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                          onClick={() => payoutMut.mutate(wr.id)}
+                          disabled={payoutMut.isPending}
+                        >
+                          <DollarSign className="w-3 h-3 mr-1" /> Payout Initiated
+                        </Button>
+                      </div>
+                    )}
+                    {wr.status !== "pending" && (
+                      <span className="text-xs text-zinc-600">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {/* Legacy Withdrawals (from old system) */}
+      <h1 className="text-lg font-semibold mb-4">Legacy Withdrawals</h1>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
         <div className="overflow-x-auto">

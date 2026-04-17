@@ -84,7 +84,7 @@ export default function ExpertPublicProfile() {
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-xl font-bold" data-testid="text-expert-name">{user?.name || `Expert #${expert.id}`}</h1>
+              <h1 className="text-xl font-bold" data-testid="text-expert-name">{user?.name || (expert as any).userName || `Expert #${expert.id}`}</h1>
               {expert.verified === 1 && (
                 <Badge className="bg-green-100 text-green-800 text-xs" data-testid="badge-verified">
                   <CheckCircle className="h-3 w-3 mr-1" />Verified

@@ -144,12 +144,26 @@ app.use((req, res, next) => {
       // Layer 4: Sync SQLite → Cloud SQL (restore already happened pre-listen)
       (async () => {
         try {
-          const { storage: stor } = await import("./storage");
+          const { storage: stor, sqlite: sqlDb } = await import("./storage");
           const allUsers = stor.getAllUsers();
           const allExperts = stor.getAllExperts();
           const allRequests = stor.getAllRequests ? stor.getAllRequests() : [];
-          await syncAllToCloudSql(allUsers, allExperts, allRequests);
-          console.log("[STARTUP] Cloud SQL full sync complete");
+          // OB-A: Gather ALL tables for full sync
+          const reviews = sqlDb.prepare("SELECT * FROM expert_reviews").all() as any[];
+          const messages = sqlDb.prepare("SELECT * FROM messages").all() as any[];
+          const notifications = sqlDb.prepare("SELECT * FROM notifications").all() as any[];
+          const events = sqlDb.prepare("SELECT * FROM request_events").all() as any[];
+          const walletTx = stor.getAllWalletTransactions();
+          const withdrawals = stor.getAllWithdrawals();
+          const invoices = sqlDb.prepare("SELECT * FROM invoices").all() as any[];
+          const verificationTests = sqlDb.prepare("SELECT * FROM verification_tests").all() as any[];
+          const expertVerifications = sqlDb.prepare("SELECT * FROM expert_verifications").all() as any[];
+          const withdrawalRequests = sqlDb.prepare("SELECT * FROM withdrawal_requests").all() as any[];
+          await syncAllToCloudSql(allUsers, allExperts, allRequests, {
+            reviews, messages, notifications, events, walletTx,
+            withdrawals, invoices, verificationTests, expertVerifications, withdrawalRequests,
+          });
+          console.log("[STARTUP] Cloud SQL full sync complete (all tables)");
         } catch (err) {
           console.error("[STARTUP] Cloud SQL sync failed:", err);
         }
@@ -171,7 +185,7 @@ app.use((req, res, next) => {
             // Also sync Cloud SQL when we have new users
             const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
             await syncAllToCloudSql(allUsers, allExperts, allRequests);
-            console.log(`[DAILY] New users detected (${allUsers.length}), report sent + Cloud SQL synced`);
+            console.log(`[HOURLY] New users detected (${allUsers.length}), report sent + Cloud SQL synced`);
           }
         } catch (err) {
           console.error("[DAILY] Failed:", err);
