@@ -89,7 +89,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       years_experience INTEGER DEFAULT 0,
       onboarding_complete INTEGER DEFAULT 0,
       verification_score INTEGER,
-      created_at TIMESTAMP DEFAULT NOW()
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS requests (
       id INTEGER PRIMARY KEY,
@@ -118,7 +119,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       followup_count INTEGER DEFAULT 0,
       followup_deadline TEXT,
       deadline TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS credit_transactions (
       id SERIAL PRIMARY KEY,
@@ -126,7 +128,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       amount INTEGER NOT NULL,
       type TEXT NOT NULL,
       description TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS expert_reviews (
       id SERIAL PRIMARY KEY,
@@ -141,14 +144,16 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       deliverable TEXT,
       created_at TEXT,
       completed_at TEXT,
-      invoiced INTEGER DEFAULT 0
+      invoiced INTEGER DEFAULT 0,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS messages (
       id SERIAL PRIMARY KEY,
       request_id INTEGER NOT NULL,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
-      created_at TEXT
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS wallet_transactions (
       id SERIAL PRIMARY KEY,
@@ -157,7 +162,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       type TEXT NOT NULL,
       stripe_payment_id TEXT,
       description TEXT,
-      created_at TEXT
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS notifications (
       id SERIAL PRIMARY KEY,
@@ -166,7 +172,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       message TEXT NOT NULL,
       read INTEGER DEFAULT 0,
       link TEXT,
-      created_at TEXT
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS request_events (
       id SERIAL PRIMARY KEY,
@@ -175,7 +182,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       actor_id INTEGER,
       actor_name TEXT,
       message TEXT,
-      created_at TEXT
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS withdrawals (
       id SERIAL PRIMARY KEY,
@@ -184,7 +192,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       amount_cents INTEGER NOT NULL,
       status TEXT DEFAULT 'pending',
       created_at TEXT,
-      processed_at TEXT
+      processed_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS invoices (
       id SERIAL PRIMARY KEY,
@@ -195,7 +204,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       net_payout INTEGER NOT NULL,
       status TEXT DEFAULT 'pending',
       line_items TEXT NOT NULL,
-      created_at TEXT
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS verification_tests (
       id SERIAL PRIMARY KEY,
@@ -204,7 +214,8 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       answers TEXT DEFAULT '[]',
       score INTEGER DEFAULT 0,
       passed INTEGER DEFAULT 0,
-      created_at TEXT
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS legal_acceptances (
       id SERIAL PRIMARY KEY,
@@ -213,7 +224,9 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       document_version TEXT DEFAULT 'April 2026',
       accepted_at TEXT,
       ip_address TEXT,
-      user_agent TEXT
+      user_agent TEXT,
+      created_at TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS expert_verifications (
       id SERIAL PRIMARY KEY,
@@ -262,6 +275,27 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS followup_count INTEGER DEFAULT 0",
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS followup_deadline TEXT",
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS deadline TEXT",
+    // Build 35: Add updated_at to all tables, created_at to experts/admins/legal_acceptances
+    "ALTER TABLE experts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE expert_reviews ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE request_events ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE verification_tests ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    "ALTER TABLE legal_acceptances ADD COLUMN IF NOT EXISTS created_at TEXT",
+    "ALTER TABLE legal_acceptances ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    // Backfill NULLs in Cloud SQL
+    "UPDATE users SET created_at = NOW() WHERE created_at IS NULL",
+    "UPDATE users SET updated_at = NOW() WHERE updated_at IS NULL",
+    "UPDATE experts SET created_at = NOW() WHERE created_at IS NULL",
+    "UPDATE experts SET updated_at = NOW() WHERE updated_at IS NULL",
+    "UPDATE legal_acceptances SET created_at = accepted_at WHERE created_at IS NULL",
+    "UPDATE legal_acceptances SET updated_at = accepted_at WHERE updated_at IS NULL",
   ];
   for (const m of migrations) {
     try { await pool.query(m); } catch {}
@@ -307,23 +341,25 @@ export async function writeExpertToCloudSql(expert: {
   rating: number; totalReviews: number; verified: number; categories: string;
   rateTier?: string | null; ratePerMinute?: string | null;
   education: string; yearsExperience: number; onboardingComplete: number;
+  createdAt?: string | null; updatedAt?: string | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, rate_per_minute, rate_tier, education, years_experience, onboarding_complete)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      `INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, rate_per_minute, rate_tier, education, years_experience, onboarding_complete, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
        ON CONFLICT (id) DO UPDATE SET
          bio=EXCLUDED.bio, expertise=EXCLUDED.expertise, credentials=EXCLUDED.credentials,
          rating=EXCLUDED.rating, total_reviews=EXCLUDED.total_reviews, verified=EXCLUDED.verified,
          categories=EXCLUDED.categories, rate_per_minute=EXCLUDED.rate_per_minute,
          rate_tier=EXCLUDED.rate_tier, education=EXCLUDED.education,
-         years_experience=EXCLUDED.years_experience, onboarding_complete=EXCLUDED.onboarding_complete`,
+         years_experience=EXCLUDED.years_experience, onboarding_complete=EXCLUDED.onboarding_complete,
+         updated_at=NOW()`,
       [expert.id, expert.userId, expert.bio, expert.expertise, expert.credentials,
        expert.rating, expert.totalReviews, expert.verified, expert.categories,
        expert.ratePerMinute || null, expert.rateTier || null, expert.education,
-       expert.yearsExperience, expert.onboardingComplete]
+       expert.yearsExperience, expert.onboardingComplete, expert.createdAt || new Date().toISOString()]
     );
     console.log(`[CLOUD-SQL] ✅ Expert ${expert.id} synced`);
   } catch (err) {
@@ -339,21 +375,22 @@ export async function writeRequestToCloudSql(request: {
   clientRating?: number | null; clientRatingComment?: string | null;
   refunded?: number | null; priceTier?: string | null;
   followupCount?: number; followupDeadline?: string | null; deadline?: string | null;
-  createdAt?: string | null;
+  createdAt?: string | null; updatedAt?: string | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+      `INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())
        ON CONFLICT (id) DO UPDATE SET
          expert_id=EXCLUDED.expert_id, status=EXCLUDED.status, credits_cost=EXCLUDED.credits_cost,
          expert_response=EXCLUDED.expert_response, ai_response=EXCLUDED.ai_response,
          attachments=EXCLUDED.attachments, client_rating=EXCLUDED.client_rating,
          client_rating_comment=EXCLUDED.client_rating_comment, refunded=EXCLUDED.refunded,
          price_tier=EXCLUDED.price_tier, followup_count=EXCLUDED.followup_count,
-         followup_deadline=EXCLUDED.followup_deadline, deadline=EXCLUDED.deadline`,
+         followup_deadline=EXCLUDED.followup_deadline, deadline=EXCLUDED.deadline,
+         updated_at=NOW()`,
       [request.id, request.userId, request.expertId || null, request.title,
        request.description || null, request.category, request.tier,
        request.status, request.creditsCost, request.serviceType,
@@ -375,16 +412,18 @@ export async function writeExpertReviewToCloudSql(r: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO expert_reviews (id, request_id, expert_id, status, rating, rating_comment, correct_points, incorrect_points, suggestions, deliverable, created_at, completed_at, invoiced)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      `INSERT INTO expert_reviews (id, request_id, expert_id, status, rating, rating_comment, correct_points, incorrect_points, suggestions, deliverable, created_at, completed_at, invoiced, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        ON CONFLICT (id) DO UPDATE SET
          status=EXCLUDED.status, rating=EXCLUDED.rating, rating_comment=EXCLUDED.rating_comment,
          correct_points=EXCLUDED.correct_points, incorrect_points=EXCLUDED.incorrect_points,
          suggestions=EXCLUDED.suggestions, deliverable=EXCLUDED.deliverable,
-         completed_at=EXCLUDED.completed_at, invoiced=EXCLUDED.invoiced`,
+         completed_at=EXCLUDED.completed_at, invoiced=EXCLUDED.invoiced,
+         updated_at=EXCLUDED.updated_at`,
       [r.id, r.requestId, r.expertId || null, r.status, r.rating || null,
        r.ratingComment || null, r.correctPoints || null, r.incorrectPoints || null,
-       r.suggestions || null, r.deliverable || null, r.createdAt || null, r.completedAt || null, r.invoiced || 0]
+       r.suggestions || null, r.deliverable || null, r.createdAt || null, r.completedAt || null, r.invoiced || 0,
+       r.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] ExpertReview write failed:", (err as Error).message?.substring(0, 100));
@@ -396,10 +435,10 @@ export async function writeMessageToCloudSql(m: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO messages (id, request_id, role, content, created_at)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (id) DO UPDATE SET content=EXCLUDED.content`,
-      [m.id, m.requestId, m.role, m.content, m.createdAt || null]
+      `INSERT INTO messages (id, request_id, role, content, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET content=EXCLUDED.content, updated_at=EXCLUDED.updated_at`,
+      [m.id, m.requestId, m.role, m.content, m.createdAt || null, m.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] Message write failed:", (err as Error).message?.substring(0, 100));
@@ -411,10 +450,10 @@ export async function writeNotificationToCloudSql(n: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO notifications (id, user_id, title, message, read, link, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (id) DO UPDATE SET read=EXCLUDED.read`,
-      [n.id, n.userId, n.title, n.message, n.read || 0, n.link || null, n.createdAt || null]
+      `INSERT INTO notifications (id, user_id, title, message, read, link, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (id) DO UPDATE SET read=EXCLUDED.read, updated_at=EXCLUDED.updated_at`,
+      [n.id, n.userId, n.title, n.message, n.read || 0, n.link || null, n.createdAt || null, n.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] Notification write failed:", (err as Error).message?.substring(0, 100));
@@ -426,10 +465,10 @@ export async function writeRequestEventToCloudSql(e: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO request_events (id, request_id, type, actor_id, actor_name, message, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO request_events (id, request_id, type, actor_id, actor_name, message, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (id) DO NOTHING`,
-      [e.id, e.requestId, e.type, e.actorId || null, e.actorName || null, e.message || null, e.createdAt || null]
+      [e.id, e.requestId, e.type, e.actorId || null, e.actorName || null, e.message || null, e.createdAt || null, e.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] RequestEvent write failed:", (err as Error).message?.substring(0, 100));
@@ -441,10 +480,10 @@ export async function writeWalletTransactionToCloudSql(t: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO wallet_transactions (id, user_id, amount_cents, type, stripe_payment_id, description, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO wallet_transactions (id, user_id, amount_cents, type, stripe_payment_id, description, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (id) DO NOTHING`,
-      [t.id, t.userId, t.amountCents, t.type, t.stripePaymentId || null, t.description || null, t.createdAt || null]
+      [t.id, t.userId, t.amountCents, t.type, t.stripePaymentId || null, t.description || null, t.createdAt || null, t.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] WalletTx write failed:", (err as Error).message?.substring(0, 100));
@@ -456,10 +495,10 @@ export async function writeWithdrawalToCloudSql(w: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO withdrawals (id, user_id, expert_id, amount_cents, status, created_at, processed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, processed_at=EXCLUDED.processed_at`,
-      [w.id, w.userId, w.expertId || null, w.amountCents, w.status, w.createdAt || null, w.processedAt || null]
+      `INSERT INTO withdrawals (id, user_id, expert_id, amount_cents, status, created_at, processed_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, processed_at=EXCLUDED.processed_at, updated_at=EXCLUDED.updated_at`,
+      [w.id, w.userId, w.expertId || null, w.amountCents, w.status, w.createdAt || null, w.processedAt || null, w.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] Withdrawal write failed:", (err as Error).message?.substring(0, 100));
@@ -471,10 +510,10 @@ export async function writeInvoiceToCloudSql(inv: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO invoices (id, expert_id, invoice_number, total_amount, platform_fee, net_payout, status, line_items, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status`,
-      [inv.id, inv.expertId, inv.invoiceNumber, inv.totalAmount, inv.platformFee, inv.netPayout, inv.status, inv.lineItems, inv.createdAt || null]
+      `INSERT INTO invoices (id, expert_id, invoice_number, total_amount, platform_fee, net_payout, status, line_items, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, updated_at=EXCLUDED.updated_at`,
+      [inv.id, inv.expertId, inv.invoiceNumber, inv.totalAmount, inv.platformFee, inv.netPayout, inv.status, inv.lineItems, inv.createdAt || null, inv.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] Invoice write failed:", (err as Error).message?.substring(0, 100));
@@ -486,10 +525,10 @@ export async function writeVerificationTestToCloudSql(t: any): Promise<void> {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO verification_tests (id, expert_id, category, answers, score, passed, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO verification_tests (id, expert_id, category, answers, score, passed, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (id) DO NOTHING`,
-      [t.id, t.expertId, t.category, t.answers, t.score, t.passed, t.createdAt || null]
+      [t.id, t.expertId, t.category, t.answers, t.score, t.passed, t.createdAt || null, t.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] VerificationTest write failed:", (err as Error).message?.substring(0, 100));
@@ -548,8 +587,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
     for (const u of pgUsers) {
       try {
         sqliteDb.prepare(`
-          INSERT OR REPLACE INTO users (id, username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed, photo, login_count, utm_source, utm_medium, utm_campaign)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT OR REPLACE INTO users (id, username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed, photo, login_count, utm_source, utm_medium, utm_campaign, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           u.id,
           u.email || '',       // use email as username if not present
@@ -567,7 +606,9 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
           u.login_count ?? 0,
           u.utm_source || null,
           u.utm_medium || null,
-          u.utm_campaign || null
+          u.utm_campaign || null,
+          u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(),
+          u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString()
         );
       } catch (err) {
         console.error(`[RESTORE] User ${u.id} insert failed:`, (err as Error).message?.substring(0, 80));
@@ -581,8 +622,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
     for (const e of pgExperts) {
       try {
         sqliteDb.prepare(`
-          INSERT OR REPLACE INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT OR REPLACE INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           e.id,
           e.user_id,
@@ -601,7 +642,9 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
           e.onboarding_complete ?? 0,
           null,                  // verification_score
           e.rate_per_minute || null,
-          e.rate_tier || null
+          e.rate_tier || null,
+          e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
+          e.updated_at ? new Date(e.updated_at).toISOString() : new Date().toISOString()
         );
       } catch (err) {
         console.error(`[RESTORE] Expert ${e.id} insert failed:`, (err as Error).message?.substring(0, 80));
@@ -615,8 +658,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
     for (const r of pgRequests) {
       try {
         sqliteDb.prepare(`
-          INSERT OR REPLACE INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT OR REPLACE INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           r.id, r.user_id, r.expert_id || null, r.title, r.description || '',
           r.category, r.tier || 'standard', r.status || 'pending', r.credits_cost ?? 0,
@@ -624,7 +667,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
           r.attachments || '[]', r.client_rating || null, r.client_rating_comment || null,
           r.refunded || 0, r.price_tier || null, r.followup_count || 0,
           r.followup_deadline || null, r.deadline || null,
-          r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+          r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+          r.updated_at ? new Date(r.updated_at).toISOString() : null
         );
       } catch (err) {
         console.error(`[RESTORE] Request ${r.id} insert failed:`, (err as Error).message?.substring(0, 80));
@@ -638,15 +682,16 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
     for (const t of pgTx) {
       try {
         sqliteDb.prepare(`
-          INSERT OR REPLACE INTO credit_transactions (id, user_id, amount, type, description, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT OR REPLACE INTO credit_transactions (id, user_id, amount, type, description, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(
           t.id,
           t.user_id,
           t.amount,
           t.type,
           t.description || '',
-          t.created_at ? new Date(t.created_at).toISOString() : new Date().toISOString()
+          t.created_at ? new Date(t.created_at).toISOString() : new Date().toISOString(),
+          t.updated_at ? new Date(t.updated_at).toISOString() : null
         );
       } catch (err) {
         console.error(`[RESTORE] Transaction ${t.id} insert failed:`, (err as Error).message?.substring(0, 80));
@@ -661,10 +706,11 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM expert_reviews ORDER BY id");
       for (const r of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO expert_reviews (id, request_id, expert_id, status, rating, rating_comment, correct_points, incorrect_points, suggestions, deliverable, created_at, completed_at, invoiced) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          sqliteDb.prepare(`INSERT OR REPLACE INTO expert_reviews (id, request_id, expert_id, status, rating, rating_comment, correct_points, incorrect_points, suggestions, deliverable, created_at, completed_at, invoiced, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
             r.id, r.request_id, r.expert_id || null, r.status || 'pending', r.rating || null,
             r.rating_comment || null, r.correct_points || null, r.incorrect_points || null,
-            r.suggestions || null, r.deliverable || null, r.created_at || null, r.completed_at || null, r.invoiced || 0
+            r.suggestions || null, r.deliverable || null, r.created_at || null, r.completed_at || null, r.invoiced || 0,
+            r.updated_at || null
           );
         } catch {}
       }
@@ -676,8 +722,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM messages ORDER BY id");
       for (const m of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO messages (id, request_id, role, content, created_at) VALUES (?,?,?,?,?)`).run(
-            m.id, m.request_id, m.role, m.content, m.created_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO messages (id, request_id, role, content, created_at, updated_at) VALUES (?,?,?,?,?,?)`).run(
+            m.id, m.request_id, m.role, m.content, m.created_at || null, m.updated_at || null
           );
         } catch {}
       }
@@ -689,8 +735,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM wallet_transactions ORDER BY id");
       for (const t of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO wallet_transactions (id, user_id, amount_cents, type, stripe_payment_id, description, created_at) VALUES (?,?,?,?,?,?,?)`).run(
-            t.id, t.user_id, t.amount_cents, t.type, t.stripe_payment_id || null, t.description || null, t.created_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO wallet_transactions (id, user_id, amount_cents, type, stripe_payment_id, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+            t.id, t.user_id, t.amount_cents, t.type, t.stripe_payment_id || null, t.description || null, t.created_at || null, t.updated_at || null
           );
         } catch {}
       }
@@ -702,8 +748,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM notifications ORDER BY id");
       for (const n of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO notifications (id, user_id, title, message, read, link, created_at) VALUES (?,?,?,?,?,?,?)`).run(
-            n.id, n.user_id, n.title, n.message, n.read || 0, n.link || null, n.created_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO notifications (id, user_id, title, message, read, link, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+            n.id, n.user_id, n.title, n.message, n.read || 0, n.link || null, n.created_at || null, n.updated_at || null
           );
         } catch {}
       }
@@ -715,8 +761,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM request_events ORDER BY id");
       for (const e of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO request_events (id, request_id, type, actor_id, actor_name, message, created_at) VALUES (?,?,?,?,?,?,?)`).run(
-            e.id, e.request_id, e.type, e.actor_id || null, e.actor_name || null, e.message || null, e.created_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO request_events (id, request_id, type, actor_id, actor_name, message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+            e.id, e.request_id, e.type, e.actor_id || null, e.actor_name || null, e.message || null, e.created_at || null, e.updated_at || null
           );
         } catch {}
       }
@@ -728,8 +774,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM withdrawals ORDER BY id");
       for (const w of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO withdrawals (id, user_id, expert_id, amount_cents, status, created_at, processed_at) VALUES (?,?,?,?,?,?,?)`).run(
-            w.id, w.user_id, w.expert_id || null, w.amount_cents, w.status, w.created_at || null, w.processed_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO withdrawals (id, user_id, expert_id, amount_cents, status, created_at, processed_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+            w.id, w.user_id, w.expert_id || null, w.amount_cents, w.status, w.created_at || null, w.processed_at || null, w.updated_at || null
           );
         } catch {}
       }
@@ -741,8 +787,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM invoices ORDER BY id");
       for (const inv of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO invoices (id, expert_id, invoice_number, total_amount, platform_fee, net_payout, status, line_items, created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(
-            inv.id, inv.expert_id, inv.invoice_number, inv.total_amount, inv.platform_fee, inv.net_payout, inv.status, inv.line_items, inv.created_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO invoices (id, expert_id, invoice_number, total_amount, platform_fee, net_payout, status, line_items, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+            inv.id, inv.expert_id, inv.invoice_number, inv.total_amount, inv.platform_fee, inv.net_payout, inv.status, inv.line_items, inv.created_at || null, inv.updated_at || null
           );
         } catch {}
       }
@@ -754,8 +800,8 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM verification_tests ORDER BY id");
       for (const t of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO verification_tests (id, expert_id, category, answers, score, passed, created_at) VALUES (?,?,?,?,?,?,?)`).run(
-            t.id, t.expert_id, t.category, t.answers || '[]', t.score || 0, t.passed || 0, t.created_at || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO verification_tests (id, expert_id, category, answers, score, passed, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+            t.id, t.expert_id, t.category, t.answers || '[]', t.score || 0, t.passed || 0, t.created_at || null, t.updated_at || null
           );
         } catch {}
       }
@@ -767,8 +813,9 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       const result = await pool.query("SELECT * FROM legal_acceptances ORDER BY id");
       for (const l of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO legal_acceptances (id, user_id, document_type, document_version, accepted_at, ip_address, user_agent) VALUES (?,?,?,?,?,?,?)`).run(
-            l.id, l.user_id, l.document_type, l.document_version || 'April 2026', l.accepted_at || null, l.ip_address || null, l.user_agent || null
+          sqliteDb.prepare(`INSERT OR REPLACE INTO legal_acceptances (id, user_id, document_type, document_version, accepted_at, ip_address, user_agent, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(
+            l.id, l.user_id, l.document_type, l.document_version || 'April 2026', l.accepted_at || null, l.ip_address || null, l.user_agent || null,
+            l.created_at || l.accepted_at || null, l.updated_at || l.accepted_at || null
           );
         } catch {}
       }
@@ -820,16 +867,17 @@ export async function writeCreditTransactionToCloudSql(tx: {
     if (!pool) return;
     if (tx.id) {
       await pool.query(
-        `INSERT INTO credit_transactions (id, user_id, amount, type, description, created_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+        `INSERT INTO credit_transactions (id, user_id, amount, type, description, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET
-           amount = EXCLUDED.amount, type = EXCLUDED.type, description = EXCLUDED.description`,
+           amount = EXCLUDED.amount, type = EXCLUDED.type, description = EXCLUDED.description,
+           updated_at = NOW()`,
         [tx.id, tx.userId, tx.amount, tx.type, tx.description]
       );
     } else {
       await pool.query(
-        `INSERT INTO credit_transactions (user_id, amount, type, description, created_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
+        `INSERT INTO credit_transactions (user_id, amount, type, description, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NOW(), NOW())`,
         [tx.userId, tx.amount, tx.type, tx.description]
       );
     }
