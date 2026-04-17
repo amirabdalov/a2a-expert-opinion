@@ -1852,18 +1852,69 @@ export async function registerRoutes(
     return res.json(reviews);
   });
 
+  // ─── Helper: synthesize ExpertReview-like objects from the requests table ───
+  // The expert_reviews table may be empty if the workflow used /api/requests/:id/claim
+  // instead of /api/reviews/:id/claim. This helper ensures the expert dashboard still
+  // shows data by generating review objects from the requests table.
+  function synthesizeReviewFromRequest(r: any): any {
+    // Map request status to review-like status
+    let reviewStatus = r.status;
+    if (r.status === "awaiting_followup" || r.status === "completed") {
+      reviewStatus = "completed";
+    } else if (r.status === "in_progress" || r.status === "under_review") {
+      reviewStatus = "in_progress";
+    } else if (r.status === "pending") {
+      reviewStatus = "pending";
+    }
+    return {
+      id: r.id,          // use request ID as the review ID
+      requestId: r.id,
+      expertId: r.expertId ?? null,
+      status: reviewStatus,
+      rating: r.clientRating ?? null,
+      ratingComment: r.clientRatingComment ?? null,
+      correctPoints: null,
+      incorrectPoints: null,
+      suggestions: null,
+      deliverable: r.expertResponse ?? null,
+      createdAt: r.createdAt,
+      completedAt: (reviewStatus === "completed") ? (r.updatedAt || r.createdAt) : null,
+      invoiced: 0,
+      updatedAt: r.updatedAt || r.createdAt,
+    };
+  }
+
   app.get("/api/reviews/request/:requestId", async (req, res) => {
-    const reviews = storage.getReviewsByRequest(parseInt(req.params.requestId));
+    let reviews = storage.getReviewsByRequest(parseInt(req.params.requestId));
+    // Fallback: synthesize from the request itself if no expert_reviews exist
+    if (reviews.length === 0) {
+      const request = storage.getRequest(parseInt(req.params.requestId));
+      if (request && request.expertId) {
+        reviews = [synthesizeReviewFromRequest(request)] as any;
+      }
+    }
     return res.json(reviews);
   });
 
   app.get("/api/reviews/expert/:expertId", async (req, res) => {
-    const reviews = storage.getReviewsByExpert(parseInt(req.params.expertId));
+    let reviews = storage.getReviewsByExpert(parseInt(req.params.expertId));
+    // Fallback: synthesize from requests assigned to this expert
+    if (reviews.length === 0) {
+      const expertRequests = storage.getRequestsByExpert(parseInt(req.params.expertId));
+      reviews = expertRequests
+        .filter((r: any) => r.status !== "pending") // only show claimed/active/completed
+        .map((r: any) => synthesizeReviewFromRequest(r)) as any;
+    }
     return res.json(reviews);
   });
 
   app.get("/api/reviews/pending", async (req, res) => {
     let reviews = storage.getPendingReviews();
+    // Fallback: synthesize from pending requests if no expert_reviews exist
+    if (reviews.length === 0) {
+      const pendingRequests = storage.getPendingRequests();
+      reviews = pendingRequests.map((r: any) => synthesizeReviewFromRequest(r)) as any;
+    }
     // Expert matching: filter by expert's categories if expertId is provided
     const expertId = req.query.expertId ? parseInt(req.query.expertId as string) : null;
     if (expertId) {
@@ -1886,7 +1937,7 @@ export async function registerRoutes(
       const tier = (req.priceTier || req.tier || "standard").toLowerCase();
       const takeRate = TAKE_RATES[tier] ?? 0.50;
       const allRevs = storage.getReviewsByRequest(rev.requestId);
-      const perReviewCost = req.creditsCost / Math.max(allRevs.length, 1);
+      const perReviewCost = req.creditsCost / Math.max(allRevs.length || 1, 1);
       const expertPayout = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
       return { ...rev, expertPayout };
     });
@@ -1895,8 +1946,47 @@ export async function registerRoutes(
 
   app.post("/api/reviews/:id/claim", async (req, res) => {
     const { expertId } = req.body;
-    const review = storage.getExpertReview(parseInt(req.params.id));
-    if (!review) return res.status(404).json({ error: true, message: "Review not found" });
+    let review = storage.getExpertReview(parseInt(req.params.id));
+
+    // Fallback: if no expert_review exists, the ID is actually a request ID
+    // (from synthesized reviews). Create a real expert_review + update the request.
+    if (!review) {
+      const request = storage.getRequest(parseInt(req.params.id));
+      if (!request) return res.status(404).json({ error: true, message: "Review not found" });
+      if (request.status !== "pending") return res.status(400).json({ error: true, message: "Request already claimed" });
+
+      // Create the expert_review record
+      const newReview = storage.createExpertReview({
+        requestId: request.id,
+        expertId,
+        status: "in_progress",
+      });
+      // Update the request
+      storage.updateRequest(request.id, { expertId, status: "in_progress" });
+
+      // Log + notify
+      const expert = expertId ? storage.getExpert(expertId) : null;
+      const expertUser = expert ? storage.getUser(expert.userId) : null;
+      logRequestEvent(request.id, "claimed", expertUser?.id, expertUser?.name || "Expert");
+      storage.createNotification({
+        userId: request.userId,
+        title: "Expert Claimed Your Request",
+        message: `An expert has started reviewing "${request.title}".`,
+        read: 0,
+        link: `/dashboard?request=${request.id}`,
+        createdAt: new Date().toISOString(),
+      });
+      notifyUser(request.userId, {
+        type: "claimed",
+        title: "Expert Claimed Your Request",
+        message: `${expertUser?.name || "An expert"} is now reviewing "${request.title}"`,
+        requestId: request.id,
+      });
+      syncRequestToCloud(request.id);
+      triggerBackup();
+      return res.json(newReview);
+    }
+
     if (review.status !== "pending") return res.status(400).json({ error: true, message: "Review already claimed" });
 
     const updated = storage.updateExpertReview(review.id, {
@@ -1935,8 +2025,17 @@ export async function registerRoutes(
   });
 
   app.patch("/api/reviews/:id", async (req, res) => {
-    const review = storage.getExpertReview(parseInt(req.params.id));
-    if (!review) return res.status(404).json({ error: true, message: "Review not found" });
+    let review = storage.getExpertReview(parseInt(req.params.id));
+    // Fallback: if no expert_review exists, the ID is a request ID (synthesized review)
+    if (!review) {
+      const request = storage.getRequest(parseInt(req.params.id));
+      if (!request || !request.expertId) return res.status(404).json({ error: true, message: "Review not found" });
+      review = storage.createExpertReview({
+        requestId: request.id,
+        expertId: request.expertId,
+        status: "in_progress",
+      });
+    }
 
     const { rating, ratingComment, correctPoints, incorrectPoints, suggestions, deliverable } = req.body;
 
@@ -2053,8 +2152,18 @@ export async function registerRoutes(
         return res.status(400).json({ error: true, message: "deliverable is required" });
       }
 
-      const review = storage.getExpertReview(reviewId);
-      if (!review) return res.status(404).json({ error: true, message: "Review not found" });
+      let review = storage.getExpertReview(reviewId);
+      // Fallback: if no expert_review exists, the ID is a request ID (from synthesized reviews).
+      // Create a real expert_review from the request and proceed.
+      if (!review) {
+        const request = storage.getRequest(reviewId);
+        if (!request || !request.expertId) return res.status(404).json({ error: true, message: "Review not found" });
+        review = storage.createExpertReview({
+          requestId: request.id,
+          expertId: request.expertId,
+          status: "in_progress",
+        });
+      }
       if (review.status === "completed") {
         return res.status(400).json({ error: true, message: "Review already completed" });
       }
