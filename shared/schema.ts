@@ -17,6 +17,8 @@ export const users = sqliteTable("users", {
   tourCompleted: integer("tour_completed").notNull().default(0),
   photo: text("photo"),
   loginCount: integer("login_count").notNull().default(0),
+  createdAt: text("created_at"),
+  updatedAt: text("updated_at"),
 });
 
 export const sessions = sqliteTable("sessions", {
@@ -24,6 +26,7 @@ export const sessions = sqliteTable("sessions", {
   userId: integer("user_id").notNull(),
   expiresAt: text("expires_at").notNull(),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
 export const admins = sqliteTable("admins", {
@@ -31,6 +34,8 @@ export const admins = sqliteTable("admins", {
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
   name: text("name").notNull(),
+  createdAt: text("created_at"),
+  updatedAt: text("updated_at"),
 });
 
 export const experts = sqliteTable("experts", {
@@ -52,6 +57,8 @@ export const experts = sqliteTable("experts", {
   verificationScore: integer("verification_score"),
   ratePerMinute: text("rate_per_minute"),
   rateTier: text("rate_tier"),
+  createdAt: text("created_at"),
+  updatedAt: text("updated_at"),
 });
 
 export const verificationTests = sqliteTable("verification_tests", {
@@ -62,6 +69,7 @@ export const verificationTests = sqliteTable("verification_tests", {
   score: integer("score").notNull().default(0),
   passed: integer("passed").notNull().default(0),
   createdAt: text("created_at").notNull().default("now"),
+  updatedAt: text("updated_at"),
 });
 
 export const requests = sqliteTable("requests", {
@@ -90,6 +98,7 @@ export const requests = sqliteTable("requests", {
   clientRating: integer("client_rating"),
   clientRatingComment: text("client_rating_comment"),
   refunded: integer("refunded").default(0),
+  updatedAt: text("updated_at"),
 });
 
 export const expertReviews = sqliteTable("expert_reviews", {
@@ -106,6 +115,7 @@ export const expertReviews = sqliteTable("expert_reviews", {
   createdAt: text("created_at").notNull().default("now"),
   completedAt: text("completed_at"),
   invoiced: integer("invoiced").notNull().default(0),
+  updatedAt: text("updated_at"),
 });
 
 export const messages = sqliteTable("messages", {
@@ -114,6 +124,7 @@ export const messages = sqliteTable("messages", {
   role: text("role").notNull(),
   content: text("content").notNull(),
   createdAt: text("created_at").notNull().default("now"),
+  updatedAt: text("updated_at"),
 });
 
 export const creditTransactions = sqliteTable("credit_transactions", {
@@ -123,6 +134,7 @@ export const creditTransactions = sqliteTable("credit_transactions", {
   type: text("type").notNull(),
   description: text("description").notNull(),
   createdAt: text("created_at").notNull().default("now"),
+  updatedAt: text("updated_at"),
 });
 
 export const walletTransactions = sqliteTable("wallet_transactions", {
@@ -133,6 +145,7 @@ export const walletTransactions = sqliteTable("wallet_transactions", {
   stripePaymentId: text("stripe_payment_id"),
   description: text("description"),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
 export const notifications = sqliteTable("notifications", {
@@ -143,6 +156,7 @@ export const notifications = sqliteTable("notifications", {
   read: integer("read").notNull().default(0),
   link: text("link"),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
 export const requestEvents = sqliteTable("request_events", {
@@ -153,6 +167,7 @@ export const requestEvents = sqliteTable("request_events", {
   actorName: text("actor_name"),
   message: text("message"),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
 export const withdrawals = sqliteTable("withdrawals", {
@@ -163,6 +178,7 @@ export const withdrawals = sqliteTable("withdrawals", {
   status: text("status").notNull().default("pending"),
   createdAt: text("created_at").notNull(),
   processedAt: text("processed_at"),
+  updatedAt: text("updated_at"),
 });
 
 export const invoices = sqliteTable("invoices", {
@@ -175,22 +191,23 @@ export const invoices = sqliteTable("invoices", {
   status: text("status").notNull().default("pending"),
   lineItems: text("line_items").notNull(),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
 // Insert schemas
-export const insertUserSchema = createInsertSchema(users).omit({ id: true });
-export const insertExpertSchema = createInsertSchema(experts).omit({ id: true });
-export const insertRequestSchema = createInsertSchema(requests).omit({ id: true, createdAt: true });
-export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });
-export const insertCreditTransactionSchema = createInsertSchema(creditTransactions).omit({ id: true, createdAt: true });
-export const insertExpertReviewSchema = createInsertSchema(expertReviews).omit({ id: true, createdAt: true });
-export const insertVerificationTestSchema = createInsertSchema(verificationTests).omit({ id: true, createdAt: true });
-export const insertWalletTransactionSchema = createInsertSchema(walletTransactions).omit({ id: true });
-export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true });
-export const insertAdminSchema = createInsertSchema(admins).omit({ id: true });
-export const insertRequestEventSchema = createInsertSchema(requestEvents).omit({ id: true });
-export const insertWithdrawalSchema = createInsertSchema(withdrawals).omit({ id: true });
-export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertExpertSchema = createInsertSchema(experts).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertRequestSchema = createInsertSchema(requests).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertCreditTransactionSchema = createInsertSchema(creditTransactions).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertExpertReviewSchema = createInsertSchema(expertReviews).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertVerificationTestSchema = createInsertSchema(verificationTests).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertWalletTransactionSchema = createInsertSchema(walletTransactions).omit({ id: true, updatedAt: true });
+export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true, updatedAt: true });
+export const insertAdminSchema = createInsertSchema(admins).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertRequestEventSchema = createInsertSchema(requestEvents).omit({ id: true, updatedAt: true });
+export const insertWithdrawalSchema = createInsertSchema(withdrawals).omit({ id: true, updatedAt: true });
+export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, updatedAt: true });
 // pageViews and registrationSources tables must be defined before insert schemas
 export const pageViews = sqliteTable("page_views", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -204,6 +221,7 @@ export const pageViews = sqliteTable("page_views", {
   ipAddress: text("ip_address"),
   sessionId: text("session_id"),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
 export const registrationSources = sqliteTable("registration_sources", {
@@ -216,10 +234,11 @@ export const registrationSources = sqliteTable("registration_sources", {
   referrer: text("referrer"),
   landingPage: text("landing_page"),
   createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
 });
 
-export const insertPageViewSchema = createInsertSchema(pageViews).omit({ id: true });
-export const insertRegistrationSourceSchema = createInsertSchema(registrationSources).omit({ id: true });
+export const insertPageViewSchema = createInsertSchema(pageViews).omit({ id: true, updatedAt: true });
+export const insertRegistrationSourceSchema = createInsertSchema(registrationSources).omit({ id: true, updatedAt: true });
 
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -291,6 +310,8 @@ export const legalAcceptances = sqliteTable("legal_acceptances", {
   acceptedAt: text("accepted_at").notNull(),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
+  createdAt: text("created_at"),
+  updatedAt: text("updated_at"),
 });
 
 export type LegalAcceptance = typeof legalAcceptances.$inferSelect;

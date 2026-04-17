@@ -346,6 +346,40 @@ try { sqlite.exec("ALTER TABLE requests ADD COLUMN followup_count INTEGER NOT NU
 try { sqlite.exec("ALTER TABLE requests ADD COLUMN followup_deadline TEXT"); } catch {}
 // OB-B: Login count column
 try { sqlite.exec("ALTER TABLE users ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0"); } catch {}
+// Build 35: Add created_at and updated_at timestamp columns to all tables
+try { sqlite.exec("ALTER TABLE users ADD COLUMN created_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE users ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE admins ADD COLUMN created_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE admins ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE experts ADD COLUMN created_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE experts ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE sessions ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE verification_tests ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE requests ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE expert_reviews ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE messages ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE wallet_transactions ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE notifications ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE request_events ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE withdrawals ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE invoices ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE page_views ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE registration_sources ADD COLUMN updated_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE legal_acceptances ADD COLUMN created_at TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE legal_acceptances ADD COLUMN updated_at TEXT"); } catch {}
+// Build 35: Backfill NULL timestamps on existing rows
+try {
+  const now = new Date().toISOString();
+  sqlite.exec(`UPDATE users SET created_at = '${now}' WHERE created_at IS NULL`);
+  sqlite.exec(`UPDATE users SET updated_at = '${now}' WHERE updated_at IS NULL`);
+  sqlite.exec(`UPDATE admins SET created_at = '${now}' WHERE created_at IS NULL`);
+  sqlite.exec(`UPDATE admins SET updated_at = '${now}' WHERE updated_at IS NULL`);
+  sqlite.exec(`UPDATE experts SET created_at = '${now}' WHERE created_at IS NULL`);
+  sqlite.exec(`UPDATE experts SET updated_at = '${now}' WHERE updated_at IS NULL`);
+  sqlite.exec(`UPDATE legal_acceptances SET created_at = accepted_at WHERE created_at IS NULL`);
+  sqlite.exec(`UPDATE legal_acceptances SET updated_at = accepted_at WHERE updated_at IS NULL`);
+} catch {}
 console.log("[DB] All tables ensured.");
 
 export const db = drizzle(sqlite);
@@ -464,10 +498,11 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(users).all();
   }
   createUser(user: InsertUser): User {
-    return db.insert(users).values(user).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(users).values({ ...user, createdAt: now, updatedAt: now } as any).returning().get();
   }
   updateUser(id: number, data: Partial<InsertUser>): User | undefined {
-    return db.update(users).set(data).where(eq(users.id, id)).returning().get();
+    return db.update(users).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(users.id, id)).returning().get();
   }
 
   // Experts
@@ -481,10 +516,11 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(experts).all();
   }
   createExpert(expert: InsertExpert): Expert {
-    return db.insert(experts).values(expert).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(experts).values({ ...expert, createdAt: now, updatedAt: now } as any).returning().get();
   }
   updateExpert(id: number, data: Partial<InsertExpert>): Expert | undefined {
-    return db.update(experts).set(data).where(eq(experts.id, id)).returning().get();
+    return db.update(experts).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(experts.id, id)).returning().get();
   }
 
   // Requests
@@ -507,13 +543,15 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(requests).where(eq(requests.status, "pending")).orderBy(desc(requests.id)).all();
   }
   createRequest(request: InsertRequest): ExpertRequest {
+    const now = new Date().toISOString();
     return db.insert(requests).values({
       ...request,
-      createdAt: new Date().toISOString(),
-    }).returning().get();
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning().get();
   }
   updateRequest(id: number, data: Partial<InsertRequest>): ExpertRequest | undefined {
-    return db.update(requests).set(data).where(eq(requests.id, id)).returning().get();
+    return db.update(requests).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(requests.id, id)).returning().get();
   }
 
   // Messages
@@ -521,10 +559,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(messages).where(eq(messages.requestId, requestId)).all();
   }
   createMessage(message: InsertMessage): Message {
+    const now = new Date().toISOString();
     return db.insert(messages).values({
       ...message,
-      createdAt: new Date().toISOString(),
-    }).returning().get();
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning().get();
   }
 
   // Credit transactions
@@ -535,10 +575,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(creditTransactions).orderBy(desc(creditTransactions.id)).all();
   }
   createTransaction(tx: InsertCreditTransaction): CreditTransaction {
+    const now = new Date().toISOString();
     return db.insert(creditTransactions).values({
       ...tx,
-      createdAt: new Date().toISOString(),
-    }).returning().get();
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning().get();
   }
 
   // Expert Reviews
@@ -555,21 +597,25 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(expertReviews).where(eq(expertReviews.status, "pending")).orderBy(desc(expertReviews.id)).all();
   }
   createExpertReview(review: InsertExpertReview): ExpertReview {
+    const now = new Date().toISOString();
     return db.insert(expertReviews).values({
       ...review,
-      createdAt: new Date().toISOString(),
-    }).returning().get();
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning().get();
   }
   updateExpertReview(id: number, data: Partial<InsertExpertReview>): ExpertReview | undefined {
-    return db.update(expertReviews).set(data).where(eq(expertReviews.id, id)).returning().get();
+    return db.update(expertReviews).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(expertReviews.id, id)).returning().get();
   }
 
   // Verification Tests
   createVerificationTest(test: InsertVerificationTest): VerificationTest {
+    const now = new Date().toISOString();
     return db.insert(verificationTests).values({
       ...test,
-      createdAt: new Date().toISOString(),
-    }).returning().get();
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning().get();
   }
   getVerificationTestsByExpert(expertId: number): VerificationTest[] {
     return db.select().from(verificationTests).where(eq(verificationTests.expertId, expertId)).orderBy(desc(verificationTests.id)).all();
@@ -612,7 +658,8 @@ export class DatabaseStorage implements IStorage {
 
   // Wallet transactions
   createWalletTransaction(tx: InsertWalletTransaction): WalletTransaction {
-    return db.insert(walletTransactions).values(tx).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(walletTransactions).values({ ...tx, updatedAt: now } as any).returning().get();
   }
   getWalletTransactionsByUser(userId: number): WalletTransaction[] {
     return db.select().from(walletTransactions).where(eq(walletTransactions.userId, userId)).orderBy(desc(walletTransactions.id)).all();
@@ -623,13 +670,14 @@ export class DatabaseStorage implements IStorage {
 
   // Notifications
   createNotification(n: InsertNotification): Notification {
-    return db.insert(notifications).values(n).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(notifications).values({ ...n, updatedAt: now } as any).returning().get();
   }
   getNotificationsByUser(userId: number): Notification[] {
     return db.select().from(notifications).where(eq(notifications.userId, userId)).orderBy(desc(notifications.id)).all();
   }
   markNotificationRead(id: number): Notification | undefined {
-    return db.update(notifications).set({ read: 1 }).where(eq(notifications.id, id)).returning().get();
+    return db.update(notifications).set({ read: 1, updatedAt: new Date().toISOString() }).where(eq(notifications.id, id)).returning().get();
   }
   getUnreadCount(userId: number): number {
     const result = db.select({ count: sql<number>`count(*)` })
@@ -641,7 +689,8 @@ export class DatabaseStorage implements IStorage {
 
   // Admins
   createAdmin(a: InsertAdmin): Admin {
-    return db.insert(admins).values(a).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(admins).values({ ...a, createdAt: now, updatedAt: now } as any).returning().get();
   }
   getAdminByEmail(email: string): Admin | undefined {
     return db.select().from(admins).where(eq(admins.email, email)).get();
@@ -663,7 +712,8 @@ export class DatabaseStorage implements IStorage {
 
   // Request Events
   createRequestEvent(e: InsertRequestEvent): RequestEvent {
-    return db.insert(requestEvents).values(e).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(requestEvents).values({ ...e, updatedAt: now } as any).returning().get();
   }
   getRequestEventsByRequest(requestId: number): RequestEvent[] {
     return db.select().from(requestEvents).where(eq(requestEvents.requestId, requestId)).all();
@@ -671,7 +721,8 @@ export class DatabaseStorage implements IStorage {
 
   // Withdrawals
   createWithdrawal(w: InsertWithdrawal): Withdrawal {
-    return db.insert(withdrawals).values(w).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(withdrawals).values({ ...w, updatedAt: now } as any).returning().get();
   }
   getAllWithdrawals(): Withdrawal[] {
     return db.select().from(withdrawals).orderBy(desc(withdrawals.id)).all();
@@ -680,12 +731,13 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(withdrawals).where(eq(withdrawals.status, "pending")).orderBy(desc(withdrawals.id)).all();
   }
   updateWithdrawal(id: number, data: Partial<InsertWithdrawal>): Withdrawal | undefined {
-    return db.update(withdrawals).set(data).where(eq(withdrawals.id, id)).returning().get();
+    return db.update(withdrawals).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(withdrawals.id, id)).returning().get();
   }
 
   // Invoices
   createInvoice(inv: InsertInvoice): Invoice {
-    return db.insert(invoices).values(inv).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(invoices).values({ ...inv, updatedAt: now } as any).returning().get();
   }
   getInvoicesByExpert(expertId: number): Invoice[] {
     return db.select().from(invoices).where(eq(invoices.expertId, expertId)).orderBy(desc(invoices.id)).all();
@@ -702,7 +754,7 @@ export class DatabaseStorage implements IStorage {
   }
   markReviewsInvoiced(reviewIds: number[]): void {
     if (reviewIds.length === 0) return;
-    db.update(expertReviews).set({ invoiced: 1 }).where(inArray(expertReviews.id, reviewIds)).run();
+    db.update(expertReviews).set({ invoiced: 1, updatedAt: new Date().toISOString() }).where(inArray(expertReviews.id, reviewIds)).run();
   }
 
   // FIX-4: All transactions with take rate details
@@ -754,13 +806,14 @@ export class DatabaseStorage implements IStorage {
 
   // Expert Verifications (OB-J)
   createExpertVerification(v: InsertExpertVerification): ExpertVerification {
-    return db.insert(expertVerifications).values(v).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(expertVerifications).values({ ...v, updatedAt: now } as any).returning().get();
   }
   getExpertVerificationByExpert(expertId: number): ExpertVerification | undefined {
     return db.select().from(expertVerifications).where(eq(expertVerifications.expertId, expertId)).get();
   }
   updateExpertVerification(id: number, data: Partial<InsertExpertVerification>): ExpertVerification | undefined {
-    return db.update(expertVerifications).set(data).where(eq(expertVerifications.id, id)).returning().get();
+    return db.update(expertVerifications).set({ ...data, updatedAt: new Date().toISOString() }).where(eq(expertVerifications.id, id)).returning().get();
   }
   getAllExpertVerifications(): ExpertVerification[] {
     return db.select().from(expertVerifications).orderBy(desc(expertVerifications.id)).all();
@@ -768,7 +821,8 @@ export class DatabaseStorage implements IStorage {
 
   // Withdrawal Requests (OB-J)
   createWithdrawalRequest(w: InsertWithdrawalRequest): WithdrawalRequest {
-    return db.insert(withdrawalRequests).values(w).returning().get();
+    const now = new Date().toISOString();
+    return db.insert(withdrawalRequests).values({ ...w, updatedAt: now } as any).returning().get();
   }
   getWithdrawalRequestsByExpert(expertId: number): WithdrawalRequest[] {
     return db.select().from(withdrawalRequests).where(eq(withdrawalRequests.expertId, expertId)).orderBy(desc(withdrawalRequests.id)).all();
@@ -777,7 +831,7 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(withdrawalRequests).orderBy(desc(withdrawalRequests.id)).all();
   }
   updateWithdrawalRequest(id: number, data: Partial<InsertWithdrawalRequest>): WithdrawalRequest | undefined {
-    return db.update(withdrawalRequests).set(data).where(eq(withdrawalRequests.id, id)).returning().get();
+    return db.update(withdrawalRequests).set({ ...data, updatedAt: new Date().toISOString() }).where(eq(withdrawalRequests.id, id)).returning().get();
   }
 }
 

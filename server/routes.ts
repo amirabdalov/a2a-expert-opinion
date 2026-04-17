@@ -455,8 +455,8 @@ export async function registerRoutes(
       const ua = req.headers["user-agent"] || "unknown";
       const now = new Date().toISOString();
       try {
-        sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?)").run(user.id, "terms_of_use", "April 2026", now, ip, ua);
-        sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?)").run(user.id, "privacy_policy", "April 2026", now, ip, ua);
+        sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(user.id, "terms_of_use", "April 2026", now, ip, ua, now, now);
+        sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(user.id, "privacy_policy", "April 2026", now, ip, ua, now, now);
         console.log(`[LEGAL] Terms accepted by user ${user.id} from ${ip}`);
       } catch(e) { console.error("[LEGAL] Failed to log acceptance:", e); }
       storage.createNotification({
@@ -792,10 +792,11 @@ export async function registerRoutes(
 
   app.post("/api/track/pageview", (req, res) => {
     const { path, utmSource, utmMedium, utmCampaign, utmContent, referrer, sessionId } = req.body;
-    sqlite.prepare("INSERT INTO page_views (path, utm_source, utm_medium, utm_campaign, utm_content, referrer, user_agent, ip_address, session_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(
+    const pvNow = new Date().toISOString();
+    sqlite.prepare("INSERT INTO page_views (path, utm_source, utm_medium, utm_campaign, utm_content, referrer, user_agent, ip_address, session_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(
       path, utmSource || null, utmMedium || null, utmCampaign || null, utmContent || null,
       referrer || null, req.headers["user-agent"] || null, req.ip || null, sessionId || null,
-      new Date().toISOString()
+      pvNow, pvNow
     );
     res.json({ ok: true });
   });
