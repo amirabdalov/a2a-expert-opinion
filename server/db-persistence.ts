@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
 
 const BUCKET = "a2a-global-data";
-const OBJECT = "db/data.db";
+const GCS_PREFIX = process.env.GCS_PREFIX || "";
+const OBJECT = `${GCS_PREFIX}db/data.db`;
 const DB_PATH = resolve("data.db");
 
 async function getGcpToken(): Promise<string | null> {

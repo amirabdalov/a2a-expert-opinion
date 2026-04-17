@@ -90,10 +90,14 @@ async function getGcpToken(): Promise<string | null> {
   }
 }
 
+const GCS_BUCKET = process.env.GCS_BUCKET || "a2a-global-data";
+const GCS_PREFIX = process.env.GCS_PREFIX || "";
+
 async function uploadToGcs(path: string, data: Buffer, contentType: string): Promise<void> {
   const token = await getGcpToken();
   if (!token) throw new Error("No GCS token available");
-  const url = `https://storage.googleapis.com/upload/storage/v1/b/a2a-global-data/o?uploadType=media&name=${encodeURIComponent(path)}`;
+  const fullPath = `${GCS_PREFIX}${path}`;
+  const url = `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?uploadType=media&name=${encodeURIComponent(fullPath)}`;
   const resp = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType },
@@ -105,7 +109,8 @@ async function uploadToGcs(path: string, data: Buffer, contentType: string): Pro
 async function downloadFromGcs(path: string): Promise<Response> {
   const token = await getGcpToken();
   if (!token) throw new Error("No GCS token available");
-  const url = `https://storage.googleapis.com/storage/v1/b/a2a-global-data/o/${encodeURIComponent(path)}?alt=media`;
+  const fullPath = `${GCS_PREFIX}${path}`;
+  const url = `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o/${encodeURIComponent(fullPath)}?alt=media`;
   return fetch(url, { headers: { Authorization: `Bearer ${token}` } }) as unknown as Response;
 }
 
@@ -380,7 +385,7 @@ export async function registerRoutes(
       onboardingComplete: e.onboardingComplete,
     }).catch(() => {});
   }
-  function syncCreditTxToCloud(tx: { userId: number; amount: number; type: string; description: string }) {
+  function syncCreditTxToCloud(tx: { userId: number; amount: number; type: string; description: string; takeRatePercent?: number | null; platformFee?: number | null; expertPayout?: number | null; clientPaid?: number | null }) {
     writeCreditTransactionToCloudSql(tx).catch(() => {});
   }
 
@@ -989,7 +994,29 @@ export async function registerRoutes(
 
     const enrichedTx = allTx.map(t => {
       const base = { ...t, userName: userMap.get(t.userId)?.name || "Unknown" };
-      // Attempt to match transaction to a request
+
+      // Use stored take rate fields if available (post-migration)
+      if (t.takeRatePercent != null) {
+        let matchedRequest: typeof allRequests[0] | undefined;
+        if (t.description) {
+          for (const r of allRequests) {
+            if (t.description.includes(r.title)) { matchedRequest = r; break; }
+          }
+        }
+        return {
+          ...base,
+          requestId: matchedRequest?.id,
+          requestTitle: matchedRequest?.title,
+          tier: matchedRequest?.tier,
+          priceTier: matchedRequest?.priceTier,
+          clientPaid: t.clientPaid,
+          expertPayout: t.expertPayout,
+          platformFee: t.platformFee,
+          takeRatePercent: t.takeRatePercent,
+        };
+      }
+
+      // Fallback: compute from request data (pre-migration transactions)
       let matchedRequest: typeof allRequests[0] | undefined;
       if (t.description) {
         for (const r of allRequests) {
@@ -1112,6 +1139,7 @@ export async function registerRoutes(
       });
       syncUserToCloud(user.id);
       syncCreditTxToCloud({ userId: user.id, amount, type: "admin_grant", description: `Admin granted ${amount} credits` });
+      writeUserToBigQuery({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + amount, createdAt: user.createdAt || undefined }).catch(() => {});
       return res.json({ credits: user.credits + amount });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1163,6 +1191,7 @@ export async function registerRoutes(
       syncUserToCloud(user.id);
       syncRequestToCloud(request.id);
       syncCreditTxToCloud({ userId: user.id, amount: request.creditsCost, type: "refund", description: `Admin refund: ${request.title}` });
+      writeUserToBigQuery({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + request.creditsCost, createdAt: user.createdAt || undefined }).catch(() => {});
       return res.json({ message: "Refunded" });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1375,9 +1404,17 @@ export async function registerRoutes(
 
       // FEAT-011: Freeze (hold) credits on submit — deduct from wallet but mark as "hold"
       storage.updateUser(userId, { credits: user.credits - cost });
+      const holdTakeRate = TAKE_RATES[(tier || "standard").toLowerCase()] ?? 0.50;
+      const holdTakeRatePercent = Math.round(holdTakeRate * 100);
+      const holdExpertPayout = Math.max(1, Math.floor(cost * (1 - holdTakeRate)));
+      const holdPlatformFee = cost - holdExpertPayout;
       storage.createTransaction({
         userId, amount: -cost, type: "hold",
         description: `Credits frozen for request: ${title}`,
+        takeRatePercent: holdTakeRatePercent,
+        platformFee: holdPlatformFee,
+        expertPayout: holdExpertPayout,
+        clientPaid: cost,
       });
 
       const request = storage.createRequest({
@@ -1573,6 +1610,9 @@ export async function registerRoutes(
       syncUserToCloud(userId);
       syncCreditTxToCloud({ userId, amount: creditsToAdd, type: "purchase", description: `Custom top-up — $${amount}` });
       const updatedUser = storage.getUser(userId);
+      if (updatedUser) {
+        writeUserToBigQuery({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits, createdAt: updatedUser.createdAt || undefined }).catch(() => {});
+      }
       return res.json({ credits: updatedUser?.credits, success: true });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1657,10 +1697,15 @@ export async function registerRoutes(
         if (expertUser) {
           const takeRate = TAKE_RATES[(r.priceTier || r.tier || "standard").toLowerCase()] ?? 0.50;
           const earning = Math.max(1, Math.floor(r.creditsCost * (1 - takeRate)));
+          const finalizePlatformFee = r.creditsCost - earning;
           storage.updateUser(expertUser.id, { credits: expertUser.credits + earning });
           storage.createTransaction({
             userId: expertUser.id, amount: earning, type: "earning",
             description: `Completed: ${r.title}`,
+            takeRatePercent: Math.round(takeRate * 100),
+            platformFee: finalizePlatformFee,
+            expertPayout: earning,
+            clientPaid: r.creditsCost,
           });
           storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
           // OB-I: Also update wallet balance for expert
@@ -1675,9 +1720,10 @@ export async function registerRoutes(
             createdAt: new Date().toISOString(),
             stripePaymentId: null,
           });
-          syncCreditTxToCloud({ userId: expertUser.id, amount: earning, type: "earning", description: `Completed: ${r.title}` });
+          syncCreditTxToCloud({ userId: expertUser.id, amount: earning, type: "earning", description: `Completed: ${r.title}`, takeRatePercent: Math.round(takeRate * 100), platformFee: finalizePlatformFee, expertPayout: earning, clientPaid: r.creditsCost });
           syncExpertToCloud(expert.id);
           syncUserToCloud(expertUser.id);
+          writeUserToBigQuery({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits + earning, createdAt: expertUser.createdAt || undefined }).catch(() => {});
         }
       }
     }
@@ -1913,9 +1959,16 @@ export async function registerRoutes(
         // FEAT-011: Mark held credits as charged when all reviews are completed
         const completedRequest = storage.getRequest(review.requestId);
         if (completedRequest) {
+          const chargeTakeRate = TAKE_RATES[(completedRequest.priceTier || completedRequest.tier || "standard").toLowerCase()] ?? 0.50;
+          const chargeExpertPayout = Math.max(1, Math.floor(completedRequest.creditsCost * (1 - chargeTakeRate)));
+          const chargePlatformFee = completedRequest.creditsCost - chargeExpertPayout;
           storage.createTransaction({
             userId: completedRequest.userId, amount: completedRequest.creditsCost, type: "charged",
             description: `Credits charged for completed request: ${completedRequest.title}`,
+            takeRatePercent: Math.round(chargeTakeRate * 100),
+            platformFee: chargePlatformFee,
+            expertPayout: chargeExpertPayout,
+            clientPaid: completedRequest.creditsCost,
           });
         }
       }
@@ -1931,10 +1984,15 @@ export async function registerRoutes(
             const takeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
             const perReviewCost = request.creditsCost / allReviews.length;
             const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
+            const reviewPlatformFee = Math.round(perReviewCost) - earning;
             storage.updateUser(user.id, { credits: user.credits + earning });
             storage.createTransaction({
               userId: user.id, amount: earning, type: "earning",
               description: `Completed review: ${request.title}`,
+              takeRatePercent: Math.round(takeRate * 100),
+              platformFee: reviewPlatformFee,
+              expertPayout: earning,
+              clientPaid: Math.round(perReviewCost),
             });
             storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
 
@@ -2102,14 +2160,23 @@ export async function registerRoutes(
       const clientUser = storage.getUser(request.userId);
       if (clientUser) {
         storage.updateUser(request.userId, { credits: Math.max(0, clientUser.credits - request.creditsCost) });
+        const approveTakeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
+        const approveExpertPayout = Math.max(1, Math.floor(request.creditsCost * (1 - approveTakeRate)));
+        const approvePlatformFee = request.creditsCost - approveExpertPayout;
+        const approveTakeRatePercent = Math.round(approveTakeRate * 100);
         storage.createTransaction({
           userId: request.userId,
           amount: -request.creditsCost,
           type: "charged",
           description: `Credits charged for verified response: ${request.title}`,
+          takeRatePercent: approveTakeRatePercent,
+          platformFee: approvePlatformFee,
+          expertPayout: approveExpertPayout,
+          clientPaid: request.creditsCost,
         });
         syncUserToCloud(request.userId);
-        syncCreditTxToCloud({ userId: request.userId, amount: -request.creditsCost, type: "charged", description: `Credits charged: ${request.title}` });
+        syncCreditTxToCloud({ userId: request.userId, amount: -request.creditsCost, type: "charged", description: `Credits charged: ${request.title}`, takeRatePercent: approveTakeRatePercent, platformFee: approvePlatformFee, expertPayout: approveExpertPayout, clientPaid: request.creditsCost });
+        writeUserToBigQuery({ id: clientUser.id, name: clientUser.name, email: clientUser.email, role: clientUser.role, company: clientUser.company, credits: Math.max(0, clientUser.credits - request.creditsCost), createdAt: clientUser.createdAt || undefined }).catch(() => {});
       }
 
       // Log timeline event
@@ -2281,6 +2348,9 @@ export async function registerRoutes(
     syncUserToCloud(userId);
     syncCreditTxToCloud({ userId, amount: pkg.credits, type: "purchase", description: `${pkg.name} package` });
     const updatedUser = storage.getUser(userId);
+    if (updatedUser) {
+      writeUserToBigQuery({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits, createdAt: updatedUser.createdAt || undefined }).catch(() => {});
+    }
     return res.json({ credits: updatedUser?.credits });
   });
 
@@ -2312,6 +2382,9 @@ export async function registerRoutes(
       syncCreditTxToCloud({ userId, amount: pack.credits, type: "purchase", description: `${pack.name}` });
 
       const updatedUser = storage.getUser(userId);
+      if (updatedUser) {
+        writeUserToBigQuery({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits, createdAt: updatedUser.createdAt || undefined }).catch(() => {});
+      }
       return res.json({ success: true, credits: updatedUser?.credits, mock: true });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -2677,6 +2750,7 @@ export async function registerRoutes(
       syncUserToCloud(user.id);
       syncRequestToCloud(requestId);
       syncCreditTxToCloud({ userId: user.id, amount: request.creditsCost, type: "refund", description: `Refund: ${request.title}` });
+      writeUserToBigQuery({ id: user.id, name: user.name, email: user.email, role: user.role, company: user.company, credits: user.credits + request.creditsCost, createdAt: user.createdAt || undefined }).catch(() => {});
       return res.json({ message: "Refund processed", credits: user.credits + request.creditsCost });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });

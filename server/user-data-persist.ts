@@ -7,10 +7,11 @@ const COFOUNDER_EMAILS = ["amir@a2a.global", "oleg@a2a.global"];
 
 // ─── Cloud SQL PostgreSQL (Layer 4) ───
 const CLOUD_SQL_CONNECTION = "winter-jet-492110-g9:us-central1:a2a-global-db";
+const PG_DATABASE = process.env.PG_DATABASE || "a2a_production";
 const PG_CONFIG = {
   user: "postgres",
   password: "A2A$ecureDB2026!",
-  database: "a2a_production",
+  database: PG_DATABASE,
   // On Cloud Run, connect via Unix socket
   host: `/cloudsql/${CLOUD_SQL_CONNECTION}`,
 };
@@ -24,7 +25,7 @@ async function getPgPool(): Promise<pg.Pool | null> {
   // Try Unix socket first (Cloud Run), then public IP fallback
   const configs = [
     { ...PG_CONFIG, host: `/cloudsql/${CLOUD_SQL_CONNECTION}` },
-    { user: "postgres", password: "A2A$ecureDB2026!", database: "a2a_production", host: "34.46.252.14", port: 5432 },
+    { user: "postgres", password: "A2A$ecureDB2026!", database: PG_DATABASE, host: "34.46.252.14", port: 5432 },
   ];
 
   for (const config of configs) {
@@ -128,6 +129,10 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       amount INTEGER NOT NULL,
       type TEXT NOT NULL,
       description TEXT,
+      take_rate_percent INTEGER,
+      platform_fee INTEGER,
+      expert_payout INTEGER,
+      client_paid INTEGER,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     );
@@ -250,6 +255,23 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       created_at TEXT,
       updated_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id SERIAL PRIMARY KEY,
+      table_name TEXT NOT NULL,
+      row_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS take_rate_history (
+      id SERIAL PRIMARY KEY,
+      tier TEXT NOT NULL,
+      rate INTEGER NOT NULL,
+      effective_from TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
   // Add columns that may be missing on existing Cloud SQL tables
   const migrations = [
@@ -275,6 +297,11 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS followup_count INTEGER DEFAULT 0",
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS followup_deadline TEXT",
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS deadline TEXT",
+    // Data protection: take rate columns on credit_transactions
+    "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS take_rate_percent INTEGER",
+    "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS platform_fee INTEGER",
+    "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS expert_payout INTEGER",
+    "ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS client_paid INTEGER",
     // Build 35: Add updated_at to all tables, created_at to experts/admins/legal_acceptances
     "ALTER TABLE experts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
@@ -579,275 +606,406 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
   }
 
   try {
-    // Restore users
+    // Restore users (timestamp-gated — protect newer SQLite data)
     const usersResult = await pool.query("SELECT * FROM users ORDER BY id");
     const pgUsers = usersResult.rows;
     console.log(`[RESTORE] Found ${pgUsers.length} users in Cloud SQL`);
+    let usersInserted = 0, usersUpdated = 0, usersSkipped = 0;
 
     for (const u of pgUsers) {
       try {
-        sqliteDb.prepare(`
-          INSERT OR REPLACE INTO users (id, username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed, photo, login_count, utm_source, utm_medium, utm_campaign, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          u.id,
-          u.email || '',       // use email as username if not present
-          '',                   // password — Cloud SQL doesn't store it
-          u.name,
-          u.email,
-          u.role || 'client',
-          u.credits ?? 5,
-          u.company || null,
-          u.account_type || 'individual',
-          u.wallet_balance ?? 0,
-          u.active ?? 1,
-          u.tour_completed ?? 0,
-          null,                 // photo
-          u.login_count ?? 0,
-          u.utm_source || null,
-          u.utm_medium || null,
-          u.utm_campaign || null,
-          u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(),
-          u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString()
-        );
+        const incomingUpdatedAt = u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString();
+        const existing = sqliteDb.prepare("SELECT id, updated_at FROM users WHERE id = ?").get(u.id) as any;
+
+        if (!existing) {
+          sqliteDb.prepare(`INSERT INTO users (id, username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed, photo, login_count, utm_source, utm_medium, utm_campaign, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+            u.id, u.email || '', '', u.name, u.email, u.role || 'client', u.credits ?? 5, u.company || null,
+            u.account_type || 'individual', u.wallet_balance ?? 0, u.active ?? 1, u.tour_completed ?? 0,
+            null, u.login_count ?? 0, u.utm_source || null, u.utm_medium || null, u.utm_campaign || null,
+            u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(), incomingUpdatedAt
+          );
+          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('users', u.id, JSON.stringify({id: u.id, credits: u.credits}), new Date().toISOString());
+          usersInserted++;
+        } else {
+          const existingUpdatedAt = (existing as any).updated_at || '';
+          if (incomingUpdatedAt > existingUpdatedAt) {
+            sqliteDb.prepare(`UPDATE users SET username=?, name=?, email=?, role=?, credits=?, company=?, account_type=?, wallet_balance=?, active=?, tour_completed=?, login_count=?, utm_source=?, utm_medium=?, utm_campaign=?, updated_at=? WHERE id=?`).run(
+              u.email || '', u.name, u.email, u.role || 'client', u.credits ?? 5, u.company || null,
+              u.account_type || 'individual', u.wallet_balance ?? 0, u.active ?? 1, u.tour_completed ?? 0,
+              u.login_count ?? 0, u.utm_source || null, u.utm_medium || null, u.utm_campaign || null,
+              incomingUpdatedAt, u.id
+            );
+            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, old_value, new_value, reason, created_at) VALUES (?, ?, 'UPDATE', ?, ?, 'restore', ?)`).run('users', u.id, JSON.stringify({credits: (existing as any).credits}), JSON.stringify({credits: u.credits}), new Date().toISOString());
+            usersUpdated++;
+          } else {
+            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'SKIP', ?, ?)`).run('users', u.id, `incoming ${incomingUpdatedAt} <= existing ${existingUpdatedAt}`, new Date().toISOString());
+            usersSkipped++;
+          }
+        }
       } catch (err) {
-        console.error(`[RESTORE] User ${u.id} insert failed:`, (err as Error).message?.substring(0, 80));
+        console.error(`[RESTORE] User ${u.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Restored ${pgUsers.length} users`);
+    console.log(`[RESTORE] Users: ${usersInserted} inserted, ${usersUpdated} updated, ${usersSkipped} skipped (protected)`);
 
-    // Restore experts
+    // Restore experts (timestamp-gated)
     const expertsResult = await pool.query("SELECT * FROM experts ORDER BY id");
     const pgExperts = expertsResult.rows;
+    let expertsInserted = 0, expertsUpdated = 0, expertsSkipped = 0;
+
     for (const e of pgExperts) {
       try {
-        sqliteDb.prepare(`
-          INSERT OR REPLACE INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          e.id,
-          e.user_id,
-          e.bio || '',
-          e.expertise || '',
-          e.credentials || '',
-          e.rating ?? 50,
-          e.total_reviews ?? 0,
-          e.verified ?? 0,
-          e.categories || '[]',
-          1,                     // availability default
-          null,                  // hourly_rate
-          null,                  // response_time
-          e.education || '',
-          e.years_experience ?? 0,
-          e.onboarding_complete ?? 0,
-          null,                  // verification_score
-          e.rate_per_minute || null,
-          e.rate_tier || null,
-          e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(),
-          e.updated_at ? new Date(e.updated_at).toISOString() : new Date().toISOString()
-        );
+        const incomingUpdatedAt = e.updated_at ? new Date(e.updated_at).toISOString() : new Date().toISOString();
+        const existing = sqliteDb.prepare("SELECT id, updated_at FROM experts WHERE id = ?").get(e.id) as any;
+
+        if (!existing) {
+          sqliteDb.prepare(`INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+            e.id, e.user_id, e.bio || '', e.expertise || '', e.credentials || '', e.rating ?? 50,
+            e.total_reviews ?? 0, e.verified ?? 0, e.categories || '[]', 1, null, null,
+            e.education || '', e.years_experience ?? 0, e.onboarding_complete ?? 0, null,
+            e.rate_per_minute || null, e.rate_tier || null,
+            e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(), incomingUpdatedAt
+          );
+          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('experts', e.id, JSON.stringify({id: e.id, user_id: e.user_id}), new Date().toISOString());
+          expertsInserted++;
+        } else {
+          const existingUpdatedAt = (existing as any).updated_at || '';
+          if (incomingUpdatedAt > existingUpdatedAt) {
+            sqliteDb.prepare(`UPDATE experts SET user_id=?, bio=?, expertise=?, credentials=?, rating=?, total_reviews=?, verified=?, categories=?, education=?, years_experience=?, onboarding_complete=?, rate_per_minute=?, rate_tier=?, updated_at=? WHERE id=?`).run(
+              e.user_id, e.bio || '', e.expertise || '', e.credentials || '', e.rating ?? 50,
+              e.total_reviews ?? 0, e.verified ?? 0, e.categories || '[]', e.education || '',
+              e.years_experience ?? 0, e.onboarding_complete ?? 0, e.rate_per_minute || null, e.rate_tier || null,
+              incomingUpdatedAt, e.id
+            );
+            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'UPDATE', 'restore', ?)`).run('experts', e.id, new Date().toISOString());
+            expertsUpdated++;
+          } else {
+            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'SKIP', ?, ?)`).run('experts', e.id, `incoming ${incomingUpdatedAt} <= existing ${existingUpdatedAt}`, new Date().toISOString());
+            expertsSkipped++;
+          }
+        }
       } catch (err) {
-        console.error(`[RESTORE] Expert ${e.id} insert failed:`, (err as Error).message?.substring(0, 80));
+        console.error(`[RESTORE] Expert ${e.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Restored ${pgExperts.length} experts`);
+    console.log(`[RESTORE] Experts: ${expertsInserted} inserted, ${expertsUpdated} updated, ${expertsSkipped} skipped`);
 
-    // Restore requests (ALL fields)
+    // Restore requests (timestamp-gated)
     const requestsResult = await pool.query("SELECT * FROM requests ORDER BY id");
     const pgRequests = requestsResult.rows;
+    let requestsInserted = 0, requestsUpdated = 0, requestsSkipped = 0;
+
     for (const r of pgRequests) {
       try {
-        sqliteDb.prepare(`
-          INSERT OR REPLACE INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          r.id, r.user_id, r.expert_id || null, r.title, r.description || '',
-          r.category, r.tier || 'standard', r.status || 'pending', r.credits_cost ?? 0,
-          r.service_type || 'review', r.expert_response || null, r.ai_response || null,
-          r.attachments || '[]', r.client_rating || null, r.client_rating_comment || null,
-          r.refunded || 0, r.price_tier || null, r.followup_count || 0,
-          r.followup_deadline || null, r.deadline || null,
-          r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
-          r.updated_at ? new Date(r.updated_at).toISOString() : null
-        );
+        const incomingUpdatedAt = r.updated_at ? new Date(r.updated_at).toISOString() : (r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString());
+        const existing = sqliteDb.prepare("SELECT id, updated_at FROM requests WHERE id = ?").get(r.id) as any;
+
+        if (!existing) {
+          sqliteDb.prepare(`INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+            r.id, r.user_id, r.expert_id || null, r.title, r.description || '',
+            r.category, r.tier || 'standard', r.status || 'pending', r.credits_cost ?? 0,
+            r.service_type || 'review', r.expert_response || null, r.ai_response || null,
+            r.attachments || '[]', r.client_rating || null, r.client_rating_comment || null,
+            r.refunded || 0, r.price_tier || null, r.followup_count || 0,
+            r.followup_deadline || null, r.deadline || null,
+            r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(), incomingUpdatedAt
+          );
+          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('requests', r.id, JSON.stringify({id: r.id, status: r.status}), new Date().toISOString());
+          requestsInserted++;
+        } else {
+          const existingUpdatedAt = (existing as any).updated_at || '';
+          if (incomingUpdatedAt > existingUpdatedAt) {
+            sqliteDb.prepare(`UPDATE requests SET user_id=?, expert_id=?, title=?, description=?, category=?, tier=?, status=?, credits_cost=?, service_type=?, expert_response=?, ai_response=?, attachments=?, client_rating=?, client_rating_comment=?, refunded=?, price_tier=?, followup_count=?, followup_deadline=?, deadline=?, updated_at=? WHERE id=?`).run(
+              r.user_id, r.expert_id || null, r.title, r.description || '',
+              r.category, r.tier || 'standard', r.status || 'pending', r.credits_cost ?? 0,
+              r.service_type || 'review', r.expert_response || null, r.ai_response || null,
+              r.attachments || '[]', r.client_rating || null, r.client_rating_comment || null,
+              r.refunded || 0, r.price_tier || null, r.followup_count || 0,
+              r.followup_deadline || null, r.deadline || null, incomingUpdatedAt, r.id
+            );
+            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'UPDATE', 'restore', ?)`).run('requests', r.id, new Date().toISOString());
+            requestsUpdated++;
+          } else {
+            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'SKIP', ?, ?)`).run('requests', r.id, `incoming ${incomingUpdatedAt} <= existing ${existingUpdatedAt}`, new Date().toISOString());
+            requestsSkipped++;
+          }
+        }
       } catch (err) {
-        console.error(`[RESTORE] Request ${r.id} insert failed:`, (err as Error).message?.substring(0, 80));
+        console.error(`[RESTORE] Request ${r.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Restored ${pgRequests.length} requests`);
+    console.log(`[RESTORE] Requests: ${requestsInserted} inserted, ${requestsUpdated} updated, ${requestsSkipped} skipped`);
 
-    // Restore credit_transactions
+    // Restore credit_transactions (append-only — INSERT OR IGNORE)
     const txResult = await pool.query("SELECT * FROM credit_transactions ORDER BY id");
     const pgTx = txResult.rows;
+    let txInserted = 0, txSkipped = 0;
     for (const t of pgTx) {
       try {
-        sqliteDb.prepare(`
-          INSERT OR REPLACE INTO credit_transactions (id, user_id, amount, type, description, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+        const result = sqliteDb.prepare(`
+          INSERT OR IGNORE INTO credit_transactions (id, user_id, amount, type, description, take_rate_percent, platform_fee, expert_payout, client_paid, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          t.id,
-          t.user_id,
-          t.amount,
-          t.type,
-          t.description || '',
+          t.id, t.user_id, t.amount, t.type, t.description || '',
+          t.take_rate_percent ?? null, t.platform_fee ?? null, t.expert_payout ?? null, t.client_paid ?? null,
           t.created_at ? new Date(t.created_at).toISOString() : new Date().toISOString(),
           t.updated_at ? new Date(t.updated_at).toISOString() : null
         );
+        if (result.changes > 0) txInserted++; else txSkipped++;
       } catch (err) {
-        console.error(`[RESTORE] Transaction ${t.id} insert failed:`, (err as Error).message?.substring(0, 80));
+        console.error(`[RESTORE] Transaction ${t.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Restored ${pgTx.length} credit transactions`);
+    console.log(`[RESTORE] Credit transactions: ${txInserted} inserted, ${txSkipped} skipped (already exist)`);
 
     // OB-A: Restore ALL remaining tables
 
-    // Restore expert_reviews
+    // Restore expert_reviews (timestamp-gated)
     try {
       const result = await pool.query("SELECT * FROM expert_reviews ORDER BY id");
+      let erInserted = 0, erUpdated = 0, erSkipped = 0;
       for (const r of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO expert_reviews (id, request_id, expert_id, status, rating, rating_comment, correct_points, incorrect_points, suggestions, deliverable, created_at, completed_at, invoiced, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-            r.id, r.request_id, r.expert_id || null, r.status || 'pending', r.rating || null,
-            r.rating_comment || null, r.correct_points || null, r.incorrect_points || null,
-            r.suggestions || null, r.deliverable || null, r.created_at || null, r.completed_at || null, r.invoiced || 0,
-            r.updated_at || null
-          );
+          const incomingUpdatedAt = r.updated_at || r.completed_at || r.created_at || '';
+          const existing = sqliteDb.prepare("SELECT id, updated_at FROM expert_reviews WHERE id = ?").get(r.id) as any;
+          if (!existing) {
+            sqliteDb.prepare(`INSERT INTO expert_reviews (id, request_id, expert_id, status, rating, rating_comment, correct_points, incorrect_points, suggestions, deliverable, created_at, completed_at, invoiced, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+              r.id, r.request_id, r.expert_id || null, r.status || 'pending', r.rating || null,
+              r.rating_comment || null, r.correct_points || null, r.incorrect_points || null,
+              r.suggestions || null, r.deliverable || null, r.created_at || null, r.completed_at || null, r.invoiced || 0,
+              r.updated_at || null
+            );
+            erInserted++;
+          } else {
+            const existingUpdatedAt = (existing as any).updated_at || '';
+            if (incomingUpdatedAt > existingUpdatedAt) {
+              sqliteDb.prepare(`UPDATE expert_reviews SET request_id=?, expert_id=?, status=?, rating=?, rating_comment=?, correct_points=?, incorrect_points=?, suggestions=?, deliverable=?, completed_at=?, invoiced=?, updated_at=? WHERE id=?`).run(
+                r.request_id, r.expert_id || null, r.status || 'pending', r.rating || null,
+                r.rating_comment || null, r.correct_points || null, r.incorrect_points || null,
+                r.suggestions || null, r.deliverable || null, r.completed_at || null, r.invoiced || 0,
+                r.updated_at || null, r.id
+              );
+              erUpdated++;
+            } else { erSkipped++; }
+          }
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} expert_reviews`);
+      console.log(`[RESTORE] Expert reviews: ${erInserted} inserted, ${erUpdated} updated, ${erSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] expert_reviews failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore messages
+    // Restore messages (append-only — INSERT OR IGNORE)
     try {
       const result = await pool.query("SELECT * FROM messages ORDER BY id");
+      let msgsInserted = 0;
       for (const m of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO messages (id, request_id, role, content, created_at, updated_at) VALUES (?,?,?,?,?,?)`).run(
+          const r = sqliteDb.prepare(`INSERT OR IGNORE INTO messages (id, request_id, role, content, created_at, updated_at) VALUES (?,?,?,?,?,?)`).run(
             m.id, m.request_id, m.role, m.content, m.created_at || null, m.updated_at || null
           );
+          if (r.changes > 0) msgsInserted++;
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} messages`);
+      console.log(`[RESTORE] Messages: ${msgsInserted} inserted, ${result.rows.length - msgsInserted} skipped`);
     } catch (err) { console.error("[RESTORE] messages failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore wallet_transactions
+    // Restore wallet_transactions (append-only — INSERT OR IGNORE)
     try {
       const result = await pool.query("SELECT * FROM wallet_transactions ORDER BY id");
+      let wtInserted = 0;
       for (const t of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO wallet_transactions (id, user_id, amount_cents, type, stripe_payment_id, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+          const r = sqliteDb.prepare(`INSERT OR IGNORE INTO wallet_transactions (id, user_id, amount_cents, type, stripe_payment_id, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
             t.id, t.user_id, t.amount_cents, t.type, t.stripe_payment_id || null, t.description || null, t.created_at || null, t.updated_at || null
           );
+          if (r.changes > 0) wtInserted++;
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} wallet_transactions`);
+      console.log(`[RESTORE] Wallet transactions: ${wtInserted} inserted, ${result.rows.length - wtInserted} skipped`);
     } catch (err) { console.error("[RESTORE] wallet_transactions failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore notifications
+    // Restore notifications (timestamp-gated)
     try {
       const result = await pool.query("SELECT * FROM notifications ORDER BY id");
+      let notifInserted = 0, notifUpdated = 0, notifSkipped = 0;
       for (const n of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO notifications (id, user_id, title, message, read, link, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
-            n.id, n.user_id, n.title, n.message, n.read || 0, n.link || null, n.created_at || null, n.updated_at || null
-          );
+          const incomingUpdatedAt = n.updated_at || n.created_at || '';
+          const existing = sqliteDb.prepare("SELECT id, updated_at FROM notifications WHERE id = ?").get(n.id) as any;
+          if (!existing) {
+            sqliteDb.prepare(`INSERT INTO notifications (id, user_id, title, message, read, link, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+              n.id, n.user_id, n.title, n.message, n.read || 0, n.link || null, n.created_at || null, n.updated_at || null
+            );
+            notifInserted++;
+          } else {
+            const existingUpdatedAt = (existing as any).updated_at || '';
+            if (incomingUpdatedAt > existingUpdatedAt) {
+              sqliteDb.prepare(`UPDATE notifications SET user_id=?, title=?, message=?, read=?, link=?, updated_at=? WHERE id=?`).run(
+                n.user_id, n.title, n.message, n.read || 0, n.link || null, n.updated_at || null, n.id
+              );
+              notifUpdated++;
+            } else { notifSkipped++; }
+          }
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} notifications`);
+      console.log(`[RESTORE] Notifications: ${notifInserted} inserted, ${notifUpdated} updated, ${notifSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] notifications failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore request_events
+    // Restore request_events (append-only — INSERT OR IGNORE)
     try {
       const result = await pool.query("SELECT * FROM request_events ORDER BY id");
+      let reInserted = 0;
       for (const e of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO request_events (id, request_id, type, actor_id, actor_name, message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+          const r = sqliteDb.prepare(`INSERT OR IGNORE INTO request_events (id, request_id, type, actor_id, actor_name, message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
             e.id, e.request_id, e.type, e.actor_id || null, e.actor_name || null, e.message || null, e.created_at || null, e.updated_at || null
           );
+          if (r.changes > 0) reInserted++;
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} request_events`);
+      console.log(`[RESTORE] Request events: ${reInserted} inserted, ${result.rows.length - reInserted} skipped`);
     } catch (err) { console.error("[RESTORE] request_events failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore withdrawals
+    // Restore withdrawals (timestamp-gated)
     try {
       const result = await pool.query("SELECT * FROM withdrawals ORDER BY id");
+      let wdInserted = 0, wdUpdated = 0, wdSkipped = 0;
       for (const w of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO withdrawals (id, user_id, expert_id, amount_cents, status, created_at, processed_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
-            w.id, w.user_id, w.expert_id || null, w.amount_cents, w.status, w.created_at || null, w.processed_at || null, w.updated_at || null
-          );
+          const incomingUpdatedAt = w.updated_at || w.processed_at || w.created_at || '';
+          const existing = sqliteDb.prepare("SELECT id, updated_at FROM withdrawals WHERE id = ?").get(w.id) as any;
+          if (!existing) {
+            sqliteDb.prepare(`INSERT INTO withdrawals (id, user_id, expert_id, amount_cents, status, created_at, processed_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+              w.id, w.user_id, w.expert_id || null, w.amount_cents, w.status, w.created_at || null, w.processed_at || null, w.updated_at || null
+            );
+            wdInserted++;
+          } else {
+            const existingUpdatedAt = (existing as any).updated_at || '';
+            if (incomingUpdatedAt > existingUpdatedAt) {
+              sqliteDb.prepare(`UPDATE withdrawals SET user_id=?, expert_id=?, amount_cents=?, status=?, processed_at=?, updated_at=? WHERE id=?`).run(
+                w.user_id, w.expert_id || null, w.amount_cents, w.status, w.processed_at || null, w.updated_at || null, w.id
+              );
+              wdUpdated++;
+            } else { wdSkipped++; }
+          }
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} withdrawals`);
+      console.log(`[RESTORE] Withdrawals: ${wdInserted} inserted, ${wdUpdated} updated, ${wdSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] withdrawals failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore invoices
+    // Restore invoices (timestamp-gated)
     try {
       const result = await pool.query("SELECT * FROM invoices ORDER BY id");
+      let invInserted = 0, invUpdated = 0, invSkipped = 0;
       for (const inv of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO invoices (id, expert_id, invoice_number, total_amount, platform_fee, net_payout, status, line_items, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-            inv.id, inv.expert_id, inv.invoice_number, inv.total_amount, inv.platform_fee, inv.net_payout, inv.status, inv.line_items, inv.created_at || null, inv.updated_at || null
-          );
+          const incomingUpdatedAt = inv.updated_at || inv.created_at || '';
+          const existing = sqliteDb.prepare("SELECT id, updated_at FROM invoices WHERE id = ?").get(inv.id) as any;
+          if (!existing) {
+            sqliteDb.prepare(`INSERT INTO invoices (id, expert_id, invoice_number, total_amount, platform_fee, net_payout, status, line_items, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+              inv.id, inv.expert_id, inv.invoice_number, inv.total_amount, inv.platform_fee, inv.net_payout, inv.status, inv.line_items, inv.created_at || null, inv.updated_at || null
+            );
+            invInserted++;
+          } else {
+            const existingUpdatedAt = (existing as any).updated_at || '';
+            if (incomingUpdatedAt > existingUpdatedAt) {
+              sqliteDb.prepare(`UPDATE invoices SET expert_id=?, invoice_number=?, total_amount=?, platform_fee=?, net_payout=?, status=?, line_items=?, updated_at=? WHERE id=?`).run(
+                inv.expert_id, inv.invoice_number, inv.total_amount, inv.platform_fee, inv.net_payout, inv.status, inv.line_items, inv.updated_at || null, inv.id
+              );
+              invUpdated++;
+            } else { invSkipped++; }
+          }
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} invoices`);
+      console.log(`[RESTORE] Invoices: ${invInserted} inserted, ${invUpdated} updated, ${invSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] invoices failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore verification_tests
+    // Restore verification_tests (append-only — INSERT OR IGNORE)
     try {
       const result = await pool.query("SELECT * FROM verification_tests ORDER BY id");
+      let vtInserted = 0;
       for (const t of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO verification_tests (id, expert_id, category, answers, score, passed, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+          const r = sqliteDb.prepare(`INSERT OR IGNORE INTO verification_tests (id, expert_id, category, answers, score, passed, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
             t.id, t.expert_id, t.category, t.answers || '[]', t.score || 0, t.passed || 0, t.created_at || null, t.updated_at || null
           );
+          if (r.changes > 0) vtInserted++;
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} verification_tests`);
+      console.log(`[RESTORE] Verification tests: ${vtInserted} inserted, ${result.rows.length - vtInserted} skipped`);
     } catch (err) { console.error("[RESTORE] verification_tests failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore legal_acceptances
+    // Restore legal_acceptances (append-only — INSERT OR IGNORE)
     try {
       const result = await pool.query("SELECT * FROM legal_acceptances ORDER BY id");
+      let laInserted = 0;
       for (const l of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO legal_acceptances (id, user_id, document_type, document_version, accepted_at, ip_address, user_agent, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(
+          const r = sqliteDb.prepare(`INSERT OR IGNORE INTO legal_acceptances (id, user_id, document_type, document_version, accepted_at, ip_address, user_agent, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(
             l.id, l.user_id, l.document_type, l.document_version || 'April 2026', l.accepted_at || null, l.ip_address || null, l.user_agent || null,
             l.created_at || l.accepted_at || null, l.updated_at || l.accepted_at || null
           );
+          if (r.changes > 0) laInserted++;
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} legal_acceptances`);
+      console.log(`[RESTORE] Legal acceptances: ${laInserted} inserted, ${result.rows.length - laInserted} skipped`);
     } catch (err) { console.error("[RESTORE] legal_acceptances failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore expert_verifications
+    // Restore expert_verifications (timestamp-gated)
     try {
       const result = await pool.query("SELECT * FROM expert_verifications ORDER BY id");
+      let evInserted = 0, evUpdated = 0, evSkipped = 0;
       for (const v of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO expert_verifications (id, expert_id, passport_file_url, account_number, swift_code, bank_name, bank_address, verified_by_admin, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-            v.id, v.expert_id, v.passport_file_url || null, v.account_number || null,
-            v.swift_code || null, v.bank_name || null, v.bank_address || null,
-            v.verified_by_admin || 0, v.created_at || null, v.updated_at || null
-          );
+          const incomingUpdatedAt = v.updated_at || v.created_at || '';
+          const existing = sqliteDb.prepare("SELECT id, updated_at FROM expert_verifications WHERE id = ?").get(v.id) as any;
+          if (!existing) {
+            sqliteDb.prepare(`INSERT INTO expert_verifications (id, expert_id, passport_file_url, account_number, swift_code, bank_name, bank_address, verified_by_admin, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+              v.id, v.expert_id, v.passport_file_url || null, v.account_number || null,
+              v.swift_code || null, v.bank_name || null, v.bank_address || null,
+              v.verified_by_admin || 0, v.created_at || null, v.updated_at || null
+            );
+            evInserted++;
+          } else {
+            const existingUpdatedAt = (existing as any).updated_at || '';
+            if (incomingUpdatedAt > existingUpdatedAt) {
+              sqliteDb.prepare(`UPDATE expert_verifications SET expert_id=?, passport_file_url=?, account_number=?, swift_code=?, bank_name=?, bank_address=?, verified_by_admin=?, updated_at=? WHERE id=?`).run(
+                v.expert_id, v.passport_file_url || null, v.account_number || null,
+                v.swift_code || null, v.bank_name || null, v.bank_address || null,
+                v.verified_by_admin || 0, v.updated_at || null, v.id
+              );
+              evUpdated++;
+            } else { evSkipped++; }
+          }
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} expert_verifications`);
+      console.log(`[RESTORE] Expert verifications: ${evInserted} inserted, ${evUpdated} updated, ${evSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] expert_verifications failed:", (err as Error).message?.substring(0, 80)); }
 
-    // Restore withdrawal_requests
+    // Restore withdrawal_requests (timestamp-gated)
     try {
       const result = await pool.query("SELECT * FROM withdrawal_requests ORDER BY id");
+      let wrInserted = 0, wrUpdated = 0, wrSkipped = 0;
       for (const w of result.rows) {
         try {
-          sqliteDb.prepare(`INSERT OR REPLACE INTO withdrawal_requests (id, expert_id, amount, invoice_number, status, admin_notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
-            w.id, w.expert_id, w.amount, w.invoice_number, w.status, w.admin_notes || null, w.created_at || null, w.updated_at || null
-          );
+          const incomingUpdatedAt = w.updated_at || w.created_at || '';
+          const existing = sqliteDb.prepare("SELECT id, updated_at FROM withdrawal_requests WHERE id = ?").get(w.id) as any;
+          if (!existing) {
+            sqliteDb.prepare(`INSERT INTO withdrawal_requests (id, expert_id, amount, invoice_number, status, admin_notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+              w.id, w.expert_id, w.amount, w.invoice_number, w.status, w.admin_notes || null, w.created_at || null, w.updated_at || null
+            );
+            wrInserted++;
+          } else {
+            const existingUpdatedAt = (existing as any).updated_at || '';
+            if (incomingUpdatedAt > existingUpdatedAt) {
+              sqliteDb.prepare(`UPDATE withdrawal_requests SET expert_id=?, amount=?, invoice_number=?, status=?, admin_notes=?, updated_at=? WHERE id=?`).run(
+                w.expert_id, w.amount, w.invoice_number, w.status, w.admin_notes || null, w.updated_at || null, w.id
+              );
+              wrUpdated++;
+            } else { wrSkipped++; }
+          }
         } catch {}
       }
-      console.log(`[RESTORE] Restored ${result.rows.length} withdrawal_requests`);
+      console.log(`[RESTORE] Withdrawal requests: ${wrInserted} inserted, ${wrUpdated} updated, ${wrSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] withdrawal_requests failed:", (err as Error).message?.substring(0, 80)); }
 
     // Verify
@@ -861,24 +1019,29 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
 // ─── Write credit transaction to Cloud SQL ───
 export async function writeCreditTransactionToCloudSql(tx: {
   id?: number; userId: number; amount: number; type: string; description: string;
+  takeRatePercent?: number | null; platformFee?: number | null; expertPayout?: number | null; clientPaid?: number | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
     if (tx.id) {
       await pool.query(
-        `INSERT INTO credit_transactions (id, user_id, amount, type, description, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+        `INSERT INTO credit_transactions (id, user_id, amount, type, description, take_rate_percent, platform_fee, expert_payout, client_paid, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET
            amount = EXCLUDED.amount, type = EXCLUDED.type, description = EXCLUDED.description,
+           take_rate_percent = EXCLUDED.take_rate_percent, platform_fee = EXCLUDED.platform_fee,
+           expert_payout = EXCLUDED.expert_payout, client_paid = EXCLUDED.client_paid,
            updated_at = NOW()`,
-        [tx.id, tx.userId, tx.amount, tx.type, tx.description]
+        [tx.id, tx.userId, tx.amount, tx.type, tx.description,
+         tx.takeRatePercent ?? null, tx.platformFee ?? null, tx.expertPayout ?? null, tx.clientPaid ?? null]
       );
     } else {
       await pool.query(
-        `INSERT INTO credit_transactions (user_id, amount, type, description, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())`,
-        [tx.userId, tx.amount, tx.type, tx.description]
+        `INSERT INTO credit_transactions (user_id, amount, type, description, take_rate_percent, platform_fee, expert_payout, client_paid, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
+        [tx.userId, tx.amount, tx.type, tx.description,
+         tx.takeRatePercent ?? null, tx.platformFee ?? null, tx.expertPayout ?? null, tx.clientPaid ?? null]
       );
     }
   } catch (err) {
@@ -944,7 +1107,7 @@ export async function writeUserToBigQuery(user: {
       return;
     }
     const PROJECT = "winter-jet-492110-g9";
-    const DATASET = "a2a_analytics";
+    const DATASET = process.env.BQ_DATASET || "a2a_analytics";
     const TABLE = "users_persistent";
 
     const url = `https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT}/datasets/${DATASET}/tables/${TABLE}/insertAll`;

@@ -1609,13 +1609,15 @@ function RequestsPage() {
 
 function TransactionsPage() {
   // Fix 10: Add isLoading and error handling to prevent blank page
-  const { data: transactions, isLoading, error } = useQuery<any[]>({
+  const { data: txData, isLoading, error } = useQuery<any>({
     queryKey: ["/api/admin/transactions"],
     retry: 2,
   });
   const [typeFilter, setTypeFilter] = useState("all");
 
-  const safeTransactions = safeArray(transactions);
+  // API returns { transactions: [], totals: {} }
+  const safeTransactions = safeArray(txData?.transactions ?? txData);
+  const totals = txData?.totals || {};
 
   const filtered = safeTransactions.filter((t: any) =>
     typeFilter === "all" || t?.type === typeFilter
@@ -1623,6 +1625,13 @@ function TransactionsPage() {
 
   const totalIn = safeTransactions.filter((t: any) => (t?.amount ?? 0) > 0).reduce((sum: number, t: any) => sum + (t?.amount ?? 0), 0);
   const totalOut = safeTransactions.filter((t: any) => (t?.amount ?? 0) < 0).reduce((sum: number, t: any) => sum + Math.abs(t?.amount ?? 0), 0);
+
+  // Compute take rate summary from enriched transactions
+  const chargedTx = safeTransactions.filter((t: any) => t?.type === "charged" || t?.type === "earning");
+  const totalPlatformRevenue = chargedTx.reduce((s: number, t: any) => s + (t?.platformFee || 0), 0);
+  const totalExpertPayouts = chargedTx.reduce((s: number, t: any) => s + (t?.expertPayout || 0), 0);
+  const totalClientPaid = chargedTx.reduce((s: number, t: any) => s + (t?.clientPaid || 0), 0);
+  const blendedTakeRate = totalClientPaid > 0 ? Math.round((totalPlatformRevenue / totalClientPaid) * 100) : 0;
 
   return (
     <div data-testid="admin-transactions-page">
@@ -1635,10 +1644,11 @@ function TransactionsPage() {
           <SelectContent className="bg-zinc-900 border-zinc-700">
             <SelectItem value="all">All Types</SelectItem>
             <SelectItem value="purchase">Purchase</SelectItem>
-            <SelectItem value="debit">Debit</SelectItem>
+            <SelectItem value="charged">Charged</SelectItem>
             <SelectItem value="earning">Earning</SelectItem>
             <SelectItem value="refund">Refund</SelectItem>
             <SelectItem value="bonus">Bonus</SelectItem>
+            <SelectItem value="hold">Hold</SelectItem>
             <SelectItem value="withdrawal">Withdrawal</SelectItem>
             <SelectItem value="admin_grant">Admin Grant</SelectItem>
           </SelectContent>
@@ -1653,8 +1663,8 @@ function TransactionsPage() {
         <div className="text-center py-8 text-red-400 text-sm">Failed to load transactions. Try refreshing.</div>
       )}
 
-      {/* Fix 11: Remove 'cr', use $ */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
+      {/* Summary cards with take rate data */}
+      <div className="grid grid-cols-3 gap-3 mb-3">
         <Card className="bg-zinc-900 border-zinc-800">
           <CardContent className="p-4 text-center">
             <div className="text-lg font-bold text-emerald-400">${totalIn.toFixed(2)}</div>
@@ -1674,37 +1684,65 @@ function TransactionsPage() {
           </CardContent>
         </Card>
       </div>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-4 text-center">
+            <div className="text-lg font-bold text-blue-400">${totalPlatformRevenue}</div>
+            <div className="text-xs text-zinc-500">Platform Revenue</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-4 text-center">
+            <div className="text-lg font-bold text-amber-400">${totalExpertPayouts}</div>
+            <div className="text-xs text-zinc-500">Expert Payouts</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-4 text-center">
+            <div className="text-lg font-bold text-purple-400">{blendedTakeRate}%</div>
+            <div className="text-xs text-zinc-500">Blended Take Rate</div>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
-                <th className="text-left px-4 py-3">ID</th>
-                <th className="text-left px-4 py-3">User</th>
-                <th className="text-left px-4 py-3">Type</th>
-                <th className="text-right px-4 py-3">Amount</th>
-                <th className="text-left px-4 py-3">Description</th>
-                <th className="text-left px-4 py-3">Date</th>
+                <th className="text-left px-3 py-3">ID</th>
+                <th className="text-left px-3 py-3">User</th>
+                <th className="text-left px-3 py-3">Type</th>
+                <th className="text-right px-3 py-3">Amount</th>
+                <th className="text-right px-3 py-3">Take Rate</th>
+                <th className="text-right px-3 py-3">Platform Fee</th>
+                <th className="text-right px-3 py-3">Expert Payout</th>
+                <th className="text-right px-3 py-3">Client Paid</th>
+                <th className="text-left px-3 py-3">Description</th>
+                <th className="text-left px-3 py-3">Date</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-zinc-500 text-sm">
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-zinc-500 text-sm">
                   {isLoading ? "Loading..." : "No transactions found"}
                 </td></tr>
               ) : filtered.map((t: any) => (
                 <tr key={t?.id ?? Math.random()} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-tx-${t?.id}`}>
-                  <td className="px-4 py-3 text-zinc-500">#{t?.id}</td>
-                  <td className="px-4 py-3 text-zinc-200">{t?.userName ?? "—"}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 text-zinc-500">#{t?.id}</td>
+                  <td className="px-3 py-3 text-zinc-200">{t?.userName ?? "—"}</td>
+                  <td className="px-3 py-3">
                     <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-400 capitalize">{t?.type ?? "—"}</Badge>
                   </td>
-                  <td className={`px-4 py-3 text-right font-medium ${(t?.amount ?? 0) > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                  <td className={`px-3 py-3 text-right font-medium ${(t?.amount ?? 0) > 0 ? "text-emerald-400" : "text-red-400"}`}>
                     {(t?.amount ?? 0) > 0 ? "+" : ""}{t?.amount ?? 0}
                   </td>
-                  <td className="px-4 py-3 text-zinc-400 text-xs max-w-[250px] truncate">{t?.description ?? "—"}</td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{t?.createdAt ? new Date(t.createdAt).toLocaleDateString() : "—"}</td>
+                  <td className="px-3 py-3 text-right text-zinc-400 text-xs">{t?.takeRatePercent != null ? `${t.takeRatePercent}%` : "—"}</td>
+                  <td className="px-3 py-3 text-right text-blue-400 text-xs">{t?.platformFee != null ? `$${t.platformFee}` : "—"}</td>
+                  <td className="px-3 py-3 text-right text-amber-400 text-xs">{t?.expertPayout != null ? `$${t.expertPayout}` : "—"}</td>
+                  <td className="px-3 py-3 text-right text-zinc-300 text-xs">{t?.clientPaid != null ? `$${t.clientPaid}` : "—"}</td>
+                  <td className="px-3 py-3 text-zinc-400 text-xs max-w-[200px] truncate">{t?.description ?? "—"}</td>
+                  <td className="px-3 py-3 text-zinc-500 text-xs">{t?.createdAt ? new Date(t.createdAt).toLocaleDateString() : "—"}</td>
                 </tr>
               ))}
             </tbody>

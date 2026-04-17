@@ -15,6 +15,8 @@ import {
   type Invoice, type InsertInvoice, invoices,
   type ExpertVerification, type InsertExpertVerification, expertVerifications,
   type WithdrawalRequest, type InsertWithdrawalRequest, withdrawalRequests,
+  type AuditLog, type InsertAuditLog, auditLog,
+  type TakeRateHistory, type InsertTakeRateHistory, takeRateHistory,
   sessions,
 } from "@shared/schema";
 import { inArray, sql } from "drizzle-orm";
@@ -254,6 +256,23 @@ sqlite.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS take_rate_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tier TEXT NOT NULL,
+    rate INTEGER NOT NULL,
+    effective_from TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // FIX-5: Migration guard for file_attachments table on existing DBs
@@ -368,6 +387,11 @@ try { sqlite.exec("ALTER TABLE page_views ADD COLUMN updated_at TEXT"); } catch 
 try { sqlite.exec("ALTER TABLE registration_sources ADD COLUMN updated_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE legal_acceptances ADD COLUMN created_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE legal_acceptances ADD COLUMN updated_at TEXT"); } catch {}
+// Data protection: take rate columns on credit_transactions
+try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN take_rate_percent INTEGER"); } catch {}
+try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN platform_fee INTEGER"); } catch {}
+try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN expert_payout INTEGER"); } catch {}
+try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN client_paid INTEGER"); } catch {}
 // Build 35: Backfill NULL timestamps on existing rows
 try {
   const now = new Date().toISOString();
@@ -379,6 +403,17 @@ try {
   sqlite.exec(`UPDATE experts SET updated_at = '${now}' WHERE updated_at IS NULL`);
   sqlite.exec(`UPDATE legal_acceptances SET created_at = accepted_at WHERE created_at IS NULL`);
   sqlite.exec(`UPDATE legal_acceptances SET updated_at = accepted_at WHERE updated_at IS NULL`);
+} catch {}
+// Seed take_rate_history if empty
+try {
+  const trCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM take_rate_history").get() as { cnt: number };
+  if (trCount.cnt === 0) {
+    const now = new Date().toISOString();
+    sqlite.prepare("INSERT INTO take_rate_history (tier, rate, effective_from, created_at) VALUES (?, ?, ?, ?)").run("standard", 50, "2026-01-01", now);
+    sqlite.prepare("INSERT INTO take_rate_history (tier, rate, effective_from, created_at) VALUES (?, ?, ?, ?)").run("pro", 30, "2026-01-01", now);
+    sqlite.prepare("INSERT INTO take_rate_history (tier, rate, effective_from, created_at) VALUES (?, ?, ?, ?)").run("guru", 15, "2026-01-01", now);
+    console.log("[DB] Seeded take_rate_history with initial rates.");
+  }
 } catch {}
 console.log("[DB] All tables ensured.");
 
@@ -421,10 +456,6 @@ export interface IStorage {
     requestTitle?: string;
     tier?: string;
     priceTier?: string | null;
-    clientPaid?: number;
-    expertPayout?: number;
-    platformFee?: number;
-    takeRatePercent?: number;
   }>;
   // Expert Reviews
   getExpertReview(id: number): ExpertReview | undefined;
@@ -481,6 +512,11 @@ export interface IStorage {
   getWithdrawalRequestsByExpert(expertId: number): WithdrawalRequest[];
   getAllWithdrawalRequests(): WithdrawalRequest[];
   updateWithdrawalRequest(id: number, data: Partial<InsertWithdrawalRequest>): WithdrawalRequest | undefined;
+  // Audit Log
+  writeAuditLog(entry: { tableName: string; rowId: number; action: string; oldValue?: string; newValue?: string; reason?: string }): void;
+  // Take Rate History
+  getTakeRateHistory(): TakeRateHistory[];
+  addTakeRateHistory(entry: InsertTakeRateHistory): TakeRateHistory;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -757,17 +793,13 @@ export class DatabaseStorage implements IStorage {
     db.update(expertReviews).set({ invoiced: 1, updatedAt: new Date().toISOString() }).where(inArray(expertReviews.id, reviewIds)).run();
   }
 
-  // FIX-4: All transactions with take rate details
+  // FIX-4: All transactions with take rate details (prefer stored fields, fallback to computed)
   getAllTransactionsWithDetails(): Array<CreditTransaction & {
     userName: string;
     requestId?: number;
     requestTitle?: string;
     tier?: string;
     priceTier?: string | null;
-    clientPaid?: number;
-    expertPayout?: number;
-    platformFee?: number;
-    takeRatePercent?: number;
   }> {
     const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
     const allTx = db.select().from(creditTransactions).orderBy(desc(creditTransactions.id)).all();
@@ -776,7 +808,24 @@ export class DatabaseStorage implements IStorage {
     const userMap = new Map(allUsers.map(u => [u.id, u]));
 
     return allTx.map(t => {
-      const base = { ...t, userName: userMap.get(t.userId)?.name || "Unknown" };
+      const base: any = { ...t, userName: userMap.get(t.userId)?.name || "Unknown" };
+
+      // Use stored take rate fields if available (post-migration transactions)
+      if (t.takeRatePercent != null) {
+        let matchedRequest: typeof allRequests[0] | undefined;
+        if (t.description) {
+          for (const r of allRequests) {
+            if (t.description.includes(r.title)) { matchedRequest = r; break; }
+          }
+        }
+        base.requestId = matchedRequest?.id;
+        base.requestTitle = matchedRequest?.title;
+        base.tier = matchedRequest?.tier;
+        base.priceTier = matchedRequest?.priceTier;
+        return base;
+      }
+
+      // Fallback: compute from request data (pre-migration transactions)
       let matchedRequest: typeof allRequests[0] | undefined;
       if (t.description) {
         for (const r of allRequests) {
@@ -786,21 +835,15 @@ export class DatabaseStorage implements IStorage {
       if (!matchedRequest) return base;
       const tierKey = (matchedRequest.priceTier || matchedRequest.tier || "standard").toLowerCase();
       const takeRate = TAKE_RATES[tierKey] ?? 0.50;
-      const takeRatePercent = Math.round(takeRate * 100);
-      const clientPaid = matchedRequest.creditsCost;
-      const expertPayout = Math.max(1, Math.floor(clientPaid * (1 - takeRate)));
-      const platformFee = clientPaid - expertPayout;
-      return {
-        ...base,
-        requestId: matchedRequest.id,
-        requestTitle: matchedRequest.title,
-        tier: matchedRequest.tier,
-        priceTier: matchedRequest.priceTier,
-        clientPaid,
-        expertPayout,
-        platformFee,
-        takeRatePercent,
-      };
+      base.requestId = matchedRequest.id;
+      base.requestTitle = matchedRequest.title;
+      base.tier = matchedRequest.tier;
+      base.priceTier = matchedRequest.priceTier;
+      base.clientPaid = matchedRequest.creditsCost;
+      base.expertPayout = Math.max(1, Math.floor(matchedRequest.creditsCost * (1 - takeRate)));
+      base.platformFee = matchedRequest.creditsCost - base.expertPayout;
+      base.takeRatePercent = Math.round(takeRate * 100);
+      return base;
     });
   }
 
@@ -832,6 +875,27 @@ export class DatabaseStorage implements IStorage {
   }
   updateWithdrawalRequest(id: number, data: Partial<InsertWithdrawalRequest>): WithdrawalRequest | undefined {
     return db.update(withdrawalRequests).set({ ...data, updatedAt: new Date().toISOString() }).where(eq(withdrawalRequests.id, id)).returning().get();
+  }
+
+  // Audit Log
+  writeAuditLog(entry: { tableName: string; rowId: number; action: string; oldValue?: string; newValue?: string; reason?: string }): void {
+    db.insert(auditLog).values({
+      tableName: entry.tableName,
+      rowId: entry.rowId,
+      action: entry.action,
+      oldValue: entry.oldValue || null,
+      newValue: entry.newValue || null,
+      reason: entry.reason || null,
+      createdAt: new Date().toISOString(),
+    }).run();
+  }
+
+  // Take Rate History
+  getTakeRateHistory(): TakeRateHistory[] {
+    return db.select().from(takeRateHistory).orderBy(desc(takeRateHistory.id)).all();
+  }
+  addTakeRateHistory(entry: InsertTakeRateHistory): TakeRateHistory {
+    return db.insert(takeRateHistory).values(entry).returning().get();
   }
 }
 

@@ -133,6 +133,10 @@ export const creditTransactions = sqliteTable("credit_transactions", {
   amount: integer("amount").notNull(),
   type: text("type").notNull(),
   description: text("description").notNull(),
+  takeRatePercent: integer("take_rate_percent"),
+  platformFee: integer("platform_fee"),
+  expertPayout: integer("expert_payout"),
+  clientPaid: integer("client_paid"),
   createdAt: text("created_at").notNull().default("now"),
   updatedAt: text("updated_at"),
 });
@@ -350,3 +354,32 @@ export const withdrawalRequests = sqliteTable("withdrawal_requests", {
 export const insertWithdrawalRequestSchema = createInsertSchema(withdrawalRequests).omit({ id: true });
 export type WithdrawalRequest = typeof withdrawalRequests.$inferSelect;
 export type InsertWithdrawalRequest = z.infer<typeof insertWithdrawalRequestSchema>;
+
+// Audit log table for tracking data changes during restore/sync
+export const auditLog = sqliteTable("audit_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tableName: text("table_name").notNull(),
+  rowId: integer("row_id").notNull(),
+  action: text("action").notNull(), // 'INSERT', 'UPDATE', 'SKIP', 'DELETE_BLOCKED'
+  oldValue: text("old_value"),       // JSON
+  newValue: text("new_value"),       // JSON
+  reason: text("reason"),            // 'restore', 'sync', 'api_call', 'admin'
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertAuditLogSchema = createInsertSchema(auditLog).omit({ id: true });
+export type AuditLog = typeof auditLog.$inferSelect;
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+
+// Take rate history table for tracking rate changes over time
+export const takeRateHistory = sqliteTable("take_rate_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tier: text("tier").notNull(),
+  rate: integer("rate").notNull(), // stored as percentage (50 = 50%)
+  effectiveFrom: text("effective_from").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertTakeRateHistorySchema = createInsertSchema(takeRateHistory).omit({ id: true });
+export type TakeRateHistory = typeof takeRateHistory.$inferSelect;
+export type InsertTakeRateHistory = z.infer<typeof insertTakeRateHistorySchema>;
