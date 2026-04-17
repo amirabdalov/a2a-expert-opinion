@@ -92,6 +92,14 @@ function statusColor(s: string) {
   }
 }
 
+// G2-3: Compute expert payout from request, preferring stored value over computed
+const EXPERT_TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
+function getExpertPayout(request: any): string {
+  if ((request as any).expertPayout != null) return Number((request as any).expertPayout).toFixed(2);
+  const tr = EXPERT_TAKE_RATES[(request.tier || "standard").toLowerCase()] ?? 0.50;
+  return (request.creditsCost * (1 - tr)).toFixed(2);
+}
+
 function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView: (v: ExpertView) => void; onLogout: () => void }) {
   const items = [
     { id: "overview" as const, icon: LayoutDashboard, label: "Overview" },
@@ -105,15 +113,7 @@ function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView:
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          {/* A2A blue logo */}
-          <div className="w-7 h-7 bg-[#0F3DD1] rounded flex items-center justify-center shrink-0">
-            <svg width="18" height="14" viewBox="0 0 18 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="A2A">
-              <path d="M4 11L7 3L10 11" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M5.5 8.5H8.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-              <path d="M11.5 11V3H14C15.1 3 16 3.9 16 5C16 6.1 15.1 7 14 7H11.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M11.5 7H14.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-          </div>
+          <img src="/a2a-blue-logo.svg" alt="A2A" className="h-7 w-7 shrink-0" />
           <span className="font-semibold text-sm text-sidebar-foreground">Expert Portal</span>
         </div>
       </SidebarHeader>
@@ -217,17 +217,21 @@ function AvailableQueue({ expertId, setView, setSelectedReview }: { expertId: nu
       const res = await apiRequest("POST", `/api/reviews/${reviewId}/claim`, { expertId });
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
+      // G2-2: Pre-populate review into cache so ReviewDetail can render immediately
+      queryClient.setQueryData<ExpertReview[]>(["/api/reviews/expert", expertId], (old) => {
+        if (!old) return [data];
+        const exists = old.some((r) => r.id === data.id);
+        return exists ? old.map((r) => r.id === data.id ? data : r) : [...old, data];
+      });
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/pending"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
-      // OB-E: Invalidate the specific review query to prevent blank page
       queryClient.invalidateQueries({ queryKey: ["/api/reviews/request", data.requestId] });
       toast({ title: "Review claimed!" });
-      // OB-E: Set review and navigate to detail view (fixes blank page on mobile)
-      setTimeout(() => {
-        setSelectedReview(data.id);
-        setView("review-detail");
-      }, 100);
+      // G2-2: Navigate immediately — data is already in cache
+      setSelectedReview(data.id);
+      setView("review-detail");
+      // Refetch in background to sync with server
+      queryClient.invalidateQueries({ queryKey: ["/api/reviews/expert", expertId] });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -291,11 +295,7 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
   const claimableReview = reviews[0];
   const payout = getEstimatedPayout(request.serviceType, request.tier || "standard");
 
-  const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
-  const takeRate = TAKE_RATES[(request.tier || "standard").toLowerCase()] ?? 0.50;
-  const expertPayoutAmount = (request as any).expertPayout != null
-    ? Number((request as any).expertPayout).toFixed(2)
-    : (request.creditsCost * (1 - takeRate)).toFixed(2);
+  const expertPayoutAmount = getExpertPayout(request);
 
   return (
     <Card data-testid={`queue-request-${requestId}`} className="hover:shadow-md transition">
@@ -418,7 +418,7 @@ function ActiveReviewCard({ review, onClick }: { review: ExpertReview; onClick: 
               <h3 className="text-sm font-semibold">{request.title}</h3>
               <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">{request.category} · {request.tier} · ${request.creditsCost} credits</p>
+            <p className="text-xs text-muted-foreground">{request.category} · {request.tier} · ${getExpertPayout(request)} payout</p>
           </div>
           <Badge className="bg-blue-100 text-blue-800 text-xs">In Progress</Badge>
         </div>
@@ -693,7 +693,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         <h1 className="text-lg md:text-xl font-bold truncate">{request.title}</h1>
         <Badge className={`text-xs shrink-0 ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
       </div>
-      <p className="text-sm text-muted-foreground mb-4 ml-9 md:ml-10">{request.category} · {request.tier} tier · ${request.creditsCost} credits</p>
+      <p className="text-sm text-muted-foreground mb-4 ml-9 md:ml-10">{request.category} · {request.tier} tier · ${getExpertPayout(request)} payout</p>
 
       {request.aiResponse && (
         <Card className="mb-4">
@@ -709,43 +709,29 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         </Card>
       )}
 
-      {parsedAttachments.length > 0 && (
+      {/* G2-4: Merged attachments section — parsed JSON + DB-stored files + expert upload */}
+      {(parsedAttachments.length > 0 || (requestFiles && requestFiles.length > 0) || !isCompleted) && (
         <Card className="mb-4">
           <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
+              {/* Parsed JSON attachments (legacy) */}
               {parsedAttachments.map((a, i) => (
-                <details key={i} className="border rounded p-2">
-                  <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
-                    <FileText className="h-3 w-3" />
-                    {/* FIX-5: Updated download link to new DB-based endpoint */}
-                    <a
-                      href={`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`}
-                      target="_blank"
-                      download={a.name}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-blue-600 hover:underline"
-                    >
-                      {a.name}
-                    </a>
-                  </summary>
-                  <pre className="mt-2 text-xs bg-muted/30 p-2 rounded whitespace-pre-wrap">{a.content}</pre>
-                </details>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* FIX-6: DB-stored file attachments (shows on mobile and desktop) */}
-      {requestFiles && requestFiles.length > 0 && (
-        <Card className="mt-4 mb-4">
-          <CardContent className="p-4">
-            <h4 className="font-semibold mb-2 text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</h4>
-            <div className="space-y-2">
-              {requestFiles.map((f) => (
                 <a
-                  key={f.id}
+                  key={`parsed-${i}`}
+                  href={`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`}
+                  target="_blank"
+                  download={a.name}
+                  className="flex items-center gap-2 text-primary hover:underline text-sm"
+                >
+                  <FileText className="h-4 w-4 shrink-0" />
+                  {a.name}
+                </a>
+              ))}
+              {/* DB-stored file attachments */}
+              {requestFiles?.map((f) => (
+                <a
+                  key={`db-${f.id}`}
                   href={`/api/files/${currentReview.requestId}/${encodeURIComponent(f.filename)}`}
                   target="_blank"
                   download
@@ -755,6 +741,34 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
                 </a>
               ))}
+              {/* G2-4: Expert file upload */}
+              {!isCompleted && (
+                <div className="pt-2 border-t mt-2">
+                  <label className="flex items-center gap-2 cursor-pointer text-sm text-muted-foreground hover:text-primary transition-colors">
+                    <Camera className="h-4 w-4" />
+                    <span>Upload attachment</span>
+                    <input
+                      type="file"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file || !currentReview?.requestId) return;
+                        const form = new FormData();
+                        form.append("file", file);
+                        try {
+                          const res = await fetch(`/api/requests/${currentReview.requestId}/upload`, { method: "POST", body: form });
+                          if (!res.ok) throw new Error("Upload failed");
+                          toast({ title: "File uploaded" });
+                          queryClient.invalidateQueries({ queryKey: ["/api/files", currentReview.requestId] });
+                        } catch (err: any) {
+                          toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+                        }
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -924,7 +938,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
             <Clock className="h-5 w-5 text-amber-500 shrink-0" />
             <div>
               <p className="text-sm font-semibold text-amber-800 dark:text-amber-400">Under A2A Global Verification</p>
-              <p className="text-xs text-muted-foreground">{request.creditsCost} credits pending after A2A Global verification</p>
+              <p className="text-xs text-muted-foreground">${getExpertPayout(request)} payout pending after A2A Global verification</p>
             </div>
           </CardContent>
         </Card>
@@ -935,7 +949,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
             <CheckCircle className="h-5 w-5 text-green-500 shrink-0" />
             <div>
               <p className="text-sm font-semibold text-green-800 dark:text-green-400">Verified & Approved</p>
-              <p className="text-xs text-green-600">{request.creditsCost} credits earned</p>
+              <p className="text-xs text-green-600">${getExpertPayout(request)} earned</p>
             </div>
           </CardContent>
         </Card>
@@ -1072,13 +1086,13 @@ function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClic
             {isUnderReview && (
               <>
                 <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 text-xs">Under A2A Global Verification</Badge>
-                <p className="text-[10px] text-muted-foreground">{request.creditsCost} credits pending after verification</p>
+                <p className="text-[10px] text-muted-foreground">${getExpertPayout(request)} payout pending after verification</p>
               </>
             )}
             {isApproved && (
               <>
                 <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 text-xs">Approved</Badge>
-                <p className="text-[10px] text-green-600 font-medium">{request.creditsCost} credits earned</p>
+                <p className="text-[10px] text-green-600 font-medium">${getExpertPayout(request)} earned</p>
               </>
             )}
             {!isUnderReview && !isApproved && (
@@ -1653,7 +1667,12 @@ function Earnings({ userId }: { userId: number }) {
                 <p className="text-xs text-muted-foreground">Withdrawals are available for a minimum of $50.</p>
                 <p className="text-xs text-muted-foreground italic mt-0.5">We are working on reducing the withdrawal limits</p>
               </div>
-              {!hasBankDetails ? (
+              {/* G2-5: Block withdrawal for unverified experts */}
+              {expert && expert.verified !== 1 ? (
+                <Button variant="outline" disabled data-testid="button-withdraw-unverified">
+                  <AlertCircle className="mr-2 h-4 w-4" /> Complete verification to withdraw
+                </Button>
+              ) : !hasBankDetails ? (
                 <Button
                   onClick={() => setShowBankDetailsDialog(true)}
                   variant="outline"
@@ -1960,20 +1979,6 @@ function ExpertProfile({ expert }: { expert: Expert }) {
     },
   });
 
-  // Group available by tier and compute avg payout
-  const tierStats = ["standard", "pro", "guru"].map((tier) => {
-    const TAKE_RATES: Record<string, number> = { standard: 0.50, pro: 0.30, guru: 0.15 };
-    const reqs = availableRequests?.filter((r: any) => {
-      const reqTier = (r.tier || "standard").toLowerCase();
-      return reqTier === tier;
-    }) ?? [];
-    const count = reqs.length;
-    const avgPayout = count > 0
-      ? (reqs.reduce((sum: number, r: any) => sum + (r.creditsCost || 0) * (1 - TAKE_RATES[tier]), 0) / count).toFixed(2)
-      : null;
-    return { tier, count, avgPayout };
-  });
-
   async function handleSaveTierRate() {
     setTierSaving(true);
     try {
@@ -2152,21 +2157,6 @@ function ExpertProfile({ expert }: { expert: Expert }) {
             {tierSaving ? "Saving..." : "Save Rate"}
           </Button>
 
-          {/* FIX-8: Available requests by tier info box */}
-          <div className="mt-4 p-3 bg-muted/40 rounded-lg" data-testid="card-available-by-tier">
-            <p className="text-xs font-semibold text-muted-foreground mb-2">Available requests by tier (help you choose):</p>
-            <div className="space-y-1.5">
-              {tierStats.map(({ tier, count, avgPayout }) => (
-                <div key={tier} className="flex items-center justify-between text-xs">
-                  <span className="capitalize font-medium">{tier}:</span>
-                  <span className="text-muted-foreground">
-                    {count} request{count !== 1 ? "s" : ""} available
-                    {avgPayout ? ` · $${avgPayout} avg payout` : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
         </CardContent>
       </Card>
 
@@ -2486,12 +2476,8 @@ export default function ExpertDashboard() {
     return "overview";
   });
   const [selectedReview, setSelectedReview] = useState<number>(0);
-  // FIX-8+9: Default to hiding tour if user already completed it
-  const [showTour, setShowTour] = useState(() => {
-    if (user?.tourCompleted === 1) return false;
-    if (localStorage.getItem('a2a_tour_seen')) return false;
-    return true;
-  });
+  // G1-1: Tour defaults to hidden; useEffect decides whether to show
+  const [showTour, setShowTour] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
@@ -2502,26 +2488,22 @@ export default function ExpertDashboard() {
     document.documentElement.classList.remove("dark");
   }, []);
 
-  // FIX-8+9: Show confetti/tour only for first-time expert registrations
-  // Build 34: localStorage fallback to survive DB resets across deploys
+  // G1-1: Show confetti/tour only for genuine first-time logins (DB is source of truth)
   const expertTourInitialized = useRef(false);
   useEffect(() => {
     if (!user || expertTourInitialized.current) return;
     expertTourInitialized.current = true;
-    const tourSeen = localStorage.getItem('a2a_tour_seen');
-    if (user.tourCompleted === 1 || tourSeen) {
+    const isFirstLogin = user.tourCompleted === 0 && ((user as any).loginCount ?? 0) <= 1;
+    if (!isFirstLogin) {
       setShowTour(false);
       setShowConfetti(false);
-    } else if (user.tourCompleted === 0) {
+    } else {
+      setShowTour(true);
       setShowConfetti(true);
-      localStorage.setItem('a2a_tour_seen', 'true');
-      // Mark tour as completed after 2 seconds
-      setTimeout(() => {
-        apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
-      }, 2000);
+      apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
       setTimeout(() => setShowConfetti(false), 4000);
     }
-  }, [user]); // gated by expertTourInitialized ref
+  }, [user]);
 
   // SSE real-time notifications
   useSSE(user?.id);
@@ -2647,15 +2629,7 @@ export default function ExpertDashboard() {
           <header className="flex items-center justify-between px-4 py-2 border-b bg-background gap-3">
             <div className="hidden md:block"><SidebarTrigger data-testid="button-expert-sidebar-toggle" /></div>
             <div className="md:hidden flex items-center gap-2">
-              {/* A2A blue logo for mobile header */}
-              <div className="w-7 h-7 bg-[#0F3DD1] rounded flex items-center justify-center shrink-0">
-                <svg width="18" height="14" viewBox="0 0 18 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="A2A">
-                  <path d="M4 11L7 3L10 11" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  <path d="M5.5 8.5H8.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-                  <path d="M11.5 11V3H14C15.1 3 16 3.9 16 5C16 6.1 15.1 7 14 7H11.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  <path d="M11.5 7H14.5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-                </svg>
-              </div>
+              <img src="/a2a-blue-logo.svg" alt="A2A" className="h-7 w-7 shrink-0" />
               <span className="font-semibold text-sm">A2A</span>
             </div>
             {/* Global search bar (change #11) */}
@@ -2733,6 +2707,10 @@ export default function ExpertDashboard() {
                   <span className={`relative inline-flex rounded-full h-2 w-2 ${headerAvailability ? 'bg-green-500' : 'bg-gray-400'}`}></span>
                 </span>
                 <span className="text-sm font-medium hidden sm:block">{user.name}</span>
+              </button>
+              {/* G3-3: Mobile logout button in top bar (matches client dashboard pattern) */}
+              <button onClick={handleLogout} className="md:hidden text-red-500 p-1" title="Log out" data-testid="mobile-logout">
+                <LogOut className="h-5 w-5" />
               </button>
             </div>
           </header>

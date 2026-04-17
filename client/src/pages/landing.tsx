@@ -1092,7 +1092,7 @@ function LandingNav() {
                         <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
                       </span>
                       <span className="text-sm font-medium text-[#686868] max-w-[140px] truncate" data-testid="nav-user-name">{loggedInUser.name || loggedInUser.email}</span>
-                      <Link href="/dashboard">
+                      <Link href={loggedInUser.role === 'expert' ? '/expert' : '/dashboard'}>
                         <span className="inline-flex items-center gap-1.5 px-4 h-10 rounded-full bg-[#0F3DD1] text-white text-sm font-semibold cursor-pointer hover:opacity-90 transition whitespace-nowrap" data-testid="button-nav-dashboard">
                           Go to Dashboard
                         </span>

@@ -507,6 +507,7 @@ export interface IStorage {
   // Invoices
   createInvoice(inv: InsertInvoice): Invoice;
   getInvoicesByExpert(expertId: number): Invoice[];
+  getInvoiceByNumber(invoiceNumber: string): Invoice | undefined;
   getInvoiceCount(): number;
   getUninvoicedReviewsByExpert(expertId: number): ExpertReview[];
   markReviewsInvoiced(reviewIds: number[]): void;
@@ -785,6 +786,9 @@ export class DatabaseStorage implements IStorage {
   }
   getInvoicesByExpert(expertId: number): Invoice[] {
     return db.select().from(invoices).where(eq(invoices.expertId, expertId)).orderBy(desc(invoices.id)).all();
+  }
+  getInvoiceByNumber(invoiceNumber: string): Invoice | undefined {
+    return db.select().from(invoices).where(eq(invoices.invoiceNumber, invoiceNumber)).get();
   }
   getInvoiceCount(): number {
     const result = db.select({ count: sql<number>`count(*)` }).from(invoices).get();

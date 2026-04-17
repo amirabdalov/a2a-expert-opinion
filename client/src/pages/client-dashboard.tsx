@@ -11,6 +11,7 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
@@ -34,7 +35,7 @@ import {
   Send, Clock, CheckCircle, AlertCircle, Coins, ArrowRight, ArrowLeft, MessageSquare,
   Star, Search, Wrench, Paperclip, X, FileText, User, DollarSign, RefreshCcw,
   ChevronDown, ChevronUp, ShieldCheck, Briefcase, Timer, FileBarChart, Circle,
-  Upload, Camera, Bot,
+  Upload, Camera, Bot, HelpCircle, Mail, Phone, ExternalLink,
 } from "lucide-react";
 import type { Request as ExpertRequest, Message, CreditTransaction, ExpertReview, Expert, RequestEvent } from "@shared/schema";
 
@@ -331,9 +332,7 @@ function ClientSidebar({ view, setView, onLogout, onResetDraft }: { view: Client
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 bg-sidebar-primary rounded flex items-center justify-center">
-            <span className="text-white font-bold text-xs">A2A</span>
-          </div>
+          <img src="/a2a-blue-logo.svg" alt="A2A" className="h-7 w-7 shrink-0" />
           <span className="font-semibold text-sm text-sidebar-foreground">Client Portal</span>
         </div>
       </SidebarHeader>
@@ -1246,7 +1245,7 @@ function ExpertProfileCard({ expert, compact }: { expert: Expert & { userName: s
 }
 
 // ─── OB-H: Client Post-Verification Actions ───
-function ClientPostVerificationActions({ request, userId, setView }: { request: ExpertRequest; userId: number; setView: (v: ClientView) => void }) {
+function ClientPostVerificationActions({ request, userId, setView, onFollowUpClick }: { request: ExpertRequest; userId: number; setView: (v: ClientView) => void; onFollowUpClick?: () => void }) {
   const [showRating, setShowRating] = useState(false);
   const { toast } = useToast();
 
@@ -1263,6 +1262,9 @@ function ClientPostVerificationActions({ request, userId, setView }: { request: 
 
   if (showRating) return null; // Rating section handles it below
 
+  // G4-2: Hide follow-up button if already rated
+  const hasRated = request.clientRating != null && request.clientRating > 0;
+
   return (
     <Card className="mb-4">
       <CardContent className="p-4">
@@ -1277,16 +1279,21 @@ function ClientPostVerificationActions({ request, userId, setView }: { request: 
           >
             <Star className="h-4 w-4 mr-2" /> Rate the response and mark complete
           </Button>
-          <Button
-            variant="outline"
-            className="flex-1"
-          >
-            <MessageSquare className="h-4 w-4 mr-2" /> Ask follow-up questions (up to 2)
-          </Button>
+          {!hasRated && (
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={onFollowUpClick}
+            >
+              <MessageSquare className="h-4 w-4 mr-2" /> Ask follow-up questions (up to 2)
+            </Button>
+          )}
         </div>
-        <p className="text-[10px] text-muted-foreground mt-2">
-          Follow-up questions: You may ask up to 2 follow-up messages. Use the timeline below to send messages.
-        </p>
+        {!hasRated && (
+          <p className="text-[10px] text-muted-foreground mt-2">
+            Follow-up questions: You may ask up to 2 follow-up messages. Use the timeline below to send messages.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -1437,7 +1444,7 @@ function ClientRatingSection({ request, userId }: { request: ExpertRequest; user
 
 // ─── Request Detail (type-specific) ───
 // ─── Request Timeline Component ───
-function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { requestId: number; userId: number; userName: string; expertIdByUserId?: Record<number, number> }) {
+function RequestTimeline({ requestId, userId, userName, expertIdByUserId, messageInputRef, clientUserId, clientRating }: { requestId: number; userId: number; userName: string; expertIdByUserId?: Record<number, number>; messageInputRef?: React.RefObject<HTMLInputElement>; clientUserId?: number; clientRating?: number | null }) {
   // FIX-12: Poll timeline every 10 seconds to pick up expert messages
   const { data: events } = useQuery<RequestEvent[]>({
     queryKey: ["/api/requests", requestId, "timeline"],
@@ -1449,6 +1456,18 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { re
   });
   const [msg, setMsg] = useState("");
   const { toast } = useToast();
+
+  // G4-2: Check if client has rated — disable chat if so
+  const hasRated = clientRating != null && clientRating > 0;
+
+  // G4-3: Count messages per side to enforce 2+2 limit
+  const allMsgEvents = (events || []).filter((e) => e.type === "message");
+  const ownerUserId = clientUserId ?? userId;
+  const clientMsgCount = allMsgEvents.filter((e) => e.actorId === ownerUserId).length;
+  const expertMsgCount = allMsgEvents.filter((e) => e.actorId != null && e.actorId !== ownerUserId).length;
+  const chatExhausted = clientMsgCount >= 2 && expertMsgCount >= 2;
+
+  const chatDisabled = hasRated || chatExhausted;
 
   const sendMsgMutation = useMutation({
     mutationFn: async () => {
@@ -1568,20 +1587,29 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { re
           </div>
           {/* Messaging input */}
           <div className="mt-4 pt-3 border-t">
-            <p className="text-xs font-medium mb-2">Send a message to the expert</p>
-            <div className="flex gap-2">
-              <Input
-                value={msg}
-                onChange={(e) => setMsg(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && msg.trim() && sendMsgMutation.mutate()}
-                placeholder="Ask the expert a question..."
-                className="flex-1 text-xs"
-                data-testid="input-timeline-message"
-              />
-              <Button size="sm" onClick={() => sendMsgMutation.mutate()} disabled={!msg.trim() || sendMsgMutation.isPending} data-testid="button-send-timeline-message">
-                <Send className="h-3 w-3" />
-              </Button>
-            </div>
+            {chatDisabled ? (
+              <p className="text-xs text-muted-foreground text-center py-2">
+                {hasRated ? "This request has been rated and closed." : "Chat limit reached (2 messages each)."}
+              </p>
+            ) : (
+              <>
+                <p className="text-xs font-medium mb-2">Send a message to the expert</p>
+                <div className="flex gap-2">
+                  <Input
+                    ref={messageInputRef as any}
+                    value={msg}
+                    onChange={(e) => setMsg(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && msg.trim() && sendMsgMutation.mutate()}
+                    placeholder="Ask the expert a question..."
+                    className="flex-1 text-xs"
+                    data-testid="input-timeline-message"
+                  />
+                  <Button size="sm" onClick={() => sendMsgMutation.mutate()} disabled={!msg.trim() || sendMsgMutation.isPending} data-testid="button-send-timeline-message">
+                    <Send className="h-3 w-3" />
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -1591,6 +1619,7 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId }: { re
 
 function RequestDetail({ requestId, userId, setView }: { requestId: number; userId: number; setView: (v: ClientView) => void }) {
   const { user } = useAuth();
+  const messageInputRef = useRef<HTMLInputElement>(null);
   const { data: request } = useQuery<ExpertRequest>({ queryKey: ["/api/requests", requestId] });
   const { data: reviews } = useQuery<DetailedReview[]>({
     queryKey: ["/api/reviews/request", requestId, "detailed"],
@@ -1709,7 +1738,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
       </Card>
 
       {/* Request Timeline */}
-      <RequestTimeline requestId={requestId} userId={userId} userName={user?.name || ""} expertIdByUserId={expertIdByUserId} />
+      <RequestTimeline requestId={requestId} userId={userId} userName={user?.name || ""} expertIdByUserId={expertIdByUserId} messageInputRef={messageInputRef} clientUserId={request.userId} clientRating={request.clientRating} />
 
       {/* AI Response */}
       {request.aiResponse && (
@@ -1920,21 +1949,31 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
 
       {/* OB-H: Action buttons after admin verification */}
       {request.status === "awaiting_followup" && (
-        <ClientPostVerificationActions request={request} userId={userId} setView={setView} />
+        <ClientPostVerificationActions request={request} userId={userId} setView={setView} onFollowUpClick={() => {
+          messageInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+          setTimeout(() => messageInputRef.current?.focus(), 400);
+        }} />
       )}
 
-      {/* OB-H: After completion, show Dispute link */}
+      {/* G1-6: "Need help?" popover with contact options */}
       {request.status === "completed" && request.clientRating && (
         <div className="mb-4 text-center">
-          <button
-            onClick={() => {
-              const helpBtn = document.querySelector('[data-testid="floating-help-button"]') as HTMLElement;
-              if (helpBtn) helpBtn.click();
-            }}
-            className="text-xs text-muted-foreground underline hover:text-primary cursor-pointer"
-          >
-            Dispute?
-          </button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary cursor-pointer" data-testid="button-need-help">
+                <HelpCircle className="h-3 w-3" />
+                Need help?
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-3" align="center">
+              <p className="text-sm font-medium mb-2">Contact Support</p>
+              <div className="space-y-2">
+                <a href="mailto:support@a2aglobal.com" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Mail className="h-4 w-4" />support@a2aglobal.com</a>
+                <a href="tel:+18005551234" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Phone className="h-4 w-4" />+1 (800) 555-1234</a>
+                <a href="https://a2aglobal.com/faq" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><ExternalLink className="h-4 w-4" />FAQ</a>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       )}
 
@@ -2636,13 +2675,8 @@ export default function ClientDashboard() {
   const [view, setView] = useState<ClientView>(() => getPrefillData() ? "new-request" : "overview");
   const [selectedRequest, setSelectedRequest] = useState<number>(0);
   const [editDraftId, setEditDraftId] = useState<number | undefined>(undefined);
-  // FIX-8+9: Default to hiding tour if user already completed it
-  const [showTour, setShowTour] = useState(() => {
-    // If user is already loaded (from cookie) and has completed tour, don't show
-    if (user?.tourCompleted === 1) return false;
-    if (localStorage.getItem('a2a_tour_seen')) return false;
-    return true;
-  });
+  // G1-1: Tour defaults to hidden; useEffect decides whether to show
+  const [showTour, setShowTour] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
 
   // FIX-3: Live credit balance query (refreshes every 3s + on window focus, always fresh)
@@ -2656,26 +2690,19 @@ export default function ClientDashboard() {
   });
   const displayCredits = liveCreditData?.credits ?? user?.credits ?? 0;
 
-  // FIX-8 + FIX-9: Confetti and walkthrough only on first-ever login (tourCompleted === 0)
-  // Use a ref to ensure this runs only once even if user object reference changes
-  // Build 34: localStorage fallback to survive DB resets across deploys
+  // G1-1: Show confetti/tour only for genuine first-time logins (DB is source of truth)
   const tourInitialized = useRef(false);
   useEffect(() => {
     if (!user || tourInitialized.current) return;
     tourInitialized.current = true;
-    const tourSeen = localStorage.getItem('a2a_tour_seen');
-    // OB-B: Use loginCount AND localStorage to decide confetti (show only on first visit)
-    const isFirstLogin = (user as any).loginCount <= 1 && !tourSeen;
+    const isFirstLogin = user.tourCompleted === 0 && ((user as any).loginCount ?? 0) <= 1;
     if (!isFirstLogin) {
       setShowTour(false);
       setShowConfetti(false);
     } else {
-      // First-time user — show confetti and walkthrough
+      setShowTour(true);
       setShowConfetti(true);
-      localStorage.setItem('a2a_tour_seen', 'true');
-      setTimeout(() => {
-        apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
-      }, 2000);
+      apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
       setTimeout(() => setShowConfetti(false), 4000);
     }
   }, [user]);
@@ -2740,12 +2767,14 @@ export default function ClientDashboard() {
       <div className="flex h-screen w-full" data-testid="page-dashboard">
         <ClientSidebar view={view} setView={setView} onLogout={handleLogout} onResetDraft={() => setEditDraftId(undefined)} />
         <div className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex items-center justify-between px-4 py-2 border-b bg-background">
-            <div className="flex items-center gap-3">
+          <header className="flex items-center justify-between px-4 py-2 border-b bg-background min-w-0 overflow-hidden">
+            <div className="flex items-center gap-3 min-w-0">
               <SidebarTrigger data-testid="button-sidebar-toggle" />
-              <GlobalSearchBar userId={user.id} onNavigate={(id) => { setSelectedRequest(id); setView('request-detail'); }} />
+              <div className="hidden sm:flex">
+                <GlobalSearchBar userId={user.id} onNavigate={(id) => { setSelectedRequest(id); setView('request-detail'); }} />
+              </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
               <NotificationBell userId={user.id} onNavigate={(link) => {
                 // Parse link for in-page navigation (e.g., /dashboard?request=5)
                 if (link.startsWith('/dashboard?request=')) {
@@ -2762,7 +2791,7 @@ export default function ClientDashboard() {
                 }
               }} />
               <button onClick={() => setView("credits")} className="focus:outline-none" title="Credits & Billing" data-testid="header-credits-link">
-                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors"><Coins className="h-3 w-3 mr-1" />{displayCredits} credits</Badge>
+                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors whitespace-nowrap"><Coins className="h-3 w-3 mr-1" />{displayCredits}<span className="hidden sm:inline"> credits</span></Badge>
               </button>
               <button onClick={() => setView("settings")} className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">
                 <span className="relative flex h-2 w-2" title="Online">

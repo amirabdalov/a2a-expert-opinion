@@ -147,6 +147,20 @@ function logRequestEvent(requestId: number, type: string, actorId?: number, acto
   writeRequestEventToCloudSql(evt).catch(() => {});
 }
 
+// G2-1: Sync wrapper — persists notification to Cloud SQL after local insert
+function createAndSyncNotification(data: { userId: number; title: string; message: string; read: number; link?: string; createdAt: string }) {
+  const notif = storage.createNotification(data);
+  writeNotificationToCloudSql(notif).catch(() => {});
+  return notif;
+}
+
+// G2-1: Sync wrapper — persists message to Cloud SQL after local insert
+function createAndSyncMessage(data: { requestId: number; role: string; content: string }) {
+  const msg = storage.createMessage(data);
+  writeMessageToCloudSql(msg).catch(() => {});
+  return msg;
+}
+
 // Groq primary (free, commercial use), Anthropic fallback (sandbox)
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 let groq: any = null;
@@ -464,7 +478,7 @@ export async function registerRoutes(
         sqlite.prepare("INSERT INTO legal_acceptances (user_id, document_type, document_version, accepted_at, ip_address, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(user.id, "privacy_policy", "April 2026", now, ip, ua, now, now);
         console.log(`[LEGAL] Terms accepted by user ${user.id} from ${ip}`);
       } catch(e) { console.error("[LEGAL] Failed to log acceptance:", e); }
-      storage.createNotification({
+      createAndSyncNotification({
         userId: user.id,
         title: "Welcome to A2A Expert Opinion!",
         message: "You've received $5 free credits to get started. Submit your first request today.",
@@ -690,6 +704,15 @@ export async function registerRoutes(
     const request = storage.getRequest(requestId);
     if (!request) return res.status(404).json({ error: true, message: "Request not found" });
 
+    // G4-3: Enforce 2+2 message limit — reject if both sides already sent ≥2 messages
+    const existingEvents = storage.getRequestEventsByRequest(requestId);
+    const msgEvents = existingEvents.filter((e: any) => e.type === "message");
+    const clientMsgs = msgEvents.filter((e: any) => e.actorId === request.userId).length;
+    const expertMsgs = msgEvents.filter((e: any) => e.actorId != null && e.actorId !== request.userId).length;
+    if (clientMsgs >= 2 && expertMsgs >= 2) {
+      return res.status(400).json({ error: true, message: "Chat limit reached (2 messages each)" });
+    }
+
     // Determine if sender is the client (for follow-up counting)
     const isClientMessage = actorId === request.userId;
     let autoCompleted = false;
@@ -729,7 +752,7 @@ export async function registerRoutes(
           const notifTitle = `Follow-up on "${request.title}"`;
           const notifMessage = `${actorName}: ${message.substring(0, 100)}`;
           const notifLink = `/expert?request=${requestId}`;
-          storage.createNotification({
+          createAndSyncNotification({
             userId: expertUser.id,
             title: notifTitle,
             message: notifMessage,
@@ -743,7 +766,7 @@ export async function registerRoutes(
         if (expertUser && actorId === expertUser.id && clientUser) {
           const notifTitle = `Expert replied on "${request.title}"`;
           const notifMessage = `${actorName}: ${message.substring(0, 100)}`;
-          storage.createNotification({
+          createAndSyncNotification({
             userId: clientUser.id,
             title: notifTitle,
             message: notifMessage,
@@ -1088,7 +1111,7 @@ export async function registerRoutes(
         processedAt: new Date().toISOString(),
       });
       if (!w) return res.status(404).json({ error: true, message: "Withdrawal not found" });
-      storage.createNotification({
+      createAndSyncNotification({
         userId: w.userId,
         title: "Withdrawal Approved",
         message: `Your withdrawal of $${(w.amountCents / 100).toFixed(2)} has been approved and will be processed within 3-5 business days.`,
@@ -1114,7 +1137,7 @@ export async function registerRoutes(
         status: "rejected",
         processedAt: new Date().toISOString(),
       });
-      storage.createNotification({
+      createAndSyncNotification({
         userId: wOld.userId,
         title: "Withdrawal Rejected",
         message: `Your withdrawal of $${(wOld.amountCents / 100).toFixed(2)} was rejected. The funds have been returned to your wallet.`,
@@ -1181,7 +1204,7 @@ export async function registerRoutes(
         userId: user.id, amount: request.creditsCost, type: "refund",
         description: `Admin refund: ${request.title}`,
       });
-      storage.createNotification({
+      createAndSyncNotification({
         userId: user.id,
         title: "Refund Processed",
         message: `$${request.creditsCost} credits have been refunded for "${request.title}".`,
@@ -1450,7 +1473,7 @@ export async function registerRoutes(
       logRequestEvent(request.id, "submitted", userId, user.name);
 
       // Lifecycle notification: Request submitted
-      storage.createNotification({
+      createAndSyncNotification({
         userId,
         title: "Request Submitted",
         message: `Your request "${title}" in ${category} has been submitted successfully.`,
@@ -1474,7 +1497,7 @@ export async function registerRoutes(
           try {
             const cats = JSON.parse(exp.categories || "[]");
             if (cats.includes(category)) {
-              storage.createNotification({
+              createAndSyncNotification({
                 userId: exp.userId,
                 title: "New Request Available",
                 message: `A new ${sType} request "${title}" in ${category} is available for review.`,
@@ -1628,7 +1651,7 @@ export async function registerRoutes(
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
 
     // Notify client: expert assigned
-    storage.createNotification({
+    createAndSyncNotification({
       userId: r.userId,
       title: "Expert Assigned",
       message: `An expert has started working on your request "${r.title}".`,
@@ -1660,7 +1683,7 @@ export async function registerRoutes(
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
 
     // Lifecycle notification: Response delivered, awaiting client follow-up
-    storage.createNotification({
+    createAndSyncNotification({
       userId: r.userId,
       title: "Expert Response Ready",
       message: `Expert has responded to your request "${r.title}". You may ask up to 2 follow-up questions within 3 hours.`,
@@ -1686,6 +1709,16 @@ export async function registerRoutes(
   async function finalizeRequest(requestId: number): Promise<void> {
     const r = storage.getRequest(requestId);
     if (!r || r.status === "completed" || r.refunded) return;
+
+    // G4-4: If expertResponse is null, copy the last expert timeline message
+    if (!r.expertResponse) {
+      const events = storage.getRequestEventsByRequest(requestId);
+      const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== r.userId);
+      if (expertMsgs.length > 0) {
+        const lastExpertMsg = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+        storage.updateRequest(requestId, { expertResponse: (lastExpertMsg as any).message || (lastExpertMsg as any).content } as any);
+      }
+    }
 
     storage.updateRequest(requestId, { status: "completed" } as any);
 
@@ -1728,7 +1761,7 @@ export async function registerRoutes(
       }
     }
 
-    storage.createNotification({
+    createAndSyncNotification({
       userId: r.userId,
       title: "Request Completed",
       message: `Your request "${r.title}" has been completed and closed.`,
@@ -1968,7 +2001,7 @@ export async function registerRoutes(
       const expert = expertId ? storage.getExpert(expertId) : null;
       const expertUser = expert ? storage.getUser(expert.userId) : null;
       logRequestEvent(request.id, "claimed", expertUser?.id, expertUser?.name || "Expert");
-      storage.createNotification({
+      createAndSyncNotification({
         userId: request.userId,
         title: "Expert Claimed Your Request",
         message: `An expert has started reviewing "${request.title}".`,
@@ -2004,7 +2037,7 @@ export async function registerRoutes(
     const expertUser = expert ? storage.getUser(expert.userId) : null;
     logRequestEvent(review.requestId, "claimed", expertUser?.id, expertUser?.name || "Expert");
     if (request) {
-      storage.createNotification({
+      createAndSyncNotification({
         userId: request.userId,
         title: "Expert Claimed Your Request",
         message: `An expert has started reviewing "${request.title}".`,
@@ -2120,7 +2153,7 @@ export async function registerRoutes(
       // Notify client if all reviews completed
       const request = storage.getRequest(review.requestId);
       if (request) {
-        storage.createNotification({
+        createAndSyncNotification({
           userId: request.userId,
           title: "Expert Review Submitted",
           message: `An expert has submitted their review for "${request.title}".`,
@@ -2260,6 +2293,17 @@ export async function registerRoutes(
 
       const newStatus = "awaiting_followup";
       const followupDeadline = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+
+      // G4-4: If expertResponse is null, copy the last expert timeline message
+      if (!request.expertResponse) {
+        const events = storage.getRequestEventsByRequest(requestId);
+        const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== request.userId);
+        if (expertMsgs.length > 0) {
+          const lastExpertMsg = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+          storage.updateRequest(requestId, { expertResponse: (lastExpertMsg as any).message || (lastExpertMsg as any).content } as any);
+        }
+      }
+
       storage.updateRequest(requestId, {
         status: newStatus,
         followup_deadline: followupDeadline,
@@ -2292,7 +2336,7 @@ export async function registerRoutes(
       logRequestEvent(requestId, "approved", undefined, "A2A Admin", "Response approved and delivered to client");
 
       // Notify client
-      storage.createNotification({
+      createAndSyncNotification({
         userId: request.userId,
         title: "Expert Response Ready",
         message: `Your expert's verified response for "${request.title}" is now available. You may ask up to 2 follow-up questions within 3 hours.`,
@@ -2361,7 +2405,7 @@ export async function registerRoutes(
         if (expert) {
           const expertUser = storage.getUser(expert.userId);
           if (expertUser) {
-            storage.createNotification({
+            createAndSyncNotification({
               userId: expertUser.id,
               title: "Revision Requested",
               message: `Admin has requested a revision for "${request.title}"${feedback ? ": " + feedback : "."}`,
@@ -2395,7 +2439,7 @@ export async function registerRoutes(
 
   app.post("/api/messages", async (req, res) => {
     const { requestId, role, content } = req.body;
-    const msg = storage.createMessage({ requestId, role, content });
+    const msg = createAndSyncMessage({ requestId, role, content });
     return res.json(msg);
   });
 
@@ -2562,7 +2606,7 @@ export async function registerRoutes(
       if (!userId || !title || !message) {
         return res.status(400).json({ error: true, message: "Missing fields" });
       }
-      const notif = storage.createNotification({
+      const notif = createAndSyncNotification({
         userId, title, message, read: 0, createdAt: new Date().toISOString(),
       });
       return res.json(notif);
@@ -2848,7 +2892,7 @@ export async function registerRoutes(
         description: `Refund: ${request.title}`,
       });
 
-      storage.createNotification({
+      createAndSyncNotification({
         userId: user.id,
         title: "Refund Processed",
         message: `$${request.creditsCost} credits have been refunded for "${request.title}".`,
@@ -3358,13 +3402,13 @@ export async function registerRoutes(
       storage.createRequestEvent({ requestId: req4.id, type: "submitted", actorId: client.id, actorName: "Alex Johnson", message: null, createdAt: new Date(Date.now() - 1 * 86400000).toISOString() });
 
       // ─── Sample Notifications ───
-      storage.createNotification({ userId: client.id, title: "Welcome to A2A Expert Opinion!", message: "You've received 5 free credits to get started.", read: 1, createdAt: new Date(Date.now() - 7 * 86400000).toISOString() });
-      storage.createNotification({ userId: client.id, title: "Expert Claimed Your Request", message: 'Dr. Sarah Chen has started working on "Rate my AI portfolio diversification strategy".', read: 1, link: `/dashboard?request=${req1.id}`, createdAt: new Date(Date.now() - 5 * 86400000).toISOString() });
-      storage.createNotification({ userId: client.id, title: "Expert Review Submitted", message: 'An expert submitted their review for "Review AI\'s SaaS pricing analysis".', read: 0, link: `/dashboard?request=${req2.id}`, createdAt: new Date(Date.now() - 3 * 86400000).toISOString() });
-      storage.createNotification({ userId: client.id, title: "New Expert Review", message: 'James Rivera rated your portfolio strategy 7/10.', read: 0, link: `/dashboard?request=${req1.id}`, createdAt: new Date(Date.now() - 1 * 86400000).toISOString() });
+      createAndSyncNotification({ userId: client.id, title: "Welcome to A2A Expert Opinion!", message: "You've received 5 free credits to get started.", read: 1, createdAt: new Date(Date.now() - 7 * 86400000).toISOString() });
+      createAndSyncNotification({ userId: client.id, title: "Expert Claimed Your Request", message: 'Dr. Sarah Chen has started working on "Rate my AI portfolio diversification strategy".', read: 1, link: `/dashboard?request=${req1.id}`, createdAt: new Date(Date.now() - 5 * 86400000).toISOString() });
+      createAndSyncNotification({ userId: client.id, title: "Expert Review Submitted", message: 'An expert submitted their review for "Review AI\'s SaaS pricing analysis".', read: 0, link: `/dashboard?request=${req2.id}`, createdAt: new Date(Date.now() - 3 * 86400000).toISOString() });
+      createAndSyncNotification({ userId: client.id, title: "New Expert Review", message: 'James Rivera rated your portfolio strategy 7/10.', read: 0, link: `/dashboard?request=${req1.id}`, createdAt: new Date(Date.now() - 1 * 86400000).toISOString() });
 
-      storage.createNotification({ userId: expertUser.id, title: "New Request Available", message: 'A new rate request "Rate AI tax optimization advice" in finance is available.', read: 0, link: `/expert?view=queue`, createdAt: new Date(Date.now() - 2 * 86400000).toISOString() });
-      storage.createNotification({ userId: expertUser2.id, title: "New Request Available", message: 'A new custom request "Build a financial model" in entrepreneurship is available.', read: 1, link: `/expert?view=queue`, createdAt: new Date(Date.now() - 4 * 86400000).toISOString() });
+      createAndSyncNotification({ userId: expertUser.id, title: "New Request Available", message: 'A new rate request "Rate AI tax optimization advice" in finance is available.', read: 0, link: `/expert?view=queue`, createdAt: new Date(Date.now() - 2 * 86400000).toISOString() });
+      createAndSyncNotification({ userId: expertUser2.id, title: "New Request Available", message: 'A new custom request "Build a financial model" in entrepreneurship is available.', read: 1, link: `/expert?view=queue`, createdAt: new Date(Date.now() - 4 * 86400000).toISOString() });
 
       // ─── Sample Withdrawal ───
       storage.createWithdrawal({ userId: expertUser3.id, expertId: expert3.id, amountCents: 10000, status: "pending", createdAt: new Date(Date.now() - 1 * 86400000).toISOString(), processedAt: null });
@@ -3870,11 +3914,25 @@ export async function registerRoutes(
 
       writeWithdrawalRequestToCloudSql(wr).catch(() => {});
 
-      // Find expert to send notification email
+      // G2-7: Deduct payout amount from expert's wallet balance
       const expert = storage.getExpert(wr.expertId);
       const expertUser = expert ? storage.getUser(expert.userId) : null;
       if (expertUser) {
-        storage.createNotification({
+        const payoutCents = Math.round(Number(wr.amount) * 100);
+        const newBalance = Math.max(0, (expertUser.walletBalance || 0) - payoutCents);
+        storage.updateUser(expertUser.id, { walletBalance: newBalance });
+        storage.createWalletTransaction({
+          userId: expertUser.id,
+          amountCents: -payoutCents,
+          type: "payout",
+          description: `Payout initiated: Invoice ${wr.invoiceNumber}`,
+          createdAt: new Date().toISOString(),
+          stripePaymentId: null,
+        });
+        writeUserToCloudSql({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits, walletBalance: newBalance }).catch(() => {});
+        writeUserToBigQuery({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits, createdAt: expertUser.createdAt || undefined }).catch(() => {});
+
+        createAndSyncNotification({
           userId: expertUser.id,
           title: "Payout Initiated",
           message: `Your withdrawal of $${wr.amount} (Invoice ${wr.invoiceNumber}) has been initiated. Please allow up to 3 business days.`,
@@ -3908,6 +3966,31 @@ export async function registerRoutes(
 
       triggerBackup();
       return res.json(wr);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // G2-6: Admin endpoint to fetch invoice data by invoice number (for PDF generation)
+  app.get("/api/admin/invoices/:invoiceNumber", adminAuth, async (req, res) => {
+    try {
+      const inv = storage.getInvoiceByNumber(req.params.invoiceNumber);
+      if (!inv) return res.status(404).json({ error: true, message: "Invoice not found" });
+      const expert = storage.getExpert(inv.expertId);
+      const user = expert ? storage.getUser(expert.userId) : null;
+      let categories: string[] = [];
+      try { categories = JSON.parse(expert?.categories || "[]"); } catch {}
+      let parsedItems: any[] = [];
+      try { parsedItems = JSON.parse(inv.lineItems || "[]"); } catch {}
+      return res.json({
+        invoice: inv,
+        expert: { id: expert?.id, name: user?.name || "Unknown", email: user?.email || "", category: categories[0] || "general", tier: normalizeTier(expert?.rateTier) },
+        lineItems: parsedItems,
+        totalAmountCents: inv.totalAmount,
+        platformFeeRate: 0,
+        platformFeeCents: inv.platformFee,
+        netPayoutCents: inv.netPayout,
+      });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
