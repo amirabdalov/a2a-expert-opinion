@@ -2640,6 +2640,7 @@ export default function ClientDashboard() {
   const [showTour, setShowTour] = useState(() => {
     // If user is already loaded (from cookie) and has completed tour, don't show
     if (user?.tourCompleted === 1) return false;
+    if (localStorage.getItem('a2a_tour_seen')) return false;
     return true;
   });
   const [showConfetti, setShowConfetti] = useState(false);
@@ -2657,18 +2658,21 @@ export default function ClientDashboard() {
 
   // FIX-8 + FIX-9: Confetti and walkthrough only on first-ever login (tourCompleted === 0)
   // Use a ref to ensure this runs only once even if user object reference changes
+  // Build 34: localStorage fallback to survive DB resets across deploys
   const tourInitialized = useRef(false);
   useEffect(() => {
     if (!user || tourInitialized.current) return;
     tourInitialized.current = true;
-    // OB-B: Use loginCount to decide confetti (show only on first visit)
-    const isFirstLogin = (user as any).loginCount <= 1;
+    const tourSeen = localStorage.getItem('a2a_tour_seen');
+    // OB-B: Use loginCount AND localStorage to decide confetti (show only on first visit)
+    const isFirstLogin = (user as any).loginCount <= 1 && !tourSeen;
     if (!isFirstLogin) {
       setShowTour(false);
       setShowConfetti(false);
     } else {
       // First-time user — show confetti and walkthrough
       setShowConfetti(true);
+      localStorage.setItem('a2a_tour_seen', 'true');
       setTimeout(() => {
         apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
       }, 2000);

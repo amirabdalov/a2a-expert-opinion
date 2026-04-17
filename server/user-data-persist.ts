@@ -277,24 +277,24 @@ export async function initCloudSql(): Promise<void> {
 export async function writeUserToCloudSql(user: {
   id: number; name: string; email: string; role: string;
   company?: string | null; credits: number;
-  walletBalance?: number; active?: number; loginCount?: number;
+  walletBalance?: number; active?: number; loginCount?: number; tourCompleted?: number;
   utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO users (id, name, email, role, company, credits, wallet_balance, active, login_count, utm_source, utm_medium, utm_campaign, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      `INSERT INTO users (id, name, email, role, company, credits, wallet_balance, active, login_count, tour_completed, utm_source, utm_medium, utm_campaign, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, email = EXCLUDED.email, role = EXCLUDED.role,
          company = EXCLUDED.company, credits = EXCLUDED.credits,
          wallet_balance = EXCLUDED.wallet_balance, active = EXCLUDED.active,
-         login_count = EXCLUDED.login_count,
+         login_count = EXCLUDED.login_count, tour_completed = EXCLUDED.tour_completed,
          utm_source = EXCLUDED.utm_source, utm_medium = EXCLUDED.utm_medium,
          utm_campaign = EXCLUDED.utm_campaign, updated_at = NOW()`,
       [user.id, user.name, user.email, user.role, user.company || null, user.credits,
-       user.walletBalance ?? 0, user.active ?? 1, user.loginCount ?? 0,
+       user.walletBalance ?? 0, user.active ?? 1, user.loginCount ?? 0, user.tourCompleted ?? 0,
        user.utmSource || null, user.utmMedium || null, user.utmCampaign || null]
     );
   } catch (err) {

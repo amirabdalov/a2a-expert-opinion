@@ -353,6 +353,10 @@ export async function registerRoutes(
     writeUserToCloudSql({
       id: u.id, name: u.name, email: u.email, role: u.role,
       company: u.company, credits: u.credits,
+      walletBalance: u.walletBalance ?? 0, active: u.active ?? 1,
+      loginCount: (u as any).loginCount ?? 0, tourCompleted: (u as any).tourCompleted ?? 0,
+      utmSource: (u as any).utmSource || null, utmMedium: (u as any).utmMedium || null,
+      utmCampaign: (u as any).utmCampaign || null,
     }).catch(() => {});
   }
   function syncRequestToCloud(requestId: number) {
@@ -2398,6 +2402,7 @@ export async function registerRoutes(
   app.post("/api/users/:id/tour-complete", async (req, res) => {
     const user = storage.updateUser(parseInt(req.params.id), { tourCompleted: 1 });
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
+    syncUserToCloud(user.id);
     return res.json({ success: true });
   });
 

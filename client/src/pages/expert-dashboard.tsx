@@ -2489,6 +2489,7 @@ export default function ExpertDashboard() {
   // FIX-8+9: Default to hiding tour if user already completed it
   const [showTour, setShowTour] = useState(() => {
     if (user?.tourCompleted === 1) return false;
+    if (localStorage.getItem('a2a_tour_seen')) return false;
     return true;
   });
   const [showConfetti, setShowConfetti] = useState(false);
@@ -2502,15 +2503,18 @@ export default function ExpertDashboard() {
   }, []);
 
   // FIX-8+9: Show confetti/tour only for first-time expert registrations
+  // Build 34: localStorage fallback to survive DB resets across deploys
   const expertTourInitialized = useRef(false);
   useEffect(() => {
     if (!user || expertTourInitialized.current) return;
     expertTourInitialized.current = true;
-    if (user.tourCompleted === 1) {
+    const tourSeen = localStorage.getItem('a2a_tour_seen');
+    if (user.tourCompleted === 1 || tourSeen) {
       setShowTour(false);
       setShowConfetti(false);
     } else if (user.tourCompleted === 0) {
       setShowConfetti(true);
+      localStorage.setItem('a2a_tour_seen', 'true');
       // Mark tour as completed after 2 seconds
       setTimeout(() => {
         apiRequest('PATCH', `/api/users/${user.id}`, { tourCompleted: 1 }).catch(() => {});
