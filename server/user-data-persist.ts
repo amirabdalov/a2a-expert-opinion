@@ -510,21 +510,57 @@ export async function writeNotificationToCloudSql(n: any): Promise<void> {
 export async function writeFileAttachmentToCloudSql(f: {
   id: number; requestId: number; filename: string;
   contentType: string; size: number; gcsPath?: string | null;
+  uploaderId?: number | null; uploaderRole?: string | null;
   createdAt?: string | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
+    // Build 39 Fix: Add uploader tracking columns if missing
+    await pool.query(`ALTER TABLE file_attachments ADD COLUMN IF NOT EXISTS uploader_id INTEGER`).catch(() => {});
+    await pool.query(`ALTER TABLE file_attachments ADD COLUMN IF NOT EXISTS uploader_role TEXT`).catch(() => {});
     await pool.query(
-      `INSERT INTO file_attachments (id, request_id, filename, content_type, size, gcs_path, created_at, updated_at)
+      `INSERT INTO file_attachments (id, request_id, filename, content_type, size, gcs_path, uploader_id, uploader_role, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         filename=EXCLUDED.filename, content_type=EXCLUDED.content_type, size=EXCLUDED.size,
+         gcs_path=EXCLUDED.gcs_path, uploader_id=EXCLUDED.uploader_id, uploader_role=EXCLUDED.uploader_role, updated_at=NOW()`,
+      [f.id, f.requestId, f.filename, f.contentType, f.size, f.gcsPath || null, f.uploaderId || null, f.uploaderRole || null, f.createdAt || new Date().toISOString()]
+    );
+  } catch (err) {
+    console.error("[CLOUD-SQL] FileAttachment write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+// Build 39 Fix: Sync expert passport files to Cloud SQL
+export async function writeExpertPassportToCloudSql(p: {
+  id: number; expertId: number; filename: string;
+  contentType: string; size: number; gcsPath?: string | null;
+  createdAt?: string | null;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(`CREATE TABLE IF NOT EXISTS expert_passport_files (
+      id INTEGER PRIMARY KEY,
+      expert_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      gcs_path TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )`);
+    await pool.query(
+      `INSERT INTO expert_passport_files (id, expert_id, filename, content_type, size, gcs_path, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
        ON CONFLICT (id) DO UPDATE SET
          filename=EXCLUDED.filename, content_type=EXCLUDED.content_type, size=EXCLUDED.size,
          gcs_path=EXCLUDED.gcs_path, updated_at=NOW()`,
-      [f.id, f.requestId, f.filename, f.contentType, f.size, f.gcsPath || null, f.createdAt || new Date().toISOString()]
+      [p.id, p.expertId, p.filename, p.contentType, p.size, p.gcsPath || null, p.createdAt || new Date().toISOString()]
     );
   } catch (err) {
-    console.error("[CLOUD-SQL] FileAttachment write failed:", (err as Error).message?.substring(0, 100));
+    console.error("[CLOUD-SQL] ExpertPassport write failed:", (err as Error).message?.substring(0, 100));
   }
 }
 

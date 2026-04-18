@@ -292,6 +292,12 @@ try {
   console.log("[DB] file_attachments migration:", e.message);
 }
 
+// Build 39 Fix: Add uploader tracking columns to file_attachments
+try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN uploader_id INTEGER"); } catch {}
+try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN uploader_role TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN gcs_path TEXT"); } catch {}
+console.log("[DB] file_attachments uploader columns ensured.");
+
 // Auto-seed admin accounts on fresh database
 const adminCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM admins").get() as { cnt: number };
 if (adminCount.cnt === 0) {

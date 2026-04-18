@@ -13,7 +13,7 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql } from "./user-data-persist";
 
 // Bug-2 fix: Track server start time for health check grace period
 const SERVER_START_TIME = Date.now();
@@ -2941,25 +2941,42 @@ export async function registerRoutes(
       const file = req.file;
       if (!file) return res.status(400).json({ error: true, message: "No file provided" });
 
+      // Build 39 Fix: Track who uploaded the file
+      const uploaderId = (req as any).user?.id || null;
+      const uploaderRole = (req as any).user?.role || null;
+
       const base64Data = file.buffer.toString("base64");
       const now = new Date().toISOString();
-      const result = sqlite.prepare(
-        "INSERT INTO file_attachments (request_id, filename, content_type, data, size, created_at) VALUES (?,?,?,?,?,?)"
-      ).run(Number(requestId), file.originalname, file.mimetype, base64Data, file.size, now);
 
-      // Fix 10: Persist file attachment metadata to Cloud SQL (no blob data, just metadata)
+      // Store file with uploader tracking in SQLite
+      const result = sqlite.prepare(
+        "INSERT INTO file_attachments (request_id, filename, content_type, data, size, uploader_id, uploader_role, created_at) VALUES (?,?,?,?,?,?,?,?)"
+      ).run(Number(requestId), file.originalname, file.mimetype, base64Data, file.size, uploaderId, uploaderRole, now);
+
+      // Also upload to GCS for redundancy (fire-and-forget)
+      const gcsPath = `attachments/${requestId}/${file.originalname}`;
+      uploadToGcs(gcsPath, file.buffer, file.mimetype)
+        .then(() => {
+          // Update gcs_path in SQLite
+          sqlite.prepare("UPDATE file_attachments SET gcs_path = ? WHERE id = ?").run(gcsPath, Number(result.lastInsertRowid));
+          console.log(`[FILE-GCS] Backed up to gs://a2a-global-data/${gcsPath}`);
+        })
+        .catch((err) => console.error(`[FILE-GCS] GCS backup failed for ${file.originalname}:`, err.message));
+
+      // Persist metadata to Cloud SQL (no blob data)
       writeFileAttachmentToCloudSql({
         id: Number(result.lastInsertRowid),
         requestId: Number(requestId),
         filename: file.originalname,
         contentType: file.mimetype,
         size: file.size,
+        gcsPath: gcsPath,
         createdAt: now,
       }).catch(() => {});
 
       triggerBackup();
-      console.log(`[FILE-DB] Uploaded ${file.originalname} (${file.size} bytes) for request ${requestId}`);
-      return res.json({ ok: true, filename: file.originalname, size: file.size });
+      console.log(`[FILE-DB] Uploaded ${file.originalname} (${file.size} bytes) for request ${requestId} by user ${uploaderId} (${uploaderRole})`);
+      return res.json({ ok: true, id: Number(result.lastInsertRowid), filename: file.originalname, size: file.size, uploaderId, uploaderRole });
     } catch (e: any) {
       console.error("[FILE-DB] Upload error:", e.message);
       return res.status(500).json({ error: true, message: e.message });
@@ -2991,11 +3008,11 @@ export async function registerRoutes(
     }
   });
 
-  // FIX-5: List files for a request
+  // FIX-5: List files for a request (Build 39: includes uploader tracking)
   app.get("/api/files/:requestId", userOrAdminAuth, (req, res) => {
     try {
       const files = sqlite.prepare(
-        "SELECT id, request_id, filename, content_type, size, created_at FROM file_attachments WHERE request_id = ?"
+        "SELECT id, request_id, filename, content_type, size, uploader_id, uploader_role, created_at FROM file_attachments WHERE request_id = ?"
       ).all(Number(req.params.requestId));
       return res.json(files);
     } catch (e: any) {
@@ -4019,6 +4036,20 @@ export async function registerRoutes(
       uploadToGcs(gcsPath, req.file.buffer, req.file.mimetype)
         .then(() => console.log(`[PASSPORT] Uploaded to GCS: ${gcsPath}`))
         .catch((err) => console.log(`[PASSPORT] GCS upload skipped: ${err.message}`));
+
+      // Build 39 Fix: Sync passport metadata to Cloud SQL
+      const passportRow = sqlite.prepare("SELECT id FROM expert_passport_files WHERE expert_id = ? ORDER BY id DESC LIMIT 1").get(expertId) as any;
+      if (passportRow) {
+        writeExpertPassportToCloudSql({
+          id: passportRow.id,
+          expertId,
+          filename: req.file.originalname,
+          contentType: req.file.mimetype,
+          size: req.file.size,
+          gcsPath,
+          createdAt: now,
+        }).catch(() => {});
+      }
 
       triggerBackup();
       console.log(`[PASSPORT] Stored passport for expert ${expertId}: ${req.file.originalname} (${req.file.size} bytes)`);
