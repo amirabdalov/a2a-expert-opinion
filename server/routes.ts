@@ -4139,7 +4139,7 @@ export async function registerRoutes(
 
   // ─── Convenience redirects (BUG-038-11/12) ───
   app.get("/admin", (_req, res) => res.redirect("/register#/admin"));
-  app.get("/admin/*", (_req, res) => res.redirect("/register#/admin"));
+  app.get("/admin/{*path}", (_req, res) => res.redirect("/register#/admin"));
   app.get("/auth", (_req, res) => res.redirect("/register#/register"));
   app.get("/login", (_req, res) => res.redirect("/register#/login"));
 
