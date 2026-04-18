@@ -1286,8 +1286,8 @@ export async function registerRoutes(
 
   app.patch("/api/experts/:id", userOrAdminAuth, async (req, res) => {
     const authUser = (req as any).authUser;
-    const expert = storage.getExpert(parseInt(req.params.id));
-    if (expert && authUser.role !== "admin" && expert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
+    const existingExpert = storage.getExpert(parseInt(req.params.id));
+    if (existingExpert && authUser.role !== "admin" && existingExpert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
     const expert = storage.updateExpert(parseInt(req.params.id), req.body);
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
     syncExpertToCloud(expert.id);
