@@ -440,68 +440,12 @@ export async function registerRoutes(
     writeCreditTransactionToCloudSql(tx).catch(() => {});
   }
 
-  // ─── Build 39 Fix 1: Reconcile wallet balances for initiated payouts ───
-  // On startup, scan all payout_initiated withdrawal requests and ensure the expert's
-  // wallet balance has been deducted. Uses a dedicated reconcile_log table to track
-  // which withdrawals have been processed, avoiding reliance on wallet_transactions.
-  (function reconcilePayoutBalances() {
-    try {
-      // Create reconcile tracking table if it doesn't exist
-      sqlite.exec(`CREATE TABLE IF NOT EXISTS payout_reconcile_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        withdrawal_request_id INTEGER UNIQUE NOT NULL,
-        invoice_number TEXT NOT NULL,
-        amount_cents INTEGER NOT NULL,
-        expert_user_id INTEGER NOT NULL,
-        reconciled_at TEXT NOT NULL
-      )`);
-
-      const allWr = storage.getAllWithdrawalRequests();
-      const initiated = allWr.filter(wr => wr.status === "payout_initiated");
-      let reconciled = 0;
-      for (const wr of initiated) {
-        const expert = storage.getExpert(wr.expertId);
-        if (!expert) continue;
-        const expertUser = storage.getUser(expert.userId);
-        if (!expertUser) continue;
-
-        // Check if already reconciled (dedicated tracking table)
-        const alreadyDone = sqlite.prepare(
-          "SELECT id FROM payout_reconcile_log WHERE withdrawal_request_id = ?"
-        ).get(wr.id);
-
-        if (!alreadyDone) {
-          // Not yet reconciled — deduct from wallet
-          const payoutCents = Math.round(Number(wr.amount) * 100);
-          const newBalance = Math.max(0, (expertUser.walletBalance || 0) - payoutCents);
-          storage.updateUser(expertUser.id, { walletBalance: newBalance });
-
-          // Record the wallet transaction
-          storage.createWalletTransaction({
-            userId: expertUser.id,
-            amountCents: -payoutCents,
-            type: "payout",
-            description: `Payout reconciled: Invoice ${wr.invoiceNumber} (startup reconciliation)`,
-            createdAt: wr.updatedAt || new Date().toISOString(),
-            stripePaymentId: null,
-          });
-
-          // Mark as reconciled so it doesn't double-deduct on next restart
-          sqlite.prepare(
-            "INSERT INTO payout_reconcile_log (withdrawal_request_id, invoice_number, amount_cents, expert_user_id, reconciled_at) VALUES (?,?,?,?,?)"
-          ).run(wr.id, wr.invoiceNumber, payoutCents, expertUser.id, new Date().toISOString());
-
-          // Sync to Cloud SQL
-          syncUserToCloud(expertUser.id);
-          reconciled++;
-          console.log(`[RECONCILE] Deducted $${wr.amount} from ${expertUser.email} (${expertUser.name}) for ${wr.invoiceNumber}. New balance: $${(newBalance / 100).toFixed(2)}`);
-        }
-      }
-      console.log(`[RECONCILE] Checked ${initiated.length} initiated payouts, reconciled ${reconciled} new`);
-    } catch (err: any) {
-      console.error("[RECONCILE] Error:", err.message);
-    }
-  })();
+  // ─── Build 39 Fix 2: Payout reconciliation REMOVED ───
+  // Cloud SQL is the source of truth for wallet_balance. The restore in index.ts
+  // copies correct values before the server starts. Separate reconciliation was
+  // causing double-deduction because GCS backup is empty → seed data has $315 →
+  // Cloud SQL restore overwrites to $100 → reconciliation would deduct again.
+  // The payout_reconcile_log table still exists for audit trail / future use.
 
   // Rate limiting on auth endpoints
   // Fix 2: Tighter rate limiting — 10 requests per 15 min for auth, 5 for registration
@@ -4445,3 +4389,4 @@ export async function registerRoutes(
 
   return httpServer;
 }
+

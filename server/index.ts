@@ -115,6 +115,9 @@ app.use((req, res, next) => {
     await initCloudSql();
     await restoreFromCloudSql(sqliteDb);
     console.log("[STARTUP] Cloud SQL → SQLite restore complete");
+    // Build 39 Fix 2: Wallet reconciliation removed. Cloud SQL is the source of truth
+    // for wallet_balance. The restore step above copies correct values directly.
+    // No separate reconciliation needed — it would cause double-deduction.
   } catch (err) {
     console.error("[STARTUP] Cloud SQL restore failed — starting with seed data:", err);
   }
