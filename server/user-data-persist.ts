@@ -689,10 +689,15 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
     console.log(`[RESTORE] Found ${pgUsers.length} users in Cloud SQL`);
     let usersInserted = 0, usersUpdated = 0, usersSkipped = 0;
 
+    // Build 39 Fix 3: Cloud SQL ALWAYS wins for users on startup restore.
+    // Previous approach used timestamp-gating (skip if SQLite is newer), but
+    // this caused stale GCS-restored data to "protect" itself from Cloud SQL
+    // corrections (e.g., wallet_balance fixes). Cloud SQL is the persistent
+    // source of truth; SQLite is ephemeral and rebuilt every cold start.
     for (const u of pgUsers) {
       try {
         const incomingUpdatedAt = u.updated_at ? new Date(u.updated_at).toISOString() : new Date().toISOString();
-        const existing = sqliteDb.prepare("SELECT id, updated_at FROM users WHERE id = ?").get(u.id) as any;
+        const existing = sqliteDb.prepare("SELECT id, updated_at, wallet_balance FROM users WHERE id = ?").get(u.id) as any;
 
         if (!existing) {
           sqliteDb.prepare(`INSERT INTO users (id, username, password, name, email, role, credits, company, account_type, wallet_balance, active, tour_completed, photo, login_count, utm_source, utm_medium, utm_campaign, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -701,39 +706,38 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
             null, u.login_count ?? 0, u.utm_source || null, u.utm_medium || null, u.utm_campaign || null,
             u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(), incomingUpdatedAt
           );
-          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('users', u.id, JSON.stringify({id: u.id, credits: u.credits}), new Date().toISOString());
+          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('users', u.id, JSON.stringify({id: u.id, credits: u.credits, wallet_balance: u.wallet_balance}), new Date().toISOString());
           usersInserted++;
         } else {
-          const existingUpdatedAt = (existing as any).updated_at || '';
-          if (incomingUpdatedAt > existingUpdatedAt) {
-            sqliteDb.prepare(`UPDATE users SET username=?, name=?, email=?, role=?, credits=?, company=?, account_type=?, wallet_balance=?, active=?, tour_completed=?, login_count=?, utm_source=?, utm_medium=?, utm_campaign=?, updated_at=? WHERE id=?`).run(
-              u.email || '', u.name, u.email, u.role || 'client', u.credits ?? 5, u.company || null,
-              u.account_type || 'individual', u.wallet_balance ?? 0, u.active ?? 1, u.tour_completed ?? 0,
-              u.login_count ?? 0, u.utm_source || null, u.utm_medium || null, u.utm_campaign || null,
-              incomingUpdatedAt, u.id
-            );
-            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, old_value, new_value, reason, created_at) VALUES (?, ?, 'UPDATE', ?, ?, 'restore', ?)`).run('users', u.id, JSON.stringify({credits: (existing as any).credits}), JSON.stringify({credits: u.credits}), new Date().toISOString());
-            usersUpdated++;
-          } else {
-            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'SKIP', ?, ?)`).run('users', u.id, `incoming ${incomingUpdatedAt} <= existing ${existingUpdatedAt}`, new Date().toISOString());
-            usersSkipped++;
+          // ALWAYS overwrite — Cloud SQL is the source of truth
+          const oldWallet = (existing as any).wallet_balance;
+          sqliteDb.prepare(`UPDATE users SET username=?, name=?, email=?, role=?, credits=?, company=?, account_type=?, wallet_balance=?, active=?, tour_completed=?, login_count=?, utm_source=?, utm_medium=?, utm_campaign=?, updated_at=? WHERE id=?`).run(
+            u.email || '', u.name, u.email, u.role || 'client', u.credits ?? 5, u.company || null,
+            u.account_type || 'individual', u.wallet_balance ?? 0, u.active ?? 1, u.tour_completed ?? 0,
+            u.login_count ?? 0, u.utm_source || null, u.utm_medium || null, u.utm_campaign || null,
+            incomingUpdatedAt, u.id
+          );
+          if (oldWallet !== (u.wallet_balance ?? 0)) {
+            console.log(`[RESTORE] User ${u.id} wallet corrected: ${oldWallet} → ${u.wallet_balance ?? 0}`);
           }
+          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, old_value, new_value, reason, created_at) VALUES (?, ?, 'UPDATE', ?, ?, 'restore-force', ?)`).run('users', u.id, JSON.stringify({wallet_balance: oldWallet}), JSON.stringify({wallet_balance: u.wallet_balance ?? 0, credits: u.credits}), new Date().toISOString());
+          usersUpdated++;
         }
       } catch (err) {
         console.error(`[RESTORE] User ${u.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Users: ${usersInserted} inserted, ${usersUpdated} updated, ${usersSkipped} skipped (protected)`);
+    console.log(`[RESTORE] Users: ${usersInserted} inserted, ${usersUpdated} updated (Cloud SQL always wins)`);
 
-    // Restore experts (timestamp-gated)
+    // Restore experts (Cloud SQL always wins — same rationale as users)
     const expertsResult = await pool.query("SELECT * FROM experts ORDER BY id");
     const pgExperts = expertsResult.rows;
-    let expertsInserted = 0, expertsUpdated = 0, expertsSkipped = 0;
+    let expertsInserted = 0, expertsUpdated = 0;
 
     for (const e of pgExperts) {
       try {
         const incomingUpdatedAt = e.updated_at ? new Date(e.updated_at).toISOString() : new Date().toISOString();
-        const existing = sqliteDb.prepare("SELECT id, updated_at FROM experts WHERE id = ?").get(e.id) as any;
+        const existing = sqliteDb.prepare("SELECT id FROM experts WHERE id = ?").get(e.id) as any;
 
         if (!existing) {
           sqliteDb.prepare(`INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, hourly_rate, response_time, education, years_experience, onboarding_complete, verification_score, rate_per_minute, rate_tier, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -743,39 +747,31 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
             e.rate_per_minute || null, e.rate_tier || null,
             e.created_at ? new Date(e.created_at).toISOString() : new Date().toISOString(), incomingUpdatedAt
           );
-          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('experts', e.id, JSON.stringify({id: e.id, user_id: e.user_id}), new Date().toISOString());
           expertsInserted++;
         } else {
-          const existingUpdatedAt = (existing as any).updated_at || '';
-          if (incomingUpdatedAt > existingUpdatedAt) {
-            sqliteDb.prepare(`UPDATE experts SET user_id=?, bio=?, expertise=?, credentials=?, rating=?, total_reviews=?, verified=?, categories=?, education=?, years_experience=?, onboarding_complete=?, rate_per_minute=?, rate_tier=?, updated_at=? WHERE id=?`).run(
-              e.user_id, e.bio || '', e.expertise || '', e.credentials || '', e.rating ?? 50,
-              e.total_reviews ?? 0, e.verified ?? 0, e.categories || '[]', e.education || '',
-              e.years_experience ?? 0, e.onboarding_complete ?? 0, e.rate_per_minute || null, e.rate_tier || null,
-              incomingUpdatedAt, e.id
-            );
-            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'UPDATE', 'restore', ?)`).run('experts', e.id, new Date().toISOString());
-            expertsUpdated++;
-          } else {
-            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'SKIP', ?, ?)`).run('experts', e.id, `incoming ${incomingUpdatedAt} <= existing ${existingUpdatedAt}`, new Date().toISOString());
-            expertsSkipped++;
-          }
+          sqliteDb.prepare(`UPDATE experts SET user_id=?, bio=?, expertise=?, credentials=?, rating=?, total_reviews=?, verified=?, categories=?, education=?, years_experience=?, onboarding_complete=?, rate_per_minute=?, rate_tier=?, updated_at=? WHERE id=?`).run(
+            e.user_id, e.bio || '', e.expertise || '', e.credentials || '', e.rating ?? 50,
+            e.total_reviews ?? 0, e.verified ?? 0, e.categories || '[]', e.education || '',
+            e.years_experience ?? 0, e.onboarding_complete ?? 0, e.rate_per_minute || null, e.rate_tier || null,
+            incomingUpdatedAt, e.id
+          );
+          expertsUpdated++;
         }
       } catch (err) {
         console.error(`[RESTORE] Expert ${e.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Experts: ${expertsInserted} inserted, ${expertsUpdated} updated, ${expertsSkipped} skipped`);
+    console.log(`[RESTORE] Experts: ${expertsInserted} inserted, ${expertsUpdated} updated (Cloud SQL always wins)`);
 
-    // Restore requests (timestamp-gated)
+    // Restore requests (Cloud SQL always wins — same rationale as users)
     const requestsResult = await pool.query("SELECT * FROM requests ORDER BY id");
     const pgRequests = requestsResult.rows;
-    let requestsInserted = 0, requestsUpdated = 0, requestsSkipped = 0;
+    let requestsInserted = 0, requestsUpdated = 0;
 
     for (const r of pgRequests) {
       try {
         const incomingUpdatedAt = r.updated_at ? new Date(r.updated_at).toISOString() : (r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString());
-        const existing = sqliteDb.prepare("SELECT id, updated_at FROM requests WHERE id = ?").get(r.id) as any;
+        const existing = sqliteDb.prepare("SELECT id FROM requests WHERE id = ?").get(r.id) as any;
 
         if (!existing) {
           sqliteDb.prepare(`INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -787,31 +783,23 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
             r.followup_deadline || null, r.deadline || null,
             r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(), incomingUpdatedAt
           );
-          sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, new_value, reason, created_at) VALUES (?, ?, 'INSERT', ?, 'restore', ?)`).run('requests', r.id, JSON.stringify({id: r.id, status: r.status}), new Date().toISOString());
           requestsInserted++;
         } else {
-          const existingUpdatedAt = (existing as any).updated_at || '';
-          if (incomingUpdatedAt > existingUpdatedAt) {
-            sqliteDb.prepare(`UPDATE requests SET user_id=?, expert_id=?, title=?, description=?, category=?, tier=?, status=?, credits_cost=?, service_type=?, expert_response=?, ai_response=?, attachments=?, client_rating=?, client_rating_comment=?, refunded=?, price_tier=?, followup_count=?, followup_deadline=?, deadline=?, updated_at=? WHERE id=?`).run(
-              r.user_id, r.expert_id || null, r.title, r.description || '',
-              r.category, r.tier || 'standard', r.status || 'pending', r.credits_cost ?? 0,
-              r.service_type || 'review', r.expert_response || null, r.ai_response || null,
-              r.attachments || '[]', r.client_rating || null, r.client_rating_comment || null,
-              r.refunded || 0, r.price_tier || null, r.followup_count || 0,
-              r.followup_deadline || null, r.deadline || null, incomingUpdatedAt, r.id
-            );
-            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'UPDATE', 'restore', ?)`).run('requests', r.id, new Date().toISOString());
-            requestsUpdated++;
-          } else {
-            sqliteDb.prepare(`INSERT INTO audit_log (table_name, row_id, action, reason, created_at) VALUES (?, ?, 'SKIP', ?, ?)`).run('requests', r.id, `incoming ${incomingUpdatedAt} <= existing ${existingUpdatedAt}`, new Date().toISOString());
-            requestsSkipped++;
-          }
+          sqliteDb.prepare(`UPDATE requests SET user_id=?, expert_id=?, title=?, description=?, category=?, tier=?, status=?, credits_cost=?, service_type=?, expert_response=?, ai_response=?, attachments=?, client_rating=?, client_rating_comment=?, refunded=?, price_tier=?, followup_count=?, followup_deadline=?, deadline=?, updated_at=? WHERE id=?`).run(
+            r.user_id, r.expert_id || null, r.title, r.description || '',
+            r.category, r.tier || 'standard', r.status || 'pending', r.credits_cost ?? 0,
+            r.service_type || 'review', r.expert_response || null, r.ai_response || null,
+            r.attachments || '[]', r.client_rating || null, r.client_rating_comment || null,
+            r.refunded || 0, r.price_tier || null, r.followup_count || 0,
+            r.followup_deadline || null, r.deadline || null, incomingUpdatedAt, r.id
+          );
+          requestsUpdated++;
         }
       } catch (err) {
         console.error(`[RESTORE] Request ${r.id} failed:`, (err as Error).message?.substring(0, 80));
       }
     }
-    console.log(`[RESTORE] Requests: ${requestsInserted} inserted, ${requestsUpdated} updated, ${requestsSkipped} skipped`);
+    console.log(`[RESTORE] Requests: ${requestsInserted} inserted, ${requestsUpdated} updated (Cloud SQL always wins)`);
 
     // Restore credit_transactions (append-only — INSERT OR IGNORE)
     const txResult = await pool.query("SELECT * FROM credit_transactions ORDER BY id");
