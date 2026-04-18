@@ -388,6 +388,10 @@ try { sqlite.exec("ALTER TABLE messages ADD COLUMN updated_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN updated_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE wallet_transactions ADD COLUMN updated_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE notifications ADD COLUMN updated_at TEXT"); } catch {}
+// Fix 5: Add type column to notifications for categorization
+try { sqlite.exec("ALTER TABLE notifications ADD COLUMN type TEXT"); } catch {}
+// Fix 4: Add completed_at column to requests
+try { sqlite.exec("ALTER TABLE requests ADD COLUMN completed_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE request_events ADD COLUMN updated_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE withdrawals ADD COLUMN updated_at TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE invoices ADD COLUMN updated_at TEXT"); } catch {}

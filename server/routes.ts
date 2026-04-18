@@ -13,7 +13,7 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql } from "./user-data-persist";
 
 // Bug-2 fix: Track server start time for health check grace period
 const SERVER_START_TIME = Date.now();
@@ -164,7 +164,28 @@ function logRequestEvent(requestId: number, type: string, actorId?: number, acto
 }
 
 // G2-1: Sync wrapper — persists notification to Cloud SQL after local insert
-function createAndSyncNotification(data: { userId: number; title: string; message: string; read: number; link?: string; createdAt: string }) {
+// ─── Fix 1: XSS sanitization helper ───
+function sanitizeHtml(input: string): string {
+  return input
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;');
+}
+
+function sanitizeObject(obj: Record<string, any>, fields: string[]): Record<string, any> {
+  const result = { ...obj };
+  for (const field of fields) {
+    if (typeof result[field] === 'string') {
+      result[field] = sanitizeHtml(result[field]);
+    }
+  }
+  return result;
+}
+
+function createAndSyncNotification(data: { userId: number; title: string; message: string; type?: string; read: number; link?: string; createdAt: string }) {
   const notif = storage.createNotification(data);
   writeNotificationToCloudSql(notif).catch(() => {});
   return notif;
@@ -420,12 +441,23 @@ export async function registerRoutes(
   }
 
   // Rate limiting on auth endpoints
+  // Fix 2: Tighter rate limiting — 10 requests per 15 min for auth, 5 for registration
   const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15-minute window
-    max: 30,
+    windowMs: 15 * 60 * 1000,
+    max: 10,
     message: { error: true, message: "Too many attempts, please try again later", code: "RATE_LIMITED" },
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] as string || 'unknown',
+  });
+
+  const registerLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour window
+    max: 5, // 5 registrations per IP per hour
+    message: { error: true, message: "Too many registration attempts, please try again later", code: "RATE_LIMITED" },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] as string || 'unknown',
   });
 
   // ─── Email Notification Stub ───
@@ -448,7 +480,7 @@ export async function registerRoutes(
   // ─── AUTH ───
 
   // POST /api/auth/register — send OTP to new user
-  app.post("/api/auth/register", authLimiter, async (req, res) => {
+  app.post("/api/auth/register", registerLimiter, async (req, res) => {
     try {
       const data = otpRegisterSchema.parse(req.body);
       const { name, email, role } = data;
@@ -465,10 +497,12 @@ export async function registerRoutes(
 
       // New user — create account
       // FIX-2: EVERY new user gets 5 credits and a welcome bonus transaction — NO EXCEPTIONS
+      // Fix 1: XSS — sanitize user-provided name
+      const safeName = sanitizeHtml(name.trim());
       const user = storage.createUser({
         username: email, // use email as username
         password: "",
-        name,
+        name: safeName,
         email,
         role,
         credits: 5, // FIX-2: 5 welcome credits — required for all registration paths
@@ -498,6 +532,7 @@ export async function registerRoutes(
         userId: user.id,
         title: "Welcome to A2A Expert Opinion!",
         message: "You've received $5 free credits to get started. Submit your first request today.",
+        type: "welcome",
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -772,6 +807,7 @@ export async function registerRoutes(
             userId: expertUser.id,
             title: notifTitle,
             message: notifMessage,
+            type: "follow_up",
             read: 0,
             link: notifLink,
             createdAt: new Date().toISOString(),
@@ -786,6 +822,7 @@ export async function registerRoutes(
             userId: clientUser.id,
             title: notifTitle,
             message: notifMessage,
+            type: "expert_reply",
             read: 0,
             link: `/dashboard?request=${requestId}`,
             createdAt: new Date().toISOString(),
@@ -1137,6 +1174,7 @@ export async function registerRoutes(
         userId: w.userId,
         title: "Withdrawal Approved",
         message: `Your withdrawal of $${(w.amountCents / 100).toFixed(2)} has been approved and will be processed within 3-5 business days.`,
+        type: "withdrawal_approved",
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -1163,6 +1201,7 @@ export async function registerRoutes(
         userId: wOld.userId,
         title: "Withdrawal Rejected",
         message: `Your withdrawal of $${(wOld.amountCents / 100).toFixed(2)} was rejected. The funds have been returned to your wallet.`,
+        type: "withdrawal_rejected",
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -1230,6 +1269,7 @@ export async function registerRoutes(
         userId: user.id,
         title: "Refund Processed",
         message: `$${request.creditsCost} credits have been refunded for "${request.title}".`,
+        type: "refund",
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -1288,7 +1328,9 @@ export async function registerRoutes(
     const authUser = (req as any).authUser;
     const existingExpert = storage.getExpert(parseInt(req.params.id));
     if (existingExpert && authUser.role !== "admin" && existingExpert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
-    const expert = storage.updateExpert(parseInt(req.params.id), req.body);
+    // Fix 1: XSS — sanitize expert string fields
+    const sanitizedBody = sanitizeObject(req.body, ['bio', 'expertise', 'credentials', 'education']);
+    const expert = storage.updateExpert(parseInt(req.params.id), sanitizedBody);
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
     syncExpertToCloud(expert.id);
     return res.json(expert);
@@ -1474,8 +1516,9 @@ export async function registerRoutes(
         clientPaid: cost,
       });
 
+      // Fix 1: XSS — sanitize user-provided text fields
       const request = storage.createRequest({
-        userId, title, description, category, tier,
+        userId, title: sanitizeHtml(title || ''), description: sanitizeHtml(description || ''), category, tier,
         status: "pending", creditsCost: cost,
         expertId: null, expertResponse: null, deadline: null,
         serviceType: sType,
@@ -1511,6 +1554,7 @@ export async function registerRoutes(
         userId,
         title: "Request Submitted",
         message: `Your request "${title}" in ${category} has been submitted successfully.`,
+        type: "request_submitted",
         read: 0,
         link: `/dashboard?request=${request.id}`,
         createdAt: new Date().toISOString(),
@@ -1535,6 +1579,7 @@ export async function registerRoutes(
                 userId: exp.userId,
                 title: "New Request Available",
                 message: `A new ${sType} request "${title}" in ${category} is available for review.`,
+                type: "new_request",
                 read: 0,
                 link: `/expert?view=queue`,
                 createdAt: new Date().toISOString(),
@@ -1709,6 +1754,7 @@ export async function registerRoutes(
       userId: r.userId,
       title: "Expert Assigned",
       message: `An expert has started working on your request "${r.title}".`,
+      type: "claim",
       read: 0,
       link: `/dashboard?request=${r.id}`,
       createdAt: new Date().toISOString(),
@@ -1748,6 +1794,7 @@ export async function registerRoutes(
       userId: r.userId,
       title: "Expert Response Ready",
       message: `Expert has responded to your request "${r.title}". You may ask up to 2 follow-up questions within 3 hours.`,
+      type: "response_ready",
       read: 0,
       link: `/dashboard?request=${r.id}`,
       createdAt: new Date().toISOString(),
@@ -1787,7 +1834,8 @@ export async function registerRoutes(
       }
     }
 
-    storage.updateRequest(requestId, { status: "completed" } as any);
+    // Fix 4: Set completedAt timestamp
+    storage.updateRequest(requestId, { status: "completed", completedAt: new Date().toISOString() } as any);
 
     // OB-I: Credit expert on completion (client was already charged on admin verification)
     if (r.expertId) {
@@ -1808,6 +1856,19 @@ export async function registerRoutes(
             clientPaid: r.creditsCost,
           });
           storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
+
+          // Fix 9: Update expert averageRating from all client ratings
+          try {
+            const expertRequests = storage.getRequestsByExpert(expert.id);
+            const ratedRequests = expertRequests.filter((er: any) => er.clientRating != null && er.status === "completed");
+            if (ratedRequests.length > 0) {
+              const avgRating = Math.round(ratedRequests.reduce((sum: number, er: any) => sum + Number(er.clientRating), 0) / ratedRequests.length);
+              storage.updateExpert(expert.id, { rating: avgRating });
+            }
+          } catch (ratingErr) {
+            console.error("[FIX-9] Rating update error:", ratingErr);
+          }
+
           // OB-I: Also update wallet balance for expert
           const earningCents = earning * 100;
           const freshExpertUser = storage.getUser(expertUser.id);
@@ -1832,6 +1893,7 @@ export async function registerRoutes(
       userId: r.userId,
       title: "Request Completed",
       message: `Your request "${r.title}" has been completed and closed.`,
+      type: "completed",
       read: 0,
       link: `/dashboard?request=${r.id}`,
       createdAt: new Date().toISOString(),
@@ -1855,8 +1917,16 @@ export async function registerRoutes(
       // Verify authUser is the request owner
       const authUser = (req as any).authUser;
       const existing = storage.getRequest(requestId);
+      if (!existing) return res.status(404).json({ error: true, message: "Request not found" });
       if (existing && authUser.role !== 'admin' && existing.userId !== authUser.id) {
         return res.status(403).json({ error: true, message: "Only the request owner can complete it", code: "FORBIDDEN" });
+      }
+      // Fix 8: Prevent double-complete — return 400 if already completed
+      if (existing.status === "completed") {
+        return res.status(400).json({ error: true, message: "Request is already completed", code: "ALREADY_COMPLETED" });
+      }
+      if (existing.refunded === 1) {
+        return res.status(400).json({ error: true, message: "Cannot complete a refunded request", code: "REFUNDED" });
       }
       await finalizeRequest(requestId);
       const r = storage.getRequest(requestId);
@@ -1878,12 +1948,13 @@ export async function registerRoutes(
       if (authUser.role !== 'admin' && expert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
       // Validate categories is an array
       const cats = Array.isArray(categories) ? categories : [];
+      // Fix 1: XSS — sanitize expert profile fields
       const updated = storage.updateExpert(Number(expertId), {
-        education: (education || "").toString().trim(),
+        education: sanitizeHtml((education || "").toString().trim()),
         yearsExperience: Math.max(0, parseInt(yearsExperience) || 0),
         categories: JSON.stringify(cats),
-        bio: (bio || "").toString().trim(),
-        expertise: (expertise || "").toString().trim(),
+        bio: sanitizeHtml((bio || "").toString().trim()),
+        expertise: sanitizeHtml((expertise || "").toString().trim()),
         onboardingComplete: Math.max(expert.onboardingComplete, 1),
       });
       if (!updated) return res.status(500).json({ error: true, message: "Failed to update expert profile" });
@@ -2086,6 +2157,7 @@ export async function registerRoutes(
         userId: request.userId,
         title: "Expert Claimed Your Request",
         message: `An expert has started reviewing "${request.title}".`,
+        type: "claim",
         read: 0,
         link: `/dashboard?request=${request.id}`,
         createdAt: new Date().toISOString(),
@@ -2122,6 +2194,7 @@ export async function registerRoutes(
         userId: request.userId,
         title: "Expert Claimed Your Request",
         message: `An expert has started reviewing "${request.title}".`,
+        type: "claim",
         read: 0,
         link: `/dashboard?request=${request.id}`,
         createdAt: new Date().toISOString(),
@@ -2245,6 +2318,7 @@ export async function registerRoutes(
           userId: request.userId,
           title: "Expert Review Submitted",
           message: `An expert has submitted their review for "${request.title}".`,
+          type: "review_submitted",
           read: 0,
           link: `/dashboard?request=${request.id}`,
           createdAt: new Date().toISOString(),
@@ -2440,6 +2514,7 @@ export async function registerRoutes(
         userId: request.userId,
         title: "Expert Response Ready",
         message: `Your expert's verified response for "${request.title}" is now available. You may ask up to 2 follow-up questions within 3 hours.`,
+        type: "response_ready",
         read: 0,
         link: `/dashboard?request=${request.id}`,
         createdAt: new Date().toISOString(),
@@ -2509,6 +2584,7 @@ export async function registerRoutes(
               userId: expertUser.id,
               title: "Revision Requested",
               message: `Admin has requested a revision for "${request.title}"${feedback ? ": " + feedback : "."}`,
+              type: "revision_requested",
               read: 0,
               link: `/expert?request=${requestId}`,
               createdAt: new Date().toISOString(),
@@ -2548,7 +2624,8 @@ export async function registerRoutes(
       if (!isOwner && !isExpert) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
     }
     const { requestId, role, content } = req.body;
-    const msg = createAndSyncMessage({ requestId, role, content });
+    // Fix 1: XSS — sanitize message content
+    const msg = createAndSyncMessage({ requestId, role, content: sanitizeHtml(content || '') });
     return res.json(msg);
   });
 
@@ -2726,7 +2803,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: true, message: "Missing fields" });
       }
       const notif = createAndSyncNotification({
-        userId, title, message, read: 0, createdAt: new Date().toISOString(),
+        userId, title, message, type: "admin", read: 0, createdAt: new Date().toISOString(),
       });
       return res.json(notif);
     } catch (e: any) {
@@ -2738,7 +2815,9 @@ export async function registerRoutes(
 
   app.patch("/api/users/:id", userOrAdminAuth, async (req, res) => {
     if (!ownerOrAdmin(req, res, 'id')) return;
-    const user = storage.updateUser(parseInt(req.params.id), req.body);
+    // Fix 1: XSS — sanitize user-editable string fields
+    const sanitized = sanitizeObject(req.body, ['name', 'company', 'bio', 'description']);
+    const user = storage.updateUser(parseInt(req.params.id), sanitized);
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
     syncUserToCloud(user.id);
     const { password: _, ...safeUser } = user;
@@ -2800,9 +2879,20 @@ export async function registerRoutes(
       if (!file) return res.status(400).json({ error: true, message: "No file provided" });
 
       const base64Data = file.buffer.toString("base64");
-      sqlite.prepare(
+      const now = new Date().toISOString();
+      const result = sqlite.prepare(
         "INSERT INTO file_attachments (request_id, filename, content_type, data, size, created_at) VALUES (?,?,?,?,?,?)"
-      ).run(Number(requestId), file.originalname, file.mimetype, base64Data, file.size, new Date().toISOString());
+      ).run(Number(requestId), file.originalname, file.mimetype, base64Data, file.size, now);
+
+      // Fix 10: Persist file attachment metadata to Cloud SQL (no blob data, just metadata)
+      writeFileAttachmentToCloudSql({
+        id: Number(result.lastInsertRowid),
+        requestId: Number(requestId),
+        filename: file.originalname,
+        contentType: file.mimetype,
+        size: file.size,
+        createdAt: now,
+      }).catch(() => {});
 
       triggerBackup();
       console.log(`[FILE-DB] Uploaded ${file.originalname} (${file.size} bytes) for request ${requestId}`);
@@ -3021,6 +3111,7 @@ export async function registerRoutes(
         userId: user.id,
         title: "Refund Processed",
         message: `$${request.creditsCost} credits have been refunded for "${request.title}".`,
+        type: "refund",
         read: 0,
         createdAt: new Date().toISOString(),
       });
@@ -3941,6 +4032,13 @@ export async function registerRoutes(
         return res.status(400).json({ error: true, message: "Invalid withdrawal amount" });
       }
 
+      // Fix 7: Prevent duplicate withdrawals — check for existing pending withdrawal
+      const existingWRs = storage.getWithdrawalRequestsByExpert(expertId);
+      const pendingWR = existingWRs.find((wr: any) => wr.status === "pending");
+      if (pendingWR) {
+        return res.status(400).json({ error: true, message: `You already have a pending withdrawal request (Invoice ${pendingWR.invoiceNumber}). Please wait for it to be processed.`, code: "DUPLICATE_WITHDRAWAL" });
+      }
+
       // Generate invoice number
       const allWR = storage.getAllWithdrawalRequests();
       const invoiceNumber = `INV-${new Date().getFullYear()}-${String(allWR.length + 1).padStart(4, "0")}`;
@@ -4061,6 +4159,7 @@ export async function registerRoutes(
           userId: expertUser.id,
           title: "Payout Initiated",
           message: `Your withdrawal of $${wr.amount} (Invoice ${wr.invoiceNumber}) has been initiated. Please allow up to 3 business days.`,
+          type: "payout",
           read: 0,
           link: `/expert`,
           createdAt: new Date().toISOString(),

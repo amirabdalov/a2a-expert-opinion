@@ -316,6 +316,21 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
     "ALTER TABLE verification_tests ADD COLUMN IF NOT EXISTS updated_at TEXT",
     "ALTER TABLE legal_acceptances ADD COLUMN IF NOT EXISTS created_at TEXT",
     "ALTER TABLE legal_acceptances ADD COLUMN IF NOT EXISTS updated_at TEXT",
+    // Fix 4: Add completed_at column to requests
+    "ALTER TABLE requests ADD COLUMN IF NOT EXISTS completed_at TEXT",
+    // Fix 5: Add type column to notifications for notification categorization
+    "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS type TEXT",
+    // Fix 10: Create file_attachments table in Cloud SQL for persistence
+    `CREATE TABLE IF NOT EXISTS file_attachments (
+      id SERIAL PRIMARY KEY,
+      request_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      size INTEGER NOT NULL DEFAULT 0,
+      gcs_path TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    )`,
     // Backfill NULLs in Cloud SQL
     "UPDATE users SET created_at = NOW() WHERE created_at IS NULL",
     "UPDATE users SET updated_at = NOW() WHERE updated_at IS NULL",
@@ -402,14 +417,15 @@ export async function writeRequestToCloudSql(request: {
   clientRating?: number | null; clientRatingComment?: string | null;
   refunded?: number | null; priceTier?: string | null;
   followupCount?: number; followupDeadline?: string | null; deadline?: string | null;
+  completedAt?: string | null;
   createdAt?: string | null; updatedAt?: string | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
     await pool.query(
-      `INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())
+      `INSERT INTO requests (id, user_id, expert_id, title, description, category, tier, status, credits_cost, service_type, expert_response, ai_response, attachments, client_rating, client_rating_comment, refunded, price_tier, followup_count, followup_deadline, deadline, completed_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
        ON CONFLICT (id) DO UPDATE SET
          expert_id=EXCLUDED.expert_id, status=EXCLUDED.status, credits_cost=EXCLUDED.credits_cost,
          expert_response=EXCLUDED.expert_response, ai_response=EXCLUDED.ai_response,
@@ -417,6 +433,7 @@ export async function writeRequestToCloudSql(request: {
          client_rating_comment=EXCLUDED.client_rating_comment, refunded=EXCLUDED.refunded,
          price_tier=EXCLUDED.price_tier, followup_count=EXCLUDED.followup_count,
          followup_deadline=EXCLUDED.followup_deadline, deadline=EXCLUDED.deadline,
+         completed_at=EXCLUDED.completed_at,
          updated_at=NOW()`,
       [request.id, request.userId, request.expertId || null, request.title,
        request.description || null, request.category, request.tier,
@@ -425,6 +442,7 @@ export async function writeRequestToCloudSql(request: {
        request.clientRating || null, request.clientRatingComment || null,
        request.refunded || 0, request.priceTier || null,
        request.followupCount || 0, request.followupDeadline || null, request.deadline || null,
+       request.completedAt || null,
        request.createdAt || new Date().toISOString()]
     );
   } catch (err) {
@@ -476,14 +494,37 @@ export async function writeNotificationToCloudSql(n: any): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
+    // Fix 5: Include notification type field
     await pool.query(
-      `INSERT INTO notifications (id, user_id, title, message, read, link, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (id) DO UPDATE SET read=EXCLUDED.read, updated_at=EXCLUDED.updated_at`,
-      [n.id, n.userId, n.title, n.message, n.read || 0, n.link || null, n.createdAt || null, n.updatedAt || new Date().toISOString()]
+      `INSERT INTO notifications (id, user_id, title, message, read, link, type, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET read=EXCLUDED.read, type=COALESCE(EXCLUDED.type, notifications.type), updated_at=EXCLUDED.updated_at`,
+      [n.id, n.userId, n.title, n.message, n.read || 0, n.link || null, n.type || null, n.createdAt || null, n.updatedAt || new Date().toISOString()]
     );
   } catch (err) {
     console.error("[CLOUD-SQL] Notification write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+// Fix 10: Write file attachment metadata to Cloud SQL for persistence
+export async function writeFileAttachmentToCloudSql(f: {
+  id: number; requestId: number; filename: string;
+  contentType: string; size: number; gcsPath?: string | null;
+  createdAt?: string | null;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO file_attachments (id, request_id, filename, content_type, size, gcs_path, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         filename=EXCLUDED.filename, content_type=EXCLUDED.content_type, size=EXCLUDED.size,
+         gcs_path=EXCLUDED.gcs_path, updated_at=NOW()`,
+      [f.id, f.requestId, f.filename, f.contentType, f.size, f.gcsPath || null, f.createdAt || new Date().toISOString()]
+    );
+  } catch (err) {
+    console.error("[CLOUD-SQL] FileAttachment write failed:", (err as Error).message?.substring(0, 100));
   }
 }
 
@@ -1078,6 +1119,8 @@ export async function syncAllToCloudSql(allUsers: any[], allExperts: any[], allR
     for (const t of (extras.verificationTests || [])) { await writeVerificationTestToCloudSql(t).catch(() => {}); }
     for (const v of (extras.expertVerifications || [])) { await writeExpertVerificationToCloudSql(v).catch(() => {}); }
     for (const w of (extras.withdrawalRequests || [])) { await writeWithdrawalRequestToCloudSql(w).catch(() => {}); }
+    // Fix 10: Sync file attachment metadata
+    for (const f of (extras.fileAttachments || [])) { await writeFileAttachmentToCloudSql(f).catch(() => {}); }
   }
   console.log("[CLOUD-SQL] ✅ Full sync complete");
 }

@@ -15,6 +15,7 @@ function useCleanHashLocation(): [string, (to: string) => void] {
   const cleanPath = rawLocation.split("?")[0];
   return [cleanPath, setLocation];
 }
+import { type ReactNode } from "react";
 import LandingPage from "@/pages/landing";
 import { LoginPage, RegisterPage } from "@/pages/auth";
 import ClientDashboard from "@/pages/client-dashboard";
@@ -27,6 +28,34 @@ import { TermsPage, PrivacyPage, CookiesPage } from "@/pages/legal";
 import PaymentsPage from "@/pages/payments";
 import ExpertPublicProfile from "@/pages/expert-public-profile";
 import NewsPage from "@/pages/news";
+
+// Fix 6: Auth guard — redirect to login instead of 404 for protected routes
+// Checks both cookie-based token (production) and in-memory auth state
+function AuthGuard({ children }: { children: ReactNode }) {
+  const [, setLocation] = useLocation();
+  const hasToken = typeof document !== "undefined" && document.cookie.includes("a2a_token=");
+  useEffect(() => {
+    if (!hasToken) {
+      setLocation("/login");
+    }
+  }, [hasToken, setLocation]);
+  if (!hasToken) return null;
+  return <>{children}</>;
+}
+
+// Fix 6: Admin auth guard — redirect to admin login
+// Admin uses sessionStorage (adminToken) or in-memory state
+function AdminGuard({ children }: { children: ReactNode }) {
+  const [, setLocation] = useLocation();
+  const hasToken = typeof sessionStorage !== "undefined" && !!sessionStorage.getItem("adminToken");
+  useEffect(() => {
+    if (!hasToken) {
+      setLocation("/admin/login");
+    }
+  }, [hasToken, setLocation]);
+  if (!hasToken) return null;
+  return <>{children}</>;
+}
 
 // BUG-3 / Item 18: Redirect /faq to landing page FAQ section
 function FaqRedirect() {
@@ -47,12 +76,12 @@ function AppRouter() {
       <Route path="/" component={LandingPage} />
       <Route path="/login" component={LoginPage} />
       <Route path="/register" component={RegisterPage} />
-      <Route path="/dashboard" component={ClientDashboard} />
-      <Route path="/expert/onboarding" component={ExpertOnboarding} />
+      <Route path="/dashboard">{() => <AuthGuard><ClientDashboard /></AuthGuard>}</Route>
+      <Route path="/expert/onboarding">{() => <AuthGuard><ExpertOnboarding /></AuthGuard>}</Route>
       <Route path="/expert/profile/:expertId" component={ExpertPublicProfile} />
-      <Route path="/expert" component={ExpertDashboard} />
+      <Route path="/expert">{() => <AuthGuard><ExpertDashboard /></AuthGuard>}</Route>
       <Route path="/admin/login" component={AdminLogin} />
-      <Route path="/admin" component={AdminDashboard} />
+      <Route path="/admin">{() => <AdminGuard><AdminDashboard /></AdminGuard>}</Route>
       <Route path="/terms" component={TermsPage} />
       <Route path="/privacy" component={PrivacyPage} />
       <Route path="/cookies" component={CookiesPage} />
