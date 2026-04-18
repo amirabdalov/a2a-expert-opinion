@@ -15,7 +15,7 @@ import {
   ArrowDownUp, Settings, Bell, LogOut, Search, Plus, Ban,
   CheckCircle2, XCircle, ChevronRight, TrendingUp, DollarSign,
   UserCheck, ClipboardList, PieChart, Activity, RefreshCw, Clock, Timer, BarChart3, Gauge,
-  Command, ShieldCheck, MessageSquare, AlertCircle, Download,
+  Command, ShieldCheck, MessageSquare, AlertCircle, Download, Paperclip,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -1446,6 +1446,13 @@ function RequestsPage() {
   const [catFilter, setCatFilter] = useState("all");
   const [selected, setSelected] = useState<any>(null);
 
+  // Build 39 Fix: Fetch file attachments when a request is selected
+  const { data: selectedFiles } = useQuery<Array<{ id: number; filename: string; content_type: string; size: number; created_at: string }>>({
+    queryKey: ["/api/files", selected?.id],
+    queryFn: () => apiRequest("GET", `/api/files/${selected.id}`).then(r => r.json()).catch(() => []),
+    enabled: !!selected?.id,
+  });
+
   const refundMut = useMutation({
     mutationFn: (id: number) => apiRequest("POST", `/api/admin/requests/${id}/refund`),
     onSuccess: () => {
@@ -1595,6 +1602,27 @@ function RequestsPage() {
                 <div>
                   <span className="text-zinc-500 text-xs">Instructions</span>
                   <p className="text-zinc-300 mt-1">{selected.instructions}</p>
+                </div>
+              )}
+              {/* Build 39 Fix: Show file attachments in admin request detail */}
+              {selectedFiles && selectedFiles.length > 0 && (
+                <div>
+                  <Separator className="bg-zinc-800" />
+                  <span className="text-zinc-500 text-xs flex items-center gap-1 mt-2"><Paperclip className="h-3 w-3" /> Attachments ({selectedFiles.length})</span>
+                  <div className="mt-2 space-y-1.5">
+                    {selectedFiles.map((f) => (
+                      <a
+                        key={f.id}
+                        href={`/api/files/${selected.id}/${encodeURIComponent(f.filename)}`}
+                        target="_blank"
+                        download
+                        className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm"
+                      >
+                        <FileText className="h-4 w-4 shrink-0" />
+                        {f.filename} <span className="text-zinc-500">({(f.size / 1024).toFixed(1)} KB)</span>
+                      </a>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
