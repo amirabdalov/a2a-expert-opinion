@@ -440,6 +440,49 @@ export async function registerRoutes(
     writeCreditTransactionToCloudSql(tx).catch(() => {});
   }
 
+  // ─── Build 39 Fix 1: Reconcile wallet balances for initiated payouts ───
+  // On startup, scan all payout_initiated withdrawal requests and ensure the expert's
+  // wallet balance has been deducted. This catches cases where payouts were initiated
+  // before the deduction code was deployed (pre-Build 37).
+  (function reconcilePayoutBalances() {
+    try {
+      const allWr = storage.getAllWithdrawalRequests();
+      const initiated = allWr.filter(wr => wr.status === "payout_initiated");
+      for (const wr of initiated) {
+        const expert = storage.getExpert(wr.expertId);
+        if (!expert) continue;
+        const expertUser = storage.getUser(expert.userId);
+        if (!expertUser) continue;
+
+        // Check if a payout wallet_transaction already exists for this invoice
+        const existingTx = sqlite.prepare(
+          "SELECT id FROM wallet_transactions WHERE user_id = ? AND type = 'payout' AND description LIKE ?"
+        ).get(expertUser.id, `%${wr.invoiceNumber}%`);
+
+        if (!existingTx) {
+          // No payout transaction recorded — retroactively deduct
+          const payoutCents = Math.round(Number(wr.amount) * 100);
+          const newBalance = Math.max(0, (expertUser.walletBalance || 0) - payoutCents);
+          storage.updateUser(expertUser.id, { walletBalance: newBalance });
+          storage.createWalletTransaction({
+            userId: expertUser.id,
+            amountCents: -payoutCents,
+            type: "payout",
+            description: `Payout reconciled: Invoice ${wr.invoiceNumber} (retroactive)`,
+            createdAt: wr.updatedAt || new Date().toISOString(),
+            stripePaymentId: null,
+          });
+          // Sync to Cloud SQL
+          syncUserToCloud(expertUser.id);
+          console.log(`[RECONCILE] Deducted $${wr.amount} from ${expertUser.email} (${expertUser.name}) for ${wr.invoiceNumber}. New balance: ${newBalance / 100}`);
+        }
+      }
+      console.log(`[RECONCILE] Checked ${initiated.length} initiated payouts`);
+    } catch (err: any) {
+      console.error("[RECONCILE] Error:", err.message);
+    }
+  })();
+
   // Rate limiting on auth endpoints
   // Fix 2: Tighter rate limiting — 10 requests per 15 min for auth, 5 for registration
   const authLimiter = rateLimit({
@@ -3921,14 +3964,121 @@ export async function registerRoutes(
   // ─── OB-J: EXPERT VERIFICATION & WITHDRAWAL CYCLE ───
 
   // Upload passport file for expert verification
+  // Build 39 Fix 5: Persist passport/ID file in SQLite + GCS, not just return data URL
   app.post("/api/experts/:expertId/upload-passport", userOrAdminAuth, attachmentUpload.single("passport"), async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       if (!req.file) return res.status(400).json({ error: true, message: "Passport file is required" });
-      // Store as base64 data URL
+
       const base64 = req.file.buffer.toString("base64");
       const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
+
+      // Persist to SQLite expert_passport_files table
+      const now = new Date().toISOString();
+      sqlite.prepare(`
+        CREATE TABLE IF NOT EXISTS expert_passport_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          expert_id INTEGER NOT NULL,
+          filename TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          data TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `).run();
+
+      // Upsert: delete old and insert new
+      sqlite.prepare("DELETE FROM expert_passport_files WHERE expert_id = ?").run(expertId);
+      sqlite.prepare(
+        "INSERT INTO expert_passport_files (expert_id, filename, content_type, data, size, created_at, updated_at) VALUES (?,?,?,?,?,?,?)"
+      ).run(expertId, req.file.originalname, req.file.mimetype, base64, req.file.size, now, now);
+
+      // Also try GCS upload (fire-and-forget)
+      const gcsPath = `expert-passports/${expertId}/${req.file.originalname}`;
+      uploadToGcs(gcsPath, req.file.buffer, req.file.mimetype)
+        .then(() => console.log(`[PASSPORT] Uploaded to GCS: ${gcsPath}`))
+        .catch((err) => console.log(`[PASSPORT] GCS upload skipped: ${err.message}`));
+
+      triggerBackup();
+      console.log(`[PASSPORT] Stored passport for expert ${expertId}: ${req.file.originalname} (${req.file.size} bytes)`);
       return res.json({ url: dataUrl, filename: req.file.originalname });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 39 Fix 5b: Serve passport file from DB
+  app.get("/api/experts/:expertId/passport-file", userOrAdminAuth, (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      // Try expert_passport_files table first
+      sqlite.prepare(`
+        CREATE TABLE IF NOT EXISTS expert_passport_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          expert_id INTEGER NOT NULL, filename TEXT NOT NULL,
+          content_type TEXT NOT NULL, data TEXT NOT NULL,
+          size INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )
+      `).run();
+      const file = sqlite.prepare(
+        "SELECT * FROM expert_passport_files WHERE expert_id = ? ORDER BY id DESC LIMIT 1"
+      ).get(expertId) as any;
+
+      if (file) {
+        const buffer = Buffer.from(file.data, "base64");
+        res.setHeader("Content-Type", file.content_type);
+        res.setHeader("Content-Disposition", `inline; filename="${file.filename}"`);
+        res.setHeader("Content-Length", buffer.length);
+        return res.send(buffer);
+      }
+
+      // Fallback: check expert_verifications.passportFileUrl for inline data URL
+      const verification = storage.getExpertVerificationByExpert(expertId);
+      if (verification?.passportFileUrl?.startsWith("data:")) {
+        const match = verification.passportFileUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          const buffer = Buffer.from(match[2], "base64");
+          res.setHeader("Content-Type", match[1]);
+          res.setHeader("Content-Disposition", `inline; filename="passport.${match[1].split('/')[1] || 'bin'}"`);
+          res.setHeader("Content-Length", buffer.length);
+          return res.send(buffer);
+        }
+      }
+
+      return res.status(404).json({ error: true, message: "No passport file found" });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 39 Fix 5c: Check if expert has passport file
+  app.get("/api/experts/:expertId/has-passport", userOrAdminAuth, (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      sqlite.prepare(`
+        CREATE TABLE IF NOT EXISTS expert_passport_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          expert_id INTEGER NOT NULL, filename TEXT NOT NULL,
+          content_type TEXT NOT NULL, data TEXT NOT NULL,
+          size INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )
+      `).run();
+      const file = sqlite.prepare(
+        "SELECT id, filename, content_type, size, created_at FROM expert_passport_files WHERE expert_id = ? ORDER BY id DESC LIMIT 1"
+      ).get(expertId) as any;
+
+      if (file) {
+        return res.json({ hasPassport: true, filename: file.filename, contentType: file.content_type, size: file.size, uploadedAt: file.created_at });
+      }
+
+      // Check inline data URL in expert_verifications
+      const verification = storage.getExpertVerificationByExpert(expertId);
+      if (verification?.passportFileUrl) {
+        return res.json({ hasPassport: true, filename: "passport", contentType: "image/jpeg", size: 0, uploadedAt: verification.createdAt });
+      }
+
+      return res.json({ hasPassport: false });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }

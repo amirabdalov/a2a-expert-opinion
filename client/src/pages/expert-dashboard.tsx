@@ -756,7 +756,12 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                         const form = new FormData();
                         form.append("file", file);
                         try {
-                          const res = await fetch(`/api/requests/${currentReview.requestId}/upload`, { method: "POST", body: form });
+                          // Build 39 Fix 4: Include auth headers on file upload
+                          const { getToken } = await import("@/lib/auth");
+                          const hdrs: Record<string, string> = {};
+                          const tk = getToken();
+                          if (tk) hdrs["Authorization"] = `Bearer ${tk}`;
+                          const res = await fetch(`/api/requests/${currentReview.requestId}/upload`, { method: "POST", body: form, headers: hdrs });
                           if (!res.ok) throw new Error("Upload failed");
                           toast({ title: "File uploaded" });
                           queryClient.invalidateQueries({ queryKey: ["/api/files", currentReview.requestId] });
@@ -1374,9 +1379,15 @@ function Earnings({ userId }: { userId: number }) {
     try {
       const formData = new FormData();
       formData.append("passport", file);
+      // Build 39 Fix 4: Include auth headers on passport upload
+      const { getToken: getAuthToken } = await import("@/lib/auth");
+      const authHeaders: Record<string, string> = {};
+      const authTk = getAuthToken();
+      if (authTk) authHeaders["Authorization"] = `Bearer ${authTk}`;
       const res = await fetch(`/api/experts/${expert.id}/upload-passport`, {
         method: "POST",
         body: formData,
+        headers: authHeaders,
         credentials: "include",
       });
       if (!res.ok) throw new Error("Upload failed");

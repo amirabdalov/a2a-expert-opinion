@@ -1978,13 +1978,10 @@ function WithdrawalsPage() {
                 <tr key={v.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
                   <td className="px-4 py-3 text-zinc-200 font-medium">{v.expertName || `Expert #${v.expertId}`}</td>
                   <td className="px-4 py-3">
-                    {v.passportFileUrl ? (
-                      <Button size="sm" variant="ghost" className="h-7 text-xs text-blue-400" onClick={() => setSelectedVerification(v)}>
-                        View Document
-                      </Button>
-                    ) : (
-                      <span className="text-zinc-500 text-xs">Not uploaded</span>
-                    )}
+                    {/* Build 39 Fix 6: Check both passportFileUrl and DB-stored passport */}
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-blue-400" onClick={() => setSelectedVerification(v)}>
+                      View Document
+                    </Button>
                   </td>
                   <td className="px-4 py-3 text-zinc-300 text-xs font-mono">{v.accountNumber || "—"}</td>
                   <td className="px-4 py-3 text-zinc-300 text-xs font-mono">{v.swiftCode || "—"}</td>
@@ -2008,23 +2005,33 @@ function WithdrawalsPage() {
         </div>
       </Card>
 
-      {/* OB-J: Passport/ID Viewer Dialog */}
+      {/* OB-J: Passport/ID Viewer Dialog — Build 39: Use API endpoint for passport files */}
       <Dialog open={!!selectedVerification} onOpenChange={() => setSelectedVerification(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Expert Verification Document</DialogTitle>
           </DialogHeader>
-          {selectedVerification?.passportFileUrl && (
-            <div className="space-y-4">
+          <div className="space-y-4">
+            {selectedVerification?.passportFileUrl ? (
               <img src={selectedVerification.passportFileUrl} alt="Passport/ID" className="w-full rounded-lg border" />
-              <div className="text-sm space-y-1 text-zinc-300">
-                <p><strong>Account:</strong> {selectedVerification.accountNumber}</p>
-                <p><strong>SWIFT:</strong> {selectedVerification.swiftCode}</p>
-                <p><strong>Bank:</strong> {selectedVerification.bankName}</p>
-                <p><strong>Address:</strong> {selectedVerification.bankAddress}</p>
+            ) : selectedVerification ? (
+              <div className="space-y-2">
+                <img
+                  src={`/api/experts/${selectedVerification.expertId}/passport-file`}
+                  alt="Passport/ID"
+                  className="w-full rounded-lg border"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden'); }}
+                />
+                <p className="text-zinc-500 text-xs hidden">No passport/ID document uploaded yet.</p>
               </div>
+            ) : null}
+            <div className="text-sm space-y-1 text-zinc-300">
+              <p><strong>Account:</strong> {selectedVerification?.accountNumber || "—"}</p>
+              <p><strong>SWIFT:</strong> {selectedVerification?.swiftCode || "—"}</p>
+              <p><strong>Bank:</strong> {selectedVerification?.bankName || "—"}</p>
+              <p><strong>Address:</strong> {selectedVerification?.bankAddress || "—"}</p>
             </div>
-          )}
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSelectedVerification(null)}>Close</Button>
           </DialogFooter>

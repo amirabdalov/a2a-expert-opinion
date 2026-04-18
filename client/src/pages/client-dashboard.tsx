@@ -599,7 +599,11 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
               const blob = new Blob([byteArray], { type: att.type });
               const fd = new FormData();
               fd.append("file", blob, att.name);
-              await fetch(`/api/requests/${newRequestId}/upload`, { method: "POST", body: fd });
+              // Build 39 Fix 4: Include auth headers on file upload
+              const uploadHeaders: Record<string, string> = {};
+              const uploadToken = (await import("@/lib/auth")).getToken();
+              if (uploadToken) uploadHeaders["Authorization"] = `Bearer ${uploadToken}`;
+              await fetch(`/api/requests/${newRequestId}/upload`, { method: "POST", body: fd, headers: uploadHeaders });
             } catch {
               // silent per-file failure — don't block confirmation
             }
@@ -1630,6 +1634,12 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
   });
   const [chatInput, setChatInput] = useState("");
   const { data: msgs } = useQuery<Message[]>({ queryKey: ["/api/messages", requestId] });
+  // Build 39 Fix 3: Fetch DB-stored files for this request (like expert dashboard)
+  const { data: requestFiles } = useQuery<Array<{ id: number; filename: string; size: number }>>({
+    queryKey: ["/api/files", requestId],
+    queryFn: () => apiRequest("GET", `/api/files/${requestId}`).then(r => r.json()),
+    enabled: !!requestId,
+  });
   const { toast } = useToast();
 
   const sendMutation = useMutation({
@@ -1761,29 +1771,37 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
         </Card>
       )}
 
-      {/* Attachments */}
-      {parsedAttachments.length > 0 && (
+      {/* Attachments — Build 39 Fix 3: Show both JSON + DB-stored files */}
+      {(parsedAttachments.length > 0 || (requestFiles && requestFiles.length > 0)) && (
         <Card className="mb-4">
           <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
+              {/* Legacy JSON-stored attachments */}
               {parsedAttachments.map((a, i) => (
-                <details key={i} className="border rounded p-2">
-                  <summary className="text-xs font-medium cursor-pointer flex items-center gap-2">
-                    <FileText className="h-3 w-3" />
-                    {/* FIX-5: Updated download link to new DB-based endpoint */}
-                    <a
-                      href={`/api/files/${requestId}/${encodeURIComponent(a.name)}`}
-                      target="_blank"
-                      download={a.name}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-blue-600 hover:underline"
-                    >
-                      {a.name}
-                    </a>
-                  </summary>
-                  <pre className="mt-2 text-xs bg-muted/30 p-2 rounded whitespace-pre-wrap">{a.content}</pre>
-                </details>
+                <a
+                  key={`parsed-${i}`}
+                  href={`/api/files/${requestId}/${encodeURIComponent(a.name)}`}
+                  target="_blank"
+                  download={a.name}
+                  className="flex items-center gap-2 text-primary hover:underline text-sm"
+                >
+                  <FileText className="h-4 w-4 shrink-0" />
+                  {a.name}
+                </a>
+              ))}
+              {/* DB-stored file attachments */}
+              {requestFiles?.map((f) => (
+                <a
+                  key={`db-${f.id}`}
+                  href={`/api/files/${requestId}/${encodeURIComponent(f.filename)}`}
+                  target="_blank"
+                  download
+                  className="flex items-center gap-2 text-primary hover:underline text-sm"
+                >
+                  <Paperclip className="h-4 w-4 shrink-0" />
+                  {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                </a>
               ))}
             </div>
           </CardContent>
