@@ -3,6 +3,7 @@ import type { User } from "@shared/schema";
 
 // In-memory auth state (no localStorage in sandboxed iframe)
 let currentUser: Omit<User, "password"> | null = null;
+let userToken: string | null = null;
 let listeners: Array<() => void> = [];
 
 function notify() {
@@ -19,21 +20,37 @@ function readUserFromCookie(): Omit<User, "password"> | null {
   }
 }
 
+function readTokenFromCookie(): string | null {
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)a2a_token=([^;]*)/);
+    if (!match) return null;
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 // Restore session from cookie on module load
 if (typeof document !== "undefined") {
   const restored = readUserFromCookie();
   if (restored) {
     currentUser = restored;
   }
+  userToken = readTokenFromCookie();
 }
 
-export function setUser(user: Omit<User, "password"> | null) {
+export function setUser(user: Omit<User, "password"> | null, token?: string) {
   currentUser = user;
+  userToken = token || null;
   notify();
 }
 
 export function getUser() {
   return currentUser;
+}
+
+export function getToken(): string | null {
+  return userToken;
 }
 
 export function useAuth() {
@@ -47,12 +64,17 @@ export function useAuth() {
     };
   }, []);
 
-  const login = useCallback((u: Omit<User, "password">) => {
-    setUser(u);
+  const login = useCallback((u: Omit<User, "password"> & { token?: string }) => {
+    const { token, ...userData } = u;
+    setUser(userData, token);
     // Persist session in cookie (24 hours)
-    document.cookie = `a2a_session=${encodeURIComponent(JSON.stringify(u))}; path=/; max-age=${24 * 60 * 60}; SameSite=None; Secure`;
+    document.cookie = `a2a_session=${encodeURIComponent(JSON.stringify(userData))}; path=/; max-age=${24 * 60 * 60}; SameSite=None; Secure`;
     // Also set a2a_user cookie for landing page compatibility (24 hours)
-    document.cookie = `a2a_user=${encodeURIComponent(JSON.stringify({ name: u.name, email: u.email, role: u.role }))}; path=/; max-age=${24 * 60 * 60}; SameSite=None; Secure`;
+    document.cookie = `a2a_user=${encodeURIComponent(JSON.stringify({ name: userData.name, email: userData.email, role: userData.role }))}; path=/; max-age=${24 * 60 * 60}; SameSite=None; Secure`;
+    // Persist JWT token in cookie (7 days, matching server-side expiry)
+    if (token) {
+      document.cookie = `a2a_token=${encodeURIComponent(token)}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=None; Secure`;
+    }
   }, []);
 
   const logout = useCallback(() => {
@@ -60,6 +82,7 @@ export function useAuth() {
     // Clear cookies
     document.cookie = "a2a_session=; path=/; max-age=0; SameSite=None; Secure";
     document.cookie = "a2a_user=; path=/; max-age=0; SameSite=None; Secure";
+    document.cookie = "a2a_token=; path=/; max-age=0; SameSite=None; Secure";
   }, []);
 
   return { user, login, logout };

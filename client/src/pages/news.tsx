@@ -644,7 +644,7 @@ function StickySidebar() {
           Finance, business and strategy experts are earning real income reviewing AI outputs. Set your own rate. Work from anywhere.
         </p>
         <a
-          href="/#/register?role=expert"
+          href="/register#/register?role=expert"
           onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=expert"; }}
           className="block w-full text-center py-2.5 rounded-full bg-white text-[#0F3DD1] text-sm font-bold hover:bg-blue-50 transition-colors"
         >
@@ -663,7 +663,7 @@ function StickySidebar() {
           A human expert reviews your AI-generated analysis in hours, not days.
         </p>
         <a
-          href="/#/register"
+          href="/register#/register"
           onClick={(e) => { e.preventDefault(); window.location.hash = "/register"; }}
           className="block w-full text-center py-2.5 rounded-full bg-[#0F3DD1] text-white text-sm font-bold hover:opacity-90 transition-opacity"
         >
@@ -743,7 +743,7 @@ function NewsNav() {
                     News
                   </span>
                   <a
-                    href="/#/register?role=client&utm_source=news&utm_medium=nav&utm_campaign=header"
+                    href="/register#/register?role=client&utm_source=news&utm_medium=nav&utm_campaign=header"
                     onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=client&utm_source=news&utm_medium=nav&utm_campaign=header"; }}
                     className="text-[15px] font-medium text-[#686868] hover:text-[#0F3DD1] transition-colors cursor-pointer whitespace-nowrap"
                   >
@@ -872,8 +872,8 @@ function NewsFooter() {
               <p className="font-semibold mb-2">Product</p>
               <div className="space-y-1.5 text-muted-foreground">
                 <a href="/" className="block hover:text-primary transition-colors">How it Works</a>
-                <a href="/#/register" onClick={(e) => { e.preventDefault(); window.location.hash = "/register"; }} className="block hover:text-primary transition-colors">Get Expert Review</a>
-                <a href="/#/register?role=expert" onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=expert"; }} className="block hover:text-primary transition-colors">Become an Expert</a>
+                <a href="/register#/register" onClick={(e) => { e.preventDefault(); window.location.hash = "/register"; }} className="block hover:text-primary transition-colors">Get Expert Review</a>
+                <a href="/register#/register?role=expert" onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=expert"; }} className="block hover:text-primary transition-colors">Become an Expert</a>
               </div>
             </div>
             <div>
@@ -987,14 +987,14 @@ export default function NewsPage() {
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <a
-              href="/#/register?role=client&utm_source=news&utm_medium=hero&utm_campaign=ai_trust"
+              href="/register#/register?role=client&utm_source=news&utm_medium=hero&utm_campaign=ai_trust"
               onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=client&utm_source=news&utm_medium=hero&utm_campaign=ai_trust"; }}
               className="inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full bg-white text-[#0F3DD1] text-base font-bold hover:bg-blue-50 transition-colors shadow-lg"
             >
               Get Expert Opinion <ArrowRight className="w-4 h-4" />
             </a>
             <a
-              href="/#/register?role=expert&utm_source=news&utm_medium=hero&utm_campaign=become_expert"
+              href="/register#/register?role=expert&utm_source=news&utm_medium=hero&utm_campaign=become_expert"
               onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=expert&utm_source=news&utm_medium=hero&utm_campaign=become_expert"; }}
               className="inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-full border-2 border-white/40 text-white text-base font-bold hover:bg-white/10 transition-colors"
             >
@@ -1083,7 +1083,7 @@ export default function NewsPage() {
                       headline="AI hallucinates. Your business decisions shouldn't."
                       subtext="Get a verified expert to review your AI-generated analysis. $5 free credits — results in hours, not days."
                       primaryLabel="Get Expert Review"
-                      primaryHref="/#/register?role=client&utm_source=news&utm_medium=content&utm_campaign=ai_trust_crisis"
+                      primaryHref="/register#/register?role=client&utm_source=news&utm_medium=content&utm_campaign=ai_trust_crisis"
                     />
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1119,7 +1119,7 @@ export default function NewsPage() {
                       headline="Your expertise is worth more than you think."
                       subtext="Finance, business and strategy experts earn $50–200 per verified review. Set your own rate. Work from anywhere. Get paid in days."
                       primaryLabel="Apply as Expert"
-                      primaryHref="/#/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=expert_economy"
+                      primaryHref="/register#/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=expert_economy"
                     />
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1163,7 +1163,7 @@ export default function NewsPage() {
                       headline="Start building your expert profile while still in school."
                       subtext="No experience minimum for Standard tier. Earn while you learn. Build a verified track record that employers value."
                       primaryLabel="Join as Student Expert"
-                      primaryHref="/#/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=student_experts"
+                      primaryHref="/register#/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=student_experts"
                     />
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1199,7 +1199,7 @@ export default function NewsPage() {
                       headline="Don't let AI errors cost your business."
                       subtext="Enterprise-grade expert verification for AI-generated reports, analysis, and strategic recommendations. Compliance-ready. Results in hours."
                       primaryLabel="De-risk Your AI"
-                      primaryHref="/#/register?role=client&utm_source=news&utm_medium=content&utm_campaign=enterprise_risk"
+                      primaryHref="/register#/register?role=client&utm_source=news&utm_medium=content&utm_campaign=enterprise_risk"
                     />
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1291,7 +1291,7 @@ export default function NewsPage() {
                         ))}
                       </ul>
                       <a
-                        href="/#/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=final_cta"
+                        href="/register#/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=final_cta"
                         onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=expert&utm_source=news&utm_medium=content&utm_campaign=final_cta"; }}
                         className="block w-full text-center py-3 rounded-full bg-white text-[#0F3DD1] font-bold text-sm hover:bg-blue-50 transition-colors"
                       >
@@ -1320,7 +1320,7 @@ export default function NewsPage() {
                         ))}
                       </ul>
                       <a
-                        href="/#/register?role=client&utm_source=news&utm_medium=content&utm_campaign=final_cta"
+                        href="/register#/register?role=client&utm_source=news&utm_medium=content&utm_campaign=final_cta"
                         onClick={(e) => { e.preventDefault(); window.location.hash = "/register?role=client&utm_source=news&utm_medium=content&utm_campaign=final_cta"; }}
                         className="block w-full text-center py-3 rounded-full bg-white text-[#0F3DD1] font-bold text-sm hover:bg-blue-50 transition-colors"
                       >

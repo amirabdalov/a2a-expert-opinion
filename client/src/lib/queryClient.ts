@@ -1,12 +1,19 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { getToken } from "./auth";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 function getAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
+  // Admin token takes priority (for admin panel), user JWT is fallback
   const adminToken = sessionStorage.getItem("adminToken");
   if (adminToken) {
     headers["Authorization"] = `Bearer ${adminToken}`;
+  } else {
+    const token = getToken();
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
   }
   return headers;
 }

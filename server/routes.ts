@@ -15,6 +15,9 @@ import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
 import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql } from "./user-data-persist";
 
+// Bug-2 fix: Track server start time for health check grace period
+const SERVER_START_TIME = Date.now();
+
 // ─── JWT Admin Auth ───
 const JWT_SECRET = process.env.JWT_SECRET || "a2a-admin-jwt-secret-2026-build31";
 
@@ -53,6 +56,19 @@ function userOrAdminAuth(req: ExpressRequest, res: ExpressResponse, next: NextFu
   } catch {
     return res.status(401).json({ error: true, message: "Invalid or expired token", code: "TOKEN_INVALID" });
   }
+}
+
+// Auth helper: verify the authenticated user owns the resource (or is admin)
+function ownerOrAdmin(req: ExpressRequest, res: ExpressResponse, paramOrBodyField: string, source: 'params' | 'body' = 'params'): boolean {
+  const authUser = (req as any).authUser;
+  if (!authUser) { res.status(401).json({ error: true, message: "Authentication required" }); return false; }
+  const targetId = source === 'params' ? parseInt(req.params[paramOrBodyField]) : parseInt(req.body?.[paramOrBodyField]);
+  if (authUser.role === 'admin') return true;
+  if (authUser.id !== targetId) {
+    res.status(403).json({ error: true, message: "You can only perform this action on your own account", code: "FORBIDDEN" });
+    return false;
+  }
+  return true;
 }
 
 // Multer config: memory storage, 5MB limit, images only
@@ -689,14 +705,14 @@ export async function registerRoutes(
   });
 
   // ─── REQUEST TIMELINE ───
-  app.get("/api/requests/:id/timeline", async (req, res) => {
+  app.get("/api/requests/:id/timeline", userOrAdminAuth, async (req, res) => {
     const events = storage.getRequestEventsByRequest(parseInt(req.params.id));
     return res.json(events);
   });
 
   // ─── REQUEST MESSAGE (timeline messaging) ───
   // Both client and expert can send messages. Follow-up count is tracked for client messages.
-  app.post("/api/requests/:id/message", async (req, res) => {
+  app.post("/api/requests/:id/message", userOrAdminAuth, async (req, res) => {
     const requestId = parseInt(req.params.id);
     const { actorId, actorName, message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: true, message: "Message required" });
@@ -808,11 +824,17 @@ export async function registerRoutes(
   app.get("/api/health", async (_req, res) => {
     const { isBackupHealthy } = await import("./db-persistence");
     const userCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM users").get() as any;
-    res.json({ 
+    const backupOk = isBackupHealthy();
+    // Bug-2 fix: Grace period on cold start — don't alarm if server started < 10 min ago
+    const uptimeMs = Date.now() - SERVER_START_TIME;
+    const coldStart = uptimeMs < 10 * 60 * 1000;
+    const effectiveHealthy = backupOk || coldStart;
+    res.json({
       status: "running",
-      backupHealthy: isBackupHealthy(),
+      backupHealthy: effectiveHealthy,
       totalUsers: userCount?.cnt || 0,
-      warning: !isBackupHealthy() ? "DATABASE BACKUP IS NOT WORKING. User data will be lost on next deploy." : null
+      warning: !effectiveHealthy ? "DATABASE BACKUP IS NOT WORKING. User data will be lost on next deploy." : null,
+      ...(coldStart && !backupOk ? { note: "Server just started, initial backup pending" } : {}),
     });
   });
 
@@ -1262,7 +1284,10 @@ export async function registerRoutes(
     return res.json(expert);
   });
 
-  app.patch("/api/experts/:id", async (req, res) => {
+  app.patch("/api/experts/:id", userOrAdminAuth, async (req, res) => {
+    const authUser = (req as any).authUser;
+    const expert = storage.getExpert(parseInt(req.params.id));
+    if (expert && authUser.role !== "admin" && expert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
     const expert = storage.updateExpert(parseInt(req.params.id), req.body);
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
     syncExpertToCloud(expert.id);
@@ -1303,30 +1328,38 @@ export async function registerRoutes(
 
   // ─── Request routes ───
 
-  app.get("/api/requests/user/:userId", async (req, res) => {
+  app.get("/api/requests/user/:userId", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'userId')) return;
     const reqs = storage.getRequestsByUser(parseInt(req.params.userId));
     return res.json(reqs);
   });
 
-  app.get("/api/requests/expert/:expertId", async (req, res) => {
+  app.get("/api/requests/expert/:expertId", userOrAdminAuth, async (req, res) => {
+    // Verify authUser owns this expert record
+    const authUser = (req as any).authUser;
+    const expert = storage.getExpert(parseInt(req.params.expertId));
+    if (authUser.role !== 'admin' && (!expert || expert.userId !== authUser.id)) {
+      return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
+    }
     const reqs = storage.getRequestsByExpert(parseInt(req.params.expertId));
     return res.json(reqs);
   });
 
-  app.get("/api/requests/pending", async (_req, res) => {
+  app.get("/api/requests/pending", userOrAdminAuth, async (_req, res) => {
     const reqs = storage.getPendingRequests();
     return res.json(reqs);
   });
 
   // NOTE: /drafts/:userId MUST be registered before /:id to avoid the wildcard catching it
-  app.get("/api/requests/drafts/:userId", async (req, res) => {
+  app.get("/api/requests/drafts/:userId", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'userId')) return;
     const userId = parseInt(req.params.userId);
     const allRequests = storage.getRequestsByUser(userId);
     const drafts = allRequests.filter((r) => r.status === "draft");
     return res.json(drafts);
   });
 
-  app.get("/api/requests/:id", async (req, res) => {
+  app.get("/api/requests/:id", userOrAdminAuth, async (req, res) => {
     const r = storage.getRequest(parseInt(req.params.id));
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
     // FIX-4 Approach 4: Ensure creditsCost is always in the response (not credit_cost)
@@ -1346,8 +1379,9 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/requests", async (req, res) => {
+  app.post("/api/requests", userOrAdminAuth, async (req, res) => {
     try {
+      if (!ownerOrAdmin(req, res, 'userId', 'body')) return;
       const { userId, title, description, category, tier, serviceType, aiResponse, attachments: rawAttachments, expertsNeeded, instructions,
         llmProvider, llmModel, pricePerMinute, priceTier, serviceCategory, draftId, creditsCost: clientCreditsCost } = req.body;
 
@@ -1531,7 +1565,16 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/requests/:id", async (req, res) => {
+  app.patch("/api/requests/:id", userOrAdminAuth, async (req, res) => {
+    // Verify authUser is request owner, assigned expert, or admin
+    const authUser = (req as any).authUser;
+    const existing = storage.getRequest(parseInt(req.params.id));
+    if (existing && authUser.role !== 'admin') {
+      const isOwner = existing.userId === authUser.id;
+      let isExpert = false;
+      if (existing.expertId) { const exp = storage.getExpert(existing.expertId); isExpert = !!exp && exp.userId === authUser.id; }
+      if (!isOwner && !isExpert) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
+    }
     const r = storage.updateRequest(parseInt(req.params.id), req.body);
     if (!r) return res.status(404).json({ error: true, message: "Request not found" });
     syncRequestToCloud(r.id);
@@ -1539,8 +1582,9 @@ export async function registerRoutes(
   });
 
   // ─── Draft Routes ───
-  app.post("/api/requests/draft", async (req, res) => {
+  app.post("/api/requests/draft", userOrAdminAuth, async (req, res) => {
     try {
+      if (!ownerOrAdmin(req, res, 'userId', 'body')) return;
       const { userId, title, description, category, serviceType, aiResponse, attachments, instructions,
         llmProvider, llmModel, serviceCategory } = req.body;
       const user = storage.getUser(userId);
@@ -1577,12 +1621,14 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/requests/:id/draft", async (req, res) => {
+  app.patch("/api/requests/:id/draft", userOrAdminAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const existing = storage.getRequest(id);
       if (!existing) return res.status(404).json({ error: true, message: "Draft not found" });
       if (existing.status !== "draft") return res.status(400).json({ error: true, message: "Not a draft" });
+      const authUser = (req as any).authUser;
+      if (authUser.role !== 'admin' && existing.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
       const updated = storage.updateRequest(id, req.body);
       return res.json(updated);
     } catch (e: any) {
@@ -1590,11 +1636,13 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/requests/:id/draft", async (req, res) => {
+  app.delete("/api/requests/:id/draft", userOrAdminAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const existing = storage.getRequest(id);
       if (!existing) return res.status(404).json({ error: true, message: "Draft not found" });
+      const authUser = (req as any).authUser;
+      if (authUser.role !== 'admin' && existing.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
       if (existing.status !== "draft") return res.status(400).json({ error: true, message: "Not a draft" });
       // Use updateRequest to mark as deleted (soft delete by changing status)
       storage.updateRequest(id, { status: "deleted" } as any);
@@ -1605,8 +1653,9 @@ export async function registerRoutes(
   });
 
   // ─── Custom Credit Top-Up ───
-  app.post("/api/credits/topup", async (req, res) => {
+  app.post("/api/credits/topup", userOrAdminAuth, async (req, res) => {
     try {
+      if (!ownerOrAdmin(req, res, 'userId', 'body')) return;
       const { userId, amountDollars } = req.body;
       const amount = Number(amountDollars);
       if (!amount || amount < 5 || amount > 10000) {
@@ -1643,7 +1692,12 @@ export async function registerRoutes(
   });
 
   // Claim request (expert) — legacy
-  app.post("/api/requests/:id/claim", async (req, res) => {
+  app.post("/api/requests/:id/claim", userOrAdminAuth, async (req, res) => {
+    // Verify authUser is an expert
+    const authUser = (req as any).authUser;
+    if (authUser.role !== 'admin' && authUser.role !== 'expert') {
+      return res.status(403).json({ error: true, message: "Only experts can claim requests", code: "FORBIDDEN" });
+    }
     const { expertId } = req.body;
     const r = storage.updateRequest(parseInt(req.params.id), {
       expertId, status: "in_progress",
@@ -1672,7 +1726,14 @@ export async function registerRoutes(
   });
 
   // Submit expert response — sets status to awaiting_followup; credits charged only on final completion
-  app.post("/api/requests/:id/respond", async (req, res) => {
+  app.post("/api/requests/:id/respond", userOrAdminAuth, async (req, res) => {
+    // Verify authUser is the assigned expert
+    const authUser = (req as any).authUser;
+    const existing = storage.getRequest(parseInt(req.params.id));
+    if (existing && existing.expertId && authUser.role !== 'admin') {
+      const exp = storage.getExpert(existing.expertId);
+      if (!exp || exp.userId !== authUser.id) return res.status(403).json({ error: true, message: "Only the assigned expert can respond", code: "FORBIDDEN" });
+    }
     const { expertResponse } = req.body;
     const followupDeadline = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(); // 3 hours from now
     const r = storage.updateRequest(parseInt(req.params.id), {
@@ -1710,13 +1771,19 @@ export async function registerRoutes(
     const r = storage.getRequest(requestId);
     if (!r || r.status === "completed" || r.refunded) return;
 
-    // G4-4: If expertResponse is null, copy the last expert timeline message
+    // Bug-1 fix: If expertResponse is null, copy from expert_reviews.deliverable first, then fall back to timeline
     if (!r.expertResponse) {
-      const events = storage.getRequestEventsByRequest(requestId);
-      const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== r.userId);
-      if (expertMsgs.length > 0) {
-        const lastExpertMsg = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-        storage.updateRequest(requestId, { expertResponse: (lastExpertMsg as any).message || (lastExpertMsg as any).content } as any);
+      const reviews = storage.getReviewsByRequest(requestId);
+      const reviewWithDeliverable = reviews.find((rv: any) => rv.deliverable);
+      if (reviewWithDeliverable) {
+        storage.updateRequest(requestId, { expertResponse: reviewWithDeliverable.deliverable } as any);
+      } else {
+        const events = storage.getRequestEventsByRequest(requestId);
+        const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== r.userId);
+        if (expertMsgs.length > 0) {
+          const lastExpertMsg = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+          storage.updateRequest(requestId, { expertResponse: (lastExpertMsg as any).message || (lastExpertMsg as any).content } as any);
+        }
       }
     }
 
@@ -1782,9 +1849,15 @@ export async function registerRoutes(
   }
 
   // Client can mark request as done (manually close after follow-ups)
-  app.post("/api/requests/:id/complete", async (req, res) => {
+  app.post("/api/requests/:id/complete", userOrAdminAuth, async (req, res) => {
     try {
       const requestId = parseInt(req.params.id);
+      // Verify authUser is the request owner
+      const authUser = (req as any).authUser;
+      const existing = storage.getRequest(requestId);
+      if (existing && authUser.role !== 'admin' && existing.userId !== authUser.id) {
+        return res.status(403).json({ error: true, message: "Only the request owner can complete it", code: "FORBIDDEN" });
+      }
       await finalizeRequest(requestId);
       const r = storage.getRequest(requestId);
       return res.json(r);
@@ -1795,12 +1868,14 @@ export async function registerRoutes(
 
   // ─── Expert Onboarding Routes ───
 
-  app.post("/api/experts/onboarding/profile", async (req, res) => {
+  app.post("/api/experts/onboarding/profile", userOrAdminAuth, async (req, res) => {
     try {
       const { expertId, education, yearsExperience, categories, bio, expertise } = req.body;
       if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
       const expert = storage.getExpert(Number(expertId));
       if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+      const authUser = (req as any).authUser;
+      if (authUser.role !== 'admin' && expert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
       // Validate categories is an array
       const cats = Array.isArray(categories) ? categories : [];
       const updated = storage.updateExpert(Number(expertId), {
@@ -1838,12 +1913,14 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/experts/onboarding/test", async (req, res) => {
+  app.post("/api/experts/onboarding/test", userOrAdminAuth, async (req, res) => {
     try {
       const { expertId, assignmentId, category, response } = req.body;
       if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
       const expert = storage.getExpert(Number(expertId));
       if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
+      const authUser = (req as any).authUser;
+      if (authUser.role !== 'admin' && expert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
 
       const responseText = (response || "").toString().trim();
       const passed = responseText.length >= 200;
@@ -1880,7 +1957,7 @@ export async function registerRoutes(
 
   // ─── Expert Review Routes ───
 
-  app.get("/api/reviews/request/:requestId/detailed", async (req, res) => {
+  app.get("/api/reviews/request/:requestId/detailed", userOrAdminAuth, async (req, res) => {
     const reviews = storage.getDetailedReviewsByRequest(parseInt(req.params.requestId));
     return res.json(reviews);
   });
@@ -1917,7 +1994,7 @@ export async function registerRoutes(
     };
   }
 
-  app.get("/api/reviews/request/:requestId", async (req, res) => {
+  app.get("/api/reviews/request/:requestId", userOrAdminAuth, async (req, res) => {
     let reviews = storage.getReviewsByRequest(parseInt(req.params.requestId));
     // Fallback: synthesize from the request itself if no expert_reviews exist
     if (reviews.length === 0) {
@@ -1929,7 +2006,7 @@ export async function registerRoutes(
     return res.json(reviews);
   });
 
-  app.get("/api/reviews/expert/:expertId", async (req, res) => {
+  app.get("/api/reviews/expert/:expertId", userOrAdminAuth, async (req, res) => {
     let reviews = storage.getReviewsByExpert(parseInt(req.params.expertId));
     // Fallback: synthesize from requests assigned to this expert
     if (reviews.length === 0) {
@@ -1941,7 +2018,7 @@ export async function registerRoutes(
     return res.json(reviews);
   });
 
-  app.get("/api/reviews/pending", async (req, res) => {
+  app.get("/api/reviews/pending", userOrAdminAuth, async (req, res) => {
     let reviews = storage.getPendingReviews();
     // Fallback: synthesize from pending requests if no expert_reviews exist
     if (reviews.length === 0) {
@@ -1977,7 +2054,11 @@ export async function registerRoutes(
     return res.json(reviewsWithPayout);
   });
 
-  app.post("/api/reviews/:id/claim", async (req, res) => {
+  app.post("/api/reviews/:id/claim", userOrAdminAuth, async (req, res) => {
+    const authUser = (req as any).authUser;
+    if (authUser.role !== 'admin' && authUser.role !== 'expert') {
+      return res.status(403).json({ error: true, message: "Only experts can claim reviews", code: "FORBIDDEN" });
+    }
     const { expertId } = req.body;
     let review = storage.getExpertReview(parseInt(req.params.id));
 
@@ -2057,7 +2138,8 @@ export async function registerRoutes(
     return res.json(updated);
   });
 
-  app.patch("/api/reviews/:id", async (req, res) => {
+  app.patch("/api/reviews/:id", userOrAdminAuth, async (req, res) => {
+    const authUser = (req as any).authUser;
     let review = storage.getExpertReview(parseInt(req.params.id));
     // Fallback: if no expert_review exists, the ID is a request ID (synthesized review)
     if (!review) {
@@ -2068,6 +2150,12 @@ export async function registerRoutes(
         expertId: request.expertId,
         status: "in_progress",
       });
+    }
+
+    // Verify authUser is the review's expert
+    if (authUser.role !== 'admin' && review.expertId) {
+      const exp = storage.getExpert(review.expertId);
+      if (!exp || exp.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
     }
 
     const { rating, ratingComment, correctPoints, incorrectPoints, suggestions, deliverable } = req.body;
@@ -2177,7 +2265,7 @@ export async function registerRoutes(
   });
 
   // POST /api/expert-reviews/:reviewId/respond — expert submits deliverable → goes to admin review queue
-  app.post("/api/expert-reviews/:reviewId/respond", async (req, res) => {
+  app.post("/api/expert-reviews/:reviewId/respond", userOrAdminAuth, async (req, res) => {
     try {
       const reviewId = parseInt(req.params.reviewId);
       const { deliverable } = req.body;
@@ -2199,6 +2287,12 @@ export async function registerRoutes(
       }
       if (review.status === "completed") {
         return res.status(400).json({ error: true, message: "Review already completed" });
+      }
+      // Verify authUser is the review's expert
+      const authUser = (req as any).authUser;
+      if (authUser.role !== 'admin' && review.expertId) {
+        const exp = storage.getExpert(review.expertId);
+        if (!exp || exp.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
       }
 
       // Store the deliverable but mark as pending_admin_review (not yet completed)
@@ -2294,13 +2388,19 @@ export async function registerRoutes(
       const newStatus = "awaiting_followup";
       const followupDeadline = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
 
-      // G4-4: If expertResponse is null, copy the last expert timeline message
+      // Bug-1 fix: If expertResponse is null, copy from expert_reviews.deliverable first, then fall back to timeline
       if (!request.expertResponse) {
-        const events = storage.getRequestEventsByRequest(requestId);
-        const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== request.userId);
-        if (expertMsgs.length > 0) {
-          const lastExpertMsg = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-          storage.updateRequest(requestId, { expertResponse: (lastExpertMsg as any).message || (lastExpertMsg as any).content } as any);
+        const reviews = storage.getReviewsByRequest(requestId);
+        const reviewWithDeliverable = reviews.find((rv: any) => rv.deliverable);
+        if (reviewWithDeliverable) {
+          storage.updateRequest(requestId, { expertResponse: reviewWithDeliverable.deliverable } as any);
+        } else {
+          const events = storage.getRequestEventsByRequest(requestId);
+          const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== request.userId);
+          if (expertMsgs.length > 0) {
+            const lastExpertMsg = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+            storage.updateRequest(requestId, { expertResponse: (lastExpertMsg as any).message || (lastExpertMsg as any).content } as any);
+          }
         }
       }
 
@@ -2432,12 +2532,21 @@ export async function registerRoutes(
 
   // ─── Messages / Chat ───
 
-  app.get("/api/messages/:requestId", async (req, res) => {
+  app.get("/api/messages/:requestId", userOrAdminAuth, async (req, res) => {
     const msgs = storage.getMessagesByRequest(parseInt(req.params.requestId));
     return res.json(msgs);
   });
 
-  app.post("/api/messages", async (req, res) => {
+  app.post("/api/messages", userOrAdminAuth, async (req, res) => {
+    // Auth: verify caller is request owner or assigned expert
+    const authUser = (req as any).authUser;
+    const reqRecord = storage.getRequest(req.body.requestId);
+    if (reqRecord && authUser.role !== "admin") {
+      const isOwner = reqRecord.userId === authUser.id;
+      let isExpert = false;
+      if (reqRecord.expertId) { const exp = storage.getExpert(reqRecord.expertId); isExpert = !!exp && exp.userId === authUser.id; }
+      if (!isOwner && !isExpert) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
+    }
     const { requestId, role, content } = req.body;
     const msg = createAndSyncMessage({ requestId, role, content });
     return res.json(msg);
@@ -2472,14 +2581,16 @@ export async function registerRoutes(
 
   // ─── Credits ───
 
-  app.get("/api/credits/:userId", async (req, res) => {
+  app.get("/api/credits/:userId", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'userId')) return;
     const user = storage.getUser(parseInt(req.params.userId));
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
     const transactions = storage.getTransactionsByUser(user.id);
     return res.json({ credits: user.credits, transactions });
   });
 
-  app.post("/api/credits/buy", async (req, res) => {
+  app.post("/api/credits/buy", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'userId', 'body')) return;
     const { userId, packageId } = req.body;
     // Support both old package names and new credit pack names
     const legacyPackages: Record<string, { credits: number; price: number; name: string }> = {
@@ -2509,7 +2620,7 @@ export async function registerRoutes(
 
   // ─── Wallet / Stripe ───
 
-  app.post("/api/wallet/create-checkout", async (req, res) => {
+  app.post("/api/wallet/create-checkout", userOrAdminAuth, async (req, res) => {
     try {
       const { userId, packId } = req.body;
       const pack = CREDIT_PACKS[packId];
@@ -2544,15 +2655,17 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/wallet/balance/:userId", async (req, res) => {
+  app.get("/api/wallet/balance/:userId", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'userId')) return;
     const user = storage.getUser(parseInt(req.params.userId));
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
     const transactions = storage.getWalletTransactionsByUser(user.id);
     return res.json({ walletBalance: user.walletBalance, transactions });
   });
 
-  app.post("/api/wallet/withdraw", async (req, res) => {
+  app.post("/api/wallet/withdraw", userOrAdminAuth, async (req, res) => {
     try {
+      if (!ownerOrAdmin(req, res, 'userId', 'body')) return;
       const { userId, amountCents } = req.body;
       const user = storage.getUser(userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
@@ -2587,20 +2700,26 @@ export async function registerRoutes(
 
   // ─── Notifications ───
 
-  app.get("/api/notifications/:userId", async (req, res) => {
+  app.get("/api/notifications/:userId", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'userId')) return;
     const notifs = storage.getNotificationsByUser(parseInt(req.params.userId));
     const unreadCount = storage.getUnreadCount(parseInt(req.params.userId));
     return res.json({ notifications: notifs, unreadCount });
   });
 
-  app.patch("/api/notifications/:id/read", async (req, res) => {
+  app.patch("/api/notifications/:id/read", userOrAdminAuth, async (req, res) => {
+    // Verify authUser owns the notification
     const notif = storage.markNotificationRead(parseInt(req.params.id));
     if (!notif) return res.status(404).json({ error: true, message: "Notification not found" });
+    const authUser = (req as any).authUser;
+    if (authUser.role !== 'admin' && notif.userId !== authUser.id) {
+      return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
+    }
     return res.json(notif);
   });
 
-  // Create a notification
-  app.post("/api/notifications/create", async (req, res) => {
+  // Create a notification — admin only
+  app.post("/api/notifications/create", adminAuth, async (req, res) => {
     try {
       const { userId, title, message } = req.body;
       if (!userId || !title || !message) {
@@ -2617,7 +2736,8 @@ export async function registerRoutes(
 
   // ─── Settings ───
 
-  app.patch("/api/users/:id", async (req, res) => {
+  app.patch("/api/users/:id", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'id')) return;
     const user = storage.updateUser(parseInt(req.params.id), req.body);
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
     syncUserToCloud(user.id);
@@ -2626,7 +2746,8 @@ export async function registerRoutes(
   });
 
   // ─── Tour Completion ───
-  app.post("/api/users/:id/tour-complete", async (req, res) => {
+  app.post("/api/users/:id/tour-complete", userOrAdminAuth, async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'id')) return;
     const user = storage.updateUser(parseInt(req.params.id), { tourCompleted: 1 });
     if (!user) return res.status(404).json({ error: true, message: "User not found" });
     syncUserToCloud(user.id);
@@ -2634,7 +2755,8 @@ export async function registerRoutes(
   });
 
   // ─── Profile Photo Upload ───
-  app.post("/api/users/:id/photo", photoUpload.single("photo"), async (req, res) => {
+  app.post("/api/users/:id/photo", userOrAdminAuth, photoUpload.single("photo"), async (req, res) => {
+    if (!ownerOrAdmin(req, res, 'id')) return;
     try {
       const userId = parseInt(String(req.params.id));
       const user = storage.getUser(userId);
@@ -2671,7 +2793,7 @@ export async function registerRoutes(
   // ─── File Attachments (DB primary + GCS fallback) ───
 
   // FIX-5: Upload file — stores in DB as base64 (primary approach, avoids GCS stripping issues)
-  app.post("/api/requests/:requestId/upload", attachmentUpload.single("file"), async (req, res) => {
+  app.post("/api/requests/:requestId/upload", userOrAdminAuth, attachmentUpload.single("file"), async (req, res) => {
     try {
       const requestId = parseInt(String(req.params.requestId));
       const file = req.file;
@@ -2692,7 +2814,7 @@ export async function registerRoutes(
   });
 
   // FIX-5: Download file — serves from DB
-  app.get("/api/files/:requestId/:filename", (req, res) => {
+  app.get("/api/files/:requestId/:filename", userOrAdminAuth, (req, res) => {
     try {
       const { requestId, filename } = req.params;
       const file = sqlite.prepare(
@@ -2717,7 +2839,7 @@ export async function registerRoutes(
   });
 
   // FIX-5: List files for a request
-  app.get("/api/files/:requestId", (req, res) => {
+  app.get("/api/files/:requestId", userOrAdminAuth, (req, res) => {
     try {
       const files = sqlite.prepare(
         "SELECT id, request_id, filename, content_type, size, created_at FROM file_attachments WHERE request_id = ?"
@@ -2729,7 +2851,7 @@ export async function registerRoutes(
   });
 
   // POST /api/requests/:requestId/attachments — upload files to GCS (legacy, kept as fallback)
-  app.post("/api/requests/:requestId/attachments", attachmentUpload.array("files"), async (req, res) => {
+  app.post("/api/requests/:requestId/attachments", userOrAdminAuth, attachmentUpload.array("files"), async (req, res) => {
     try {
       const requestId = parseInt(String(req.params.requestId));
       const request = storage.getRequest(requestId);
@@ -2778,7 +2900,7 @@ export async function registerRoutes(
   });
 
   // GET /api/attachments/:requestId/:filename — download file from GCS with DB fallback
-  app.get("/api/attachments/:requestId/:filename", async (req, res) => {
+  app.get("/api/attachments/:requestId/:filename", userOrAdminAuth, async (req, res) => {
     try {
       const { requestId, filename } = req.params;
       const decodedFilename = decodeURIComponent(filename);
@@ -2826,7 +2948,10 @@ export async function registerRoutes(
   });
 
   // ─── Client Rating ───
-  app.post("/api/requests/:id/rate", async (req, res) => {
+  app.post("/api/requests/:id/rate", userOrAdminAuth, async (req, res) => {
+    const authUser = (req as any).authUser;
+    const existing = storage.getRequest(parseInt(req.params.id));
+    if (existing && authUser.role !== "admin" && existing.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
     try {
       const requestId = parseInt(req.params.id);
       const { rating, comment } = req.body;
@@ -2867,7 +2992,7 @@ export async function registerRoutes(
   });
 
   // ─── Client Refund ───
-  app.post("/api/requests/:id/refund", async (req, res) => {
+  app.post("/api/requests/:id/refund", adminAuth, async (req, res) => {
     try {
       const requestId = parseInt(req.params.id);
       const request = storage.getRequest(requestId);
@@ -2911,7 +3036,7 @@ export async function registerRoutes(
   });
 
   // ─── Expert Onboarding Rate Step ───
-  app.post("/api/experts/onboarding/rate", async (req, res) => {
+  app.post("/api/experts/onboarding/rate", userOrAdminAuth, async (req, res) => {
     try {
       const { expertId, ratePerMinute, rateTier } = req.body;
       if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
@@ -2932,7 +3057,7 @@ export async function registerRoutes(
   });
 
   // ─── Expert Withdrawal (legacy) ───
-  app.post("/api/experts/withdraw", async (req, res) => {
+  app.post("/api/experts/withdraw", userOrAdminAuth, async (req, res) => {
     try {
       const { userId, amount } = req.body;
       const user = storage.getUser(userId);
@@ -2963,7 +3088,7 @@ export async function registerRoutes(
 
   // ─── Invoice Routes ───
 
-  app.get("/api/experts/:expertId/invoice-data", async (req, res) => {
+  app.get("/api/experts/:expertId/invoice-data", userOrAdminAuth, async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       const expert = storage.getExpert(expertId);
@@ -3026,13 +3151,13 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/experts/:expertId/invoices", async (req, res) => {
+  app.get("/api/experts/:expertId/invoices", userOrAdminAuth, async (req, res) => {
     const expertId = parseInt(req.params.expertId);
     const invoices = storage.getInvoicesByExpert(expertId);
     return res.json(invoices);
   });
 
-  app.post("/api/experts/:expertId/generate-invoice", async (req, res) => {
+  app.post("/api/experts/:expertId/generate-invoice", userOrAdminAuth, async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       const expert = storage.getExpert(expertId);
@@ -3705,7 +3830,7 @@ export async function registerRoutes(
   // ─── OB-J: EXPERT VERIFICATION & WITHDRAWAL CYCLE ───
 
   // Upload passport file for expert verification
-  app.post("/api/experts/:expertId/upload-passport", attachmentUpload.single("passport"), async (req, res) => {
+  app.post("/api/experts/:expertId/upload-passport", userOrAdminAuth, attachmentUpload.single("passport"), async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       if (!req.file) return res.status(400).json({ error: true, message: "Passport file is required" });
@@ -3719,7 +3844,7 @@ export async function registerRoutes(
   });
 
   // Submit expert bank/verification details
-  app.post("/api/experts/:expertId/verification", async (req, res) => {
+  app.post("/api/experts/:expertId/verification", userOrAdminAuth, async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       const expert = storage.getExpert(expertId);
@@ -3791,14 +3916,14 @@ export async function registerRoutes(
   });
 
   // Get expert verification details
-  app.get("/api/experts/:expertId/verification", async (req, res) => {
+  app.get("/api/experts/:expertId/verification", userOrAdminAuth, async (req, res) => {
     const expertId = parseInt(req.params.expertId);
     const verification = storage.getExpertVerificationByExpert(expertId);
     return res.json(verification || null);
   });
 
   // Submit withdrawal request
-  app.post("/api/experts/:expertId/withdrawal-request", async (req, res) => {
+  app.post("/api/experts/:expertId/withdrawal-request", userOrAdminAuth, async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       const expert = storage.getExpert(expertId);
@@ -3868,7 +3993,7 @@ export async function registerRoutes(
   });
 
   // Get withdrawal requests for expert
-  app.get("/api/experts/:expertId/withdrawal-requests", async (req, res) => {
+  app.get("/api/experts/:expertId/withdrawal-requests", userOrAdminAuth, async (req, res) => {
     const expertId = parseInt(req.params.expertId);
     return res.json(storage.getWithdrawalRequestsByExpert(expertId));
   });
@@ -4011,6 +4136,12 @@ export async function registerRoutes(
       return res.status(500).json({ error: true, message: e.message });
     }
   });
+
+  // ─── Convenience redirects (BUG-038-11/12) ───
+  app.get("/admin", (_req, res) => res.redirect("/register#/admin"));
+  app.get("/admin/*", (_req, res) => res.redirect("/register#/admin"));
+  app.get("/auth", (_req, res) => res.redirect("/register#/register"));
+  app.get("/login", (_req, res) => res.redirect("/register#/login"));
 
   return httpServer;
 }

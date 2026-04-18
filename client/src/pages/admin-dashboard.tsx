@@ -1226,7 +1226,7 @@ function UsersPage() {
               {filtered.map((u: any) => (
                 <tr key={u.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors" data-testid={`row-user-${u.id}`}>
                   <td className="px-4 py-3 text-zinc-500">#{u.id}</td>
-                  <td className="px-4 py-3 text-zinc-200 font-medium">{u.name}</td>
+                  <td className="px-4 py-3 text-zinc-200 font-medium"><span className="max-w-[200px] inline-block truncate align-bottom" title={u.name}>{u.name}</span></td>
                   <td className="px-4 py-3 text-zinc-400">{u.username}</td>
                   <td className="px-4 py-3 text-zinc-400">{u.email}</td>
                   <td className="px-4 py-3">
