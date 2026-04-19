@@ -4318,9 +4318,10 @@ export async function registerRoutes(
     }
   });
 
-  // Build 39 Fix 5b: Serve passport file from DB
+  // Build 39 Fix 5b: Serve passport file from DB / GCS
   // FIX-5a: Accept ?token=JWT query param so <img src> and downloadFile() both work
-  app.get("/api/experts/:expertId/passport-file", (req, res) => {
+  // Build 43 Hotfix: Added GCS fallback so passport files survive container restarts
+  app.get("/api/experts/:expertId/passport-file", async (req, res) => {
     try {
       // Authenticate via Authorization header OR ?token query param
       const authHeader = req.headers.authorization;
@@ -4330,7 +4331,7 @@ export async function registerRoutes(
       try { jwt.verify(tokenStr, JWT_SECRET); } catch { return res.status(401).json({ error: true, message: "Invalid or expired token" }); }
 
       const expertId = parseInt(req.params.expertId);
-      // Try expert_passport_files table first
+      // Try expert_passport_files table first (SQLite — may be empty after deploy)
       sqlite.prepare(`
         CREATE TABLE IF NOT EXISTS expert_passport_files (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4351,7 +4352,40 @@ export async function registerRoutes(
         return res.send(buffer);
       }
 
-      // Fallback: check expert_verifications.passportFileUrl for inline data URL
+      // Fallback 2: Download from GCS using metadata from Cloud SQL
+      try {
+        const { getPgPool } = await import("./user-data-persist");
+        const pool = await getPgPool();
+        if (pool) {
+          const pgResult = await pool.query(
+            "SELECT filename, content_type, gcs_path FROM expert_passport_files WHERE expert_id = $1 ORDER BY id DESC LIMIT 1",
+            [expertId]
+          );
+          if (pgResult.rows.length > 0 && pgResult.rows[0].gcs_path) {
+            const row = pgResult.rows[0];
+            const gcsResp = await downloadFromGcs(row.gcs_path);
+            if ((gcsResp as any).ok !== false && (gcsResp as any).status !== 404) {
+              const arrayBuf = await (gcsResp as any).arrayBuffer();
+              const buffer = Buffer.from(arrayBuf);
+              res.setHeader("Content-Type", row.content_type || "application/octet-stream");
+              res.setHeader("Content-Disposition", `inline; filename="${row.filename}"`);
+              res.setHeader("Content-Length", buffer.length);
+              // Re-cache in SQLite for subsequent requests
+              const now = new Date().toISOString();
+              const b64 = buffer.toString("base64");
+              sqlite.prepare("DELETE FROM expert_passport_files WHERE expert_id = ?").run(expertId);
+              sqlite.prepare(
+                "INSERT INTO expert_passport_files (expert_id, filename, content_type, data, size, created_at, updated_at) VALUES (?,?,?,?,?,?,?)"
+              ).run(expertId, row.filename, row.content_type, b64, buffer.length, now, now);
+              return res.send(buffer);
+            }
+          }
+        }
+      } catch (gcsErr) {
+        console.error("[PASSPORT] GCS fallback failed:", (gcsErr as Error).message?.substring(0, 100));
+      }
+
+      // Fallback 3: check expert_verifications.passportFileUrl for inline data URL
       const verification = storage.getExpertVerificationByExpert(expertId);
       if (verification?.passportFileUrl?.startsWith("data:")) {
         const match = verification.passportFileUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -4371,7 +4405,8 @@ export async function registerRoutes(
   });
 
   // Build 39 Fix 5c: Check if expert has passport file
-  app.get("/api/experts/:expertId/has-passport", userOrAdminAuth, (req, res) => {
+  // Build 43 Hotfix: Added Cloud SQL fallback for has-passport check
+  app.get("/api/experts/:expertId/has-passport", userOrAdminAuth, async (req, res) => {
     try {
       const expertId = parseInt(req.params.expertId);
       sqlite.prepare(`
@@ -4389,6 +4424,22 @@ export async function registerRoutes(
       if (file) {
         return res.json({ hasPassport: true, filename: file.filename, contentType: file.content_type, size: file.size, uploadedAt: file.created_at });
       }
+
+      // Fallback: check Cloud SQL expert_passport_files (metadata persists across deploys)
+      try {
+        const { getPgPool } = await import("./user-data-persist");
+        const pool = await getPgPool();
+        if (pool) {
+          const pgResult = await pool.query(
+            "SELECT filename, content_type, size, created_at FROM expert_passport_files WHERE expert_id = $1 ORDER BY id DESC LIMIT 1",
+            [expertId]
+          );
+          if (pgResult.rows.length > 0) {
+            const row = pgResult.rows[0];
+            return res.json({ hasPassport: true, filename: row.filename, contentType: row.content_type, size: row.size, uploadedAt: row.created_at });
+          }
+        }
+      } catch { /* Cloud SQL check optional */ }
 
       // Check inline data URL in expert_verifications
       const verification = storage.getExpertVerificationByExpert(expertId);

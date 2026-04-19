@@ -19,7 +19,7 @@ const PG_CONFIG = {
 let pgPool: pg.Pool | null = null;
 let pgReady = false;
 
-async function getPgPool(): Promise<pg.Pool | null> {
+export async function getPgPool(): Promise<pg.Pool | null> {
   if (pgPool && pgReady) return pgPool;
 
   // Try Unix socket first (Cloud Run), then public IP fallback
