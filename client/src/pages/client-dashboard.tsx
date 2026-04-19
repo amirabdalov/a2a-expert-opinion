@@ -2240,7 +2240,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
           ) : (
             <div className="space-y-4">
               <div>
-                <Label className="text-sm">Enter amount ($5 \u2013 $10,000)</Label>
+                <Label className="text-sm">Enter amount ($5 – $10,000)</Label>
                 <div className="flex gap-3 mt-2">
                   <div className="relative flex-1">
                     <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
