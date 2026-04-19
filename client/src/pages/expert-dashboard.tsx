@@ -326,7 +326,7 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
-            <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{formatCentralTime(request.createdAt)}</span>
+            <span className="flex items-center gap-1"><Clock className="h-3 w-3" /><span title="US Central time zone">{formatCentralTime(request.createdAt)}</span></span>
             <span className="flex items-center gap-1" data-testid={`time-${requestId}`}><Clock className="h-3 w-3" />{payout.time}</span>
             {request.serviceType === "rate" && (
               <span className="flex items-center gap-1"><User className="h-3 w-3" />{completedCount}/{totalCount} responded</span>
@@ -726,7 +726,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
           <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {/* Parsed JSON attachments (legacy) */}
+              {/* Parsed JSON attachments (legacy — uploaded by client) */}
               {parsedAttachments.map((a, i) => (
                 <button
                   key={`parsed-${i}`}
@@ -735,6 +735,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                 >
                   <FileText className="h-4 w-4 shrink-0" />
                   {a.name}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
                 </button>
               ))}
               {/* DB-stored file attachments */}
@@ -747,7 +748,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                   <Paperclip className="h-4 w-4 shrink-0" />
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
                   {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
-                  {f.uploader_role === 'client' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
+                  {(f.uploader_role === 'client' || !f.uploader_role) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
                 </button>
               ))}
               {/* G2-4: Expert file upload */}
@@ -1036,7 +1037,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                       }`}>{evt.actorName || "Client"}</p>
                       <p className="whitespace-pre-wrap text-foreground">{evt.message}</p>
                       {evt.createdAt && (
-                        <p className="text-[10px] text-muted-foreground mt-1">{formatCentralTime(evt.createdAt)}</p>
+                        <p className="text-[10px] text-muted-foreground mt-1"><span title="US Central time zone">{formatCentralTime(evt.createdAt)}</span></p>
                       )}
                     </div>
                   </div>
@@ -1118,7 +1119,7 @@ function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClic
               <h3 className="text-sm font-semibold">{request.title}</h3>
               <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">{request.category} · Submitted {formatCentralTime(review.completedAt)}</p>
+            <p className="text-xs text-muted-foreground">{request.category} · Submitted <span title="US Central time zone">{formatCentralTime(review.completedAt)}</span></p>
           </div>
           <div className="text-right space-y-1">
             {request.serviceType === "rate" && review.rating && (
@@ -1279,7 +1280,7 @@ function InvoiceDocument({ data, userId }: { data: InvoiceData; userId: number }
             {data.lineItems.map((item, idx) => (
               <tr key={idx} className="border-b border-slate-100">
                 <td className="py-2 px-3">{item.title} — {item.serviceType} review</td>
-                <td className="py-2 px-3 text-slate-500">{formatCentralTime(item.completedAt)}</td>
+                <td className="py-2 px-3 text-slate-500"><span title="US Central time zone">{formatCentralTime(item.completedAt)}</span></td>
                 <td className="py-2 px-3 text-right">{item.creditsCost}</td>
                 <td className="py-2 px-3 text-right font-mono">${(item.amountCents / 100).toFixed(2)}</td>
               </tr>
@@ -1351,7 +1352,7 @@ function WithdrawalHistory({ expertId }: { expertId?: number }) {
           <tbody>
             {invoices.map((inv: any) => (
               <tr key={inv.id} className="border-t">
-                <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(inv.createdAt)}</td>
+                <td className="p-3 text-xs text-muted-foreground"><span title="US Central time zone">{formatCentralTime(inv.createdAt)}</span></td>
                 <td className="p-3 text-sm font-mono">{inv.invoiceNumber}</td>
                 <td className="p-3 text-right text-sm">${(inv.totalAmount / 100).toFixed(2)}</td>
                 <td className="p-3 text-right text-sm font-medium text-green-600">${(inv.netPayout / 100).toFixed(2)}</td>
@@ -2160,7 +2161,7 @@ function Earnings({ userId }: { userId: number }) {
               <tbody>
                 {withdrawalRequests.map((wr: any) => (
                   <tr key={wr.id} className="border-t">
-                    <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(wr.createdAt)}</td>
+                    <td className="p-3 text-xs text-muted-foreground"><span title="US Central time zone">{formatCentralTime(wr.createdAt)}</span></td>
                     <td className="p-3 text-sm font-mono">{wr.invoiceNumber}</td>
                     <td className="p-3 text-right text-sm font-medium">${wr.amount}</td>
                     <td className="p-3 text-right">
@@ -2194,7 +2195,7 @@ function Earnings({ userId }: { userId: number }) {
               <tr><td colSpan={3} className="p-6 text-center text-sm text-muted-foreground">No earnings yet</td></tr>
             ) : earningsTxs.map((tx) => (
               <tr key={tx.id} className="border-t">
-                <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(tx.createdAt)}</td>
+                <td className="p-3 text-xs text-muted-foreground"><span title="US Central time zone">{formatCentralTime(tx.createdAt)}</span></td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3 text-right text-sm font-medium text-green-600">+${tx.amount} credits</td>
               </tr>

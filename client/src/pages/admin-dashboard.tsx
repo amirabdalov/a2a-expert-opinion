@@ -1732,17 +1732,33 @@ function AdminActionJournal() {
                   <tr key={a.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
                     <td className="px-3 py-3 text-zinc-300 text-xs">{a.admin_email || a.adminEmail}</td>
                     <td className="px-3 py-3">
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                        (a.action_type || a.actionType) === "approve"
+                      {(() => {
+                        const actionType = a.action_type || a.actionType;
+                        const greenActions = ["approve", "verify_bank", "approve_withdrawal"];
+                        const blueActions = ["initiate_payout"];
+                        const labelMap: Record<string, string> = {
+                          approve: "Approve Review",
+                          reject: "Reject Review",
+                          verify_bank: "Verify Bank",
+                          initiate_payout: "Initiate Payout",
+                          approve_withdrawal: "Approve Withdrawal",
+                          reject_withdrawal: "Reject Withdrawal",
+                        };
+                        const colorClass = greenActions.includes(actionType)
                           ? "bg-green-500/15 text-green-400 border border-green-500/30"
-                          : "bg-red-500/15 text-red-400 border border-red-500/30"
-                      }`}>
-                        {(a.action_type || a.actionType) === "approve" ? "Approved" : "Rejected"}
-                      </span>
+                          : blueActions.includes(actionType)
+                            ? "bg-blue-500/15 text-blue-400 border border-blue-500/30"
+                            : "bg-red-500/15 text-red-400 border border-red-500/30";
+                        return (
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${colorClass}`}>
+                            {labelMap[actionType] || actionType}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="px-3 py-3 text-zinc-400 text-xs">#{a.target_id || a.targetId}</td>
                     <td className="px-3 py-3 text-zinc-400 text-xs max-w-[300px] truncate">{a.details}</td>
-                    <td className="px-3 py-3 text-zinc-500 text-xs">{(a.created_at || a.createdAt) ? new Date(a.created_at || a.createdAt).toLocaleString() : "—"}</td>
+                    <td className="px-3 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(a.created_at || a.createdAt)}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -1923,7 +1939,7 @@ function TransactionsPage() {
                   <td className="px-3 py-3 text-right text-amber-400 text-xs">{t?.expertPayout != null ? `$${t.expertPayout}` : "—"}</td>
                   <td className="px-3 py-3 text-right text-zinc-300 text-xs">{t?.clientPaid != null ? `$${t.clientPaid}` : "—"}</td>
                   <td className="px-3 py-3 text-zinc-400 text-xs max-w-[200px] truncate">{t?.description ?? "—"}</td>
-                  <td className="px-3 py-3 text-zinc-500 text-xs">{formatCentralTime(t?.createdAt)}</td>
+                  <td className="px-3 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(t?.createdAt)}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -2356,7 +2372,7 @@ function WithdrawalsPage() {
                       {wr.status === "pending" ? "Pending" : wr.status === "payout_initiated" ? "Payout Initiated" : wr.status === "completed" ? "Completed" : wr.status}
                     </Badge>
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(wr.createdAt)}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(wr.createdAt)}</span></td>
                   <td className="px-4 py-3 text-right">
                     {wr.status === "pending" && (
                       <div className="space-y-1">
@@ -2408,8 +2424,8 @@ function WithdrawalsPage() {
                   <td className="px-4 py-3">
                     <Badge className={`text-xs ${statusColor[w.status] || ""}`}>{w.status}</Badge>
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(w.createdAt)}</td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(w.processedAt)}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(w.createdAt)}</span></td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(w.processedAt)}</span></td>
                   <td className="px-4 py-3 text-right">
                     {w.status === "pending" ? (
                       <div className="flex items-center justify-end gap-1">
@@ -2480,7 +2496,7 @@ function NotificationsPage() {
                       <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 text-[10px]">Unread</Badge>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(n.createdAt)}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(n.createdAt)}</span></td>
                 </tr>
               ))}
             </tbody>

@@ -322,6 +322,16 @@ try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN uploader_role TEXT");
 try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN gcs_path TEXT"); } catch {}
 console.log("[DB] file_attachments uploader columns ensured.");
 
+// Fix mislogged admin actions: update action_type values for withdrawal actions that were logged
+// with wrong types (e.g., "approve" instead of "approve_withdrawal" for withdrawal targets)
+try {
+  sqlite.exec(`UPDATE admin_actions SET action_type = 'approve_withdrawal' WHERE action_type = 'approve' AND target_type = 'withdrawal'`);
+  sqlite.exec(`UPDATE admin_actions SET action_type = 'reject_withdrawal' WHERE action_type = 'reject' AND target_type = 'withdrawal'`);
+  console.log("[DB] admin_actions withdrawal action types fixed.");
+} catch (e: any) {
+  console.log("[DB] admin_actions migration:", e.message);
+}
+
 // Auto-seed admin accounts on fresh database
 const adminCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM admins").get() as { cnt: number };
 if (adminCount.cnt === 0) {

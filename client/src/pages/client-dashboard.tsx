@@ -601,8 +601,9 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
     onSuccess: async (data) => {
       const newRequestId = data.id;
 
-      // Upload ALL files (including text) via multipart after creation
-      const fileAttachments = attachments.filter((a) => a.data);
+      // Upload ALL files (including text) via multipart after creation — dedup against DB files
+      const dbFileNames = new Set((draftDbFiles || []).map((f) => f.filename));
+      const fileAttachments = attachments.filter((a) => a.data && !dbFileNames.has(a.name));
       if (fileAttachments.length > 0) {
         setUploading(true);
         try {
@@ -886,7 +887,7 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
 
         {/* File Upload - Drag & Drop (change #5) */}
         <div data-testid="file-upload-section">
-          <Label className="text-sm mb-2 block">Attachments ({attachments.length} file{attachments.length !== 1 ? 's' : ''})</Label>
+          <Label className="text-sm mb-2 block">Attachments ({attachments.length + (draftDbFiles?.length || 0)} file{(attachments.length + (draftDbFiles?.length || 0)) !== 1 ? 's' : ''})</Label>
           <div
             onDragEnter={handleDrag}
             onDragOver={handleDrag}
@@ -1162,7 +1163,7 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
                     </div>
                     <span>${r.creditsCost} credits</span>
                   </div>
-                  <p className="text-[10px] text-muted-foreground mt-1 capitalize">{r.category} · {formatCentralTime(r.createdAt)}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1 capitalize">{r.category} · <span title="US Central time zone">{formatCentralTime(r.createdAt)}</span></p>
                 </Card>
               ))}
             </div>
@@ -1184,7 +1185,7 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
                     <tr><td colSpan={6} className="p-6 text-center text-muted-foreground text-sm">No requests found</td></tr>
                   ) : (filtered as ExpertRequest[]).map((r) => (
                     <tr key={r.id} className="border-t hover:bg-muted/30 cursor-pointer transition" onClick={() => { if (r.status === 'draft') { onContinueDraft(r.id); return; } setSelectedRequest(r.id); setView("request-detail"); }} data-testid={`request-table-row-${r.id}`}>
-                      <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(r.createdAt)}</td>
+                      <td className="p-3 text-xs text-muted-foreground"><span title="US Central time zone">{formatCentralTime(r.createdAt)}</span></td>
                       <td className="p-3 text-sm font-medium">{r.title}</td>
                       <td className="p-3"><Badge className={`text-[10px] ${serviceTypeBadge(r.serviceType)}`}>{serviceTypeLabel(r.serviceType)}</Badge></td>
                       <td className="p-3 text-xs capitalize">{r.category}</td>
@@ -1603,7 +1604,7 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId, messag
                       <p className="text-xs font-medium mb-0.5 opacity-75">{e.actorName || (isClient ? 'You' : 'Expert')}</p>
                       <p className="text-sm">{e.message}</p>
                       <p className={`text-[10px] mt-1 opacity-60 ${isClient ? 'text-right' : 'text-left'}`}>
-                        {formatCentralTime(e.createdAt)}
+                        <span title="US Central time zone">{formatCentralTime(e.createdAt)}</span>
                       </p>
                     </div>
                   </div>
@@ -1623,7 +1624,7 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId, messag
                 <div className="mt-0.5 shrink-0">{eventIcon(e.type)}</div>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs">{eventLabel(e)}</p>
-                  <p className="text-[10px] text-muted-foreground">{formatCentralTime(e.createdAt)}</p>
+                  <p className="text-[10px] text-muted-foreground"><span title="US Central time zone">{formatCentralTime(e.createdAt)}</span></p>
                 </div>
               </div>
             ))}
@@ -1817,7 +1818,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
           <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {/* Legacy JSON-stored attachments */}
+              {/* Legacy JSON-stored attachments (uploaded by client) */}
               {parsedAttachments.map((a, i) => (
                 <button
                   key={`parsed-${i}`}
@@ -1826,6 +1827,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
                 >
                   <FileText className="h-4 w-4 shrink-0" />
                   {a.name}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
                 </button>
               ))}
               {/* DB-stored file attachments */}
@@ -1838,7 +1840,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
                   <Paperclip className="h-4 w-4 shrink-0" />
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
                   {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
-                  {f.uploader_role === 'client' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
+                  {(f.uploader_role === 'client' || !f.uploader_role) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
                 </button>
               ))}
             </div>
@@ -2025,7 +2027,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
               <p className="text-sm font-medium mb-2">Contact Support</p>
               <div className="space-y-2">
                 <a href="mailto:support@a2a.global" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Mail className="h-4 w-4" />support@a2a.global</a>
-                <a href="tel:+18005551234" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Phone className="h-4 w-4" />+1 (800) 555-1234</a>
+                <a href="tel:+13026210214" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Phone className="h-4 w-4" />+1 (302) 621-0214</a>
                 <a href="https://a2a.global/faq" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><ExternalLink className="h-4 w-4" />FAQ</a>
               </div>
             </PopoverContent>
@@ -2279,7 +2281,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
               <tr><td colSpan={4} className="p-4 text-center text-sm text-muted-foreground">No transactions</td></tr>
             ) : data.transactions.map((tx) => (
               <tr key={tx.id} className="border-t">
-                <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(tx.createdAt)}</td>
+                <td className="p-3 text-xs text-muted-foreground"><span title="US Central time zone">{formatCentralTime(tx.createdAt)}</span></td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3"><Badge variant="secondary" className="text-xs capitalize">{tx.type}</Badge></td>
                 <td className={`p-3 text-right text-sm font-medium ${["charged", "hold", "debit", "withdrawal"].includes(tx.type) ? "text-red-600" : tx.amount < 0 ? "text-red-600" : "text-green-600"}`}>{["charged", "hold", "debit", "withdrawal"].includes(tx.type) || tx.amount < 0 ? "-" : "+"}${Math.abs(tx.amount)} credits</td>

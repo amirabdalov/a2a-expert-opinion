@@ -1185,6 +1185,13 @@ export async function registerRoutes(
         read: 0,
         createdAt: new Date().toISOString(),
       });
+      storage.createAdminAction({
+        adminEmail: (req as any).admin?.email || "unknown",
+        actionType: "approve_withdrawal",
+        targetType: "withdrawal",
+        targetId: w.id,
+        details: `Approved withdrawal of $${(w.amountCents / 100).toFixed(2)} for user #${w.userId}`,
+      });
       return res.json(w);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1211,6 +1218,13 @@ export async function registerRoutes(
         type: "withdrawal_rejected",
         read: 0,
         createdAt: new Date().toISOString(),
+      });
+      storage.createAdminAction({
+        adminEmail: (req as any).admin?.email || "unknown",
+        actionType: "reject_withdrawal",
+        targetType: "withdrawal",
+        targetId: wOld.id,
+        details: `Rejected withdrawal of $${(wOld.amountCents / 100).toFixed(2)} for user #${wOld.userId}; funds refunded`,
       });
       return res.json(w);
     } catch (e: any) {
