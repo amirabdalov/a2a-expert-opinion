@@ -238,10 +238,25 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     expert_id INTEGER NOT NULL,
     passport_file_url TEXT,
+    government_id_type TEXT,
+    government_id_number TEXT,
+    full_legal_name TEXT,
+    country TEXT,
+    full_address TEXT,
     account_number TEXT,
     swift_code TEXT,
     bank_name TEXT,
     bank_address TEXT,
+    account_holder_name TEXT,
+    bank_country TEXT,
+    iban TEXT,
+    routing_number TEXT,
+    sort_code TEXT,
+    ifsc_code TEXT,
+    apartment_street TEXT,
+    city TEXT,
+    state_province TEXT,
+    postal_code TEXT,
     verified_by_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -410,6 +425,13 @@ try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN take_rate_percent 
 try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN platform_fee INTEGER"); } catch {}
 try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN expert_payout INTEGER"); } catch {}
 try { sqlite.exec("ALTER TABLE credit_transactions ADD COLUMN client_paid INTEGER"); } catch {}
+// Build 40: Add expanded verification fields for OB's requirements
+try { sqlite.exec("ALTER TABLE expert_verifications ADD COLUMN sort_code TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE expert_verifications ADD COLUMN ifsc_code TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE expert_verifications ADD COLUMN apartment_street TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE expert_verifications ADD COLUMN city TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE expert_verifications ADD COLUMN state_province TEXT"); } catch {}
+try { sqlite.exec("ALTER TABLE expert_verifications ADD COLUMN postal_code TEXT"); } catch {}
 // Build 35: Backfill NULL timestamps on existing rows
 try {
   const now = new Date().toISOString();

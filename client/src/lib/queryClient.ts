@@ -31,6 +31,14 @@ export function safeArray<T = any>(val: unknown): T[] {
   return [];
 }
 
+/** BUG-1 fix: Build a file download URL with ?token=JWT so <a href> links authenticate properly */
+export function getFileDownloadUrl(path: string): string {
+  const adminToken = sessionStorage.getItem("adminToken");
+  const token = adminToken || getToken();
+  const separator = path.includes("?") ? "&" : "?";
+  return `${API_BASE}${path}${token ? `${separator}token=${token}` : ""}`;
+}
+
 export async function apiRequest(
   method: string,
   url: string,

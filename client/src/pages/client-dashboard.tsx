@@ -18,7 +18,7 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, getFileDownloadUrl } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useSSE } from "@/hooks/use-sse";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -1781,7 +1781,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
               {parsedAttachments.map((a, i) => (
                 <a
                   key={`parsed-${i}`}
-                  href={`/api/files/${requestId}/${encodeURIComponent(a.name)}`}
+                  href={getFileDownloadUrl(`/api/files/${requestId}/${encodeURIComponent(a.name)}`)}
                   target="_blank"
                   download={a.name}
                   className="flex items-center gap-2 text-primary hover:underline text-sm"
@@ -1794,7 +1794,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
               {requestFiles?.map((f) => (
                 <a
                   key={`db-${f.id}`}
-                  href={`/api/files/${requestId}/${encodeURIComponent(f.filename)}`}
+                  href={getFileDownloadUrl(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`)}
                   target="_blank"
                   download
                   className="flex items-center gap-2 text-primary hover:underline text-sm"
@@ -1986,9 +1986,9 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
             <PopoverContent className="w-64 p-3" align="center">
               <p className="text-sm font-medium mb-2">Contact Support</p>
               <div className="space-y-2">
-                <a href="mailto:support@a2aglobal.com" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Mail className="h-4 w-4" />support@a2aglobal.com</a>
+                <a href="mailto:support@a2a.global" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Mail className="h-4 w-4" />support@a2a.global</a>
                 <a href="tel:+18005551234" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><Phone className="h-4 w-4" />+1 (800) 555-1234</a>
-                <a href="https://a2aglobal.com/faq" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><ExternalLink className="h-4 w-4" />FAQ</a>
+                <a href="https://a2a.global/faq" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-primary transition-colors"><ExternalLink className="h-4 w-4" />FAQ</a>
               </div>
             </PopoverContent>
           </Popover>

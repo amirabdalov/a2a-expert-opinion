@@ -2441,11 +2441,16 @@ export async function registerRoutes(
           const completedReview = reviews.find((rev) => rev.status === "completed" && rev.deliverable);
           expertResponse = completedReview?.deliverable || "";
         }
+        // BUG-2 fix: Include file attachments for admin review queue
+        const fileAttachments = sqlite.prepare(
+          "SELECT id, request_id, filename, content_type, size, uploader_id, uploader_role, created_at FROM file_attachments WHERE request_id = ?"
+        ).all(r.id) as any[];
         return {
           ...r,
           clientName: clientUser?.name || "Unknown",
           expertName,
           expertResponse,
+          fileAttachments: fileAttachments || [],
         };
       });
 
@@ -2753,7 +2758,7 @@ export async function registerRoutes(
       const { userId, amountCents } = req.body;
       const user = storage.getUser(userId);
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
-      if (amountCents < 2000) return res.status(400).json({ error: true, message: "Minimum withdrawal is $20" });
+      if (amountCents < 20000) return res.status(400).json({ error: true, message: "Minimum withdrawal is $200" });
       if (user.walletBalance < amountCents) return res.status(400).json({ error: true, message: "Insufficient wallet balance" });
 
       const expert = storage.getExpertByUserId(userId);
@@ -2928,8 +2933,23 @@ export async function registerRoutes(
   });
 
   // FIX-5: Download file — serves from DB
-  app.get("/api/files/:requestId/:filename", userOrAdminAuth, (req, res) => {
+  // BUG-1 fix: Accept ?token=JWT query param so <a href> downloads work (browser links don't send Authorization headers)
+  app.get("/api/files/:requestId/:filename", (req, res) => {
     try {
+      // Authenticate via Authorization header OR ?token query param
+      const authHeader = req.headers.authorization;
+      const queryToken = req.query.token as string | undefined;
+      const tokenStr = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : queryToken;
+      if (!tokenStr) {
+        return res.status(401).json({ error: true, message: "Authentication required" });
+      }
+      try {
+        const decoded = jwt.verify(tokenStr, JWT_SECRET) as any;
+        (req as any).authUser = decoded;
+      } catch {
+        return res.status(401).json({ error: true, message: "Invalid or expired token" });
+      }
+
       const { requestId, filename } = req.params;
       const file = sqlite.prepare(
         "SELECT * FROM file_attachments WHERE request_id = ? AND filename = ?"
@@ -3186,8 +3206,8 @@ export async function registerRoutes(
       const trueBalance = allTxResult?.total || 0;
       const effectiveBalance = Math.max(user.credits, trueBalance);
       if (effectiveBalance < amount) return res.status(400).json({ error: true, message: "Insufficient balance" });
-      // BUG-003: Enforce $50 minimum withdrawal
-      if (amount < 50) return res.status(400).json({ error: true, message: "Minimum withdrawal amount is $50" });
+      // BUG-003 + BUG-4: Enforce $200 minimum withdrawal
+      if (amount < 200) return res.status(400).json({ error: true, message: "Minimum withdrawal amount is $200" });
 
       storage.updateUser(userId, { credits: effectiveBalance - amount });
       storage.createTransaction({
@@ -3258,8 +3278,8 @@ export async function registerRoutes(
         platformFeeCents,
         netPayoutCents,
         // BUG-002: include whether balance meets minimum
-        meetsMinimum: totalAmountCents >= 5000,
-        minimumCents: 5000,
+        meetsMinimum: totalAmountCents >= 20000,
+        minimumCents: 20000,
       });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -3326,11 +3346,11 @@ export async function registerRoutes(
 
       const totalAmountCents = lineItems.reduce((sum, item) => sum + item.amountCents, 0);
 
-      // BUG-003: Enforce $50 minimum withdrawal threshold
-      if (totalAmountCents < 5000) {
+      // BUG-003 + BUG-4: Enforce $200 minimum withdrawal threshold
+      if (totalAmountCents < 20000) {
         return res.status(400).json({
           error: true,
-          message: `Minimum withdrawal amount is $50. Your current balance is $${(totalAmountCents / 100).toFixed(2)}.`,
+          message: `Minimum withdrawal amount is $200. Your current balance is $${(totalAmountCents / 100).toFixed(2)}.`,
           code: "BELOW_MINIMUM",
           totalAmountCents,
         });
@@ -4087,7 +4107,10 @@ export async function registerRoutes(
       if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
       const expertUser = storage.getUser(expert.userId);
 
-      const { passportFileUrl, accountNumber, swiftCode, bankName, bankAddress } = req.body;
+      const { passportFileUrl, accountNumber, swiftCode, bankName, bankAddress,
+        governmentIdType, governmentIdNumber, fullLegalName, country, fullAddress,
+        apartmentStreet, city, stateProvince, postalCode,
+        accountHolderName, bankCountry, iban, routingNumber, sortCode, ifscCode } = req.body;
       if (!accountNumber || !swiftCode || !bankName) {
         return res.status(400).json({ error: true, message: "Bank details are required" });
       }
@@ -4095,46 +4118,125 @@ export async function registerRoutes(
       const existing = storage.getExpertVerificationByExpert(expertId);
       const now = new Date().toISOString();
       let verification;
+      const verificationData = {
+        passportFileUrl: passportFileUrl || (existing?.passportFileUrl ?? null),
+        governmentIdType: governmentIdType || null,
+        governmentIdNumber: governmentIdNumber || null,
+        fullLegalName: fullLegalName || null,
+        country: country || null,
+        fullAddress: fullAddress || null,
+        apartmentStreet: apartmentStreet || null,
+        city: city || null,
+        stateProvince: stateProvince || null,
+        postalCode: postalCode || null,
+        accountNumber, swiftCode, bankName,
+        bankAddress: bankAddress || null,
+        accountHolderName: accountHolderName || null,
+        bankCountry: bankCountry || null,
+        iban: iban || null,
+        routingNumber: routingNumber || null,
+        sortCode: sortCode || null,
+        ifscCode: ifscCode || null,
+        updatedAt: now,
+      };
       if (existing) {
-        verification = storage.updateExpertVerification(existing.id, {
-          passportFileUrl: passportFileUrl || existing.passportFileUrl,
-          accountNumber, swiftCode, bankName,
-          bankAddress: bankAddress || null,
-          updatedAt: now,
-        });
+        verification = storage.updateExpertVerification(existing.id, verificationData);
       } else {
         verification = storage.createExpertVerification({
           expertId,
-          passportFileUrl: passportFileUrl || null,
-          accountNumber, swiftCode, bankName,
-          bankAddress: bankAddress || null,
+          ...verificationData,
           verifiedByAdmin: 0,
           createdAt: now,
-          updatedAt: now,
         });
       }
 
       writeExpertVerificationToCloudSql(verification).catch(() => {});
 
-      // OB-K: Email notification to cofounders
+      // OB-K: Email notification to cofounders — BUG-3a: include all new fields + passport image
       try {
         const { Resend } = await import("resend");
         const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+
+        // Build address string from new granular fields
+        const addressParts = [apartmentStreet, city, stateProvince, postalCode, country].filter(Boolean);
+        const fullAddressDisplay = addressParts.length > 0 ? addressParts.join(", ") : (fullAddress || "Not provided");
+
+        // Build the passport/ID image section for the email body
+        let passportSection = "";
+        const savedPassportUrl = passportFileUrl || (existing?.passportFileUrl ?? null);
+        if (savedPassportUrl && savedPassportUrl.startsWith("data:")) {
+          // Inline data URL — embed directly in email
+          passportSection = `
+            <h3 style="color:#0F3DD1;margin-top:24px;">Government-issued ID Document</h3>
+            <img src="${savedPassportUrl}" alt="Expert ID Document" style="max-width:100%;border:1px solid #ddd;border-radius:8px;margin:8px 0;" />
+          `;
+        } else if (savedPassportUrl) {
+          passportSection = `
+            <h3 style="color:#0F3DD1;margin-top:24px;">Government-issued ID Document</h3>
+            <img src="${savedPassportUrl}" alt="Expert ID Document" style="max-width:100%;border:1px solid #ddd;border-radius:8px;margin:8px 0;" />
+          `;
+        } else {
+          // Check for file stored in expert_passport_files table
+          try {
+            const passportFile = sqlite.prepare(
+              "SELECT filename, content_type FROM expert_passport_files WHERE expert_id = ? ORDER BY id DESC LIMIT 1"
+            ).get(expertId) as any;
+            if (passportFile) {
+              passportSection = `
+                <h3 style="color:#0F3DD1;margin-top:24px;">Government-issued ID Document</h3>
+                <p style="color:#333;">Document uploaded: <strong>${passportFile.filename}</strong> (${passportFile.content_type})</p>
+                <p style="color:#666;font-size:12px;">View and download in the Admin Panel → Withdrawals → Expert ID / Bank Verification</p>
+              `;
+            }
+          } catch (_) { /* ignore */ }
+        }
+
+        const emailRow = (label: string, value: string | null | undefined) =>
+          value ? `<tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;color:#333;width:40%;">${label}</td><td style="padding:8px;border-bottom:1px solid #eee;color:#111;">${value}</td></tr>` : "";
+
         await resend.emails.send({
           from: "A2A Global <noreply@a2a.global>",
           to: ["oleg@a2a.global", "amir@a2a.global"],
           subject: `Verification data for Expert ${expertUser?.name || "Unknown"} uploaded`,
-          html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+          html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;background:#fff;">
             <div style="text-align:center;padding:15px;border-bottom:2px solid #0F3DD1;">
               <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="36" />
             </div>
             <h2 style="color:#0F3DD1;margin-top:20px;">Expert Verification Details Uploaded</h2>
-            <p>Expert <strong>${expertUser?.name || "Unknown"}</strong> has uploaded their verification and bank details.</p>
-            <table style="width:100%;border-collapse:collapse;margin:15px 0;">
-              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Bank</td><td style="padding:8px;border-bottom:1px solid #eee;">${bankName}</td></tr>
-              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">SWIFT/BIC</td><td style="padding:8px;border-bottom:1px solid #eee;">${swiftCode}</td></tr>
-              <tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;">Has Passport</td><td style="padding:8px;border-bottom:1px solid #eee;">${passportFileUrl ? "Yes" : "No"}</td></tr>
+            <p style="color:#333;">Expert <strong>${expertUser?.name || "Unknown"}</strong> (${expertUser?.email || ""}) has uploaded their verification and bank details.</p>
+
+            <h3 style="color:#0F3DD1;margin-top:20px;margin-bottom:8px;">Personal Details</h3>
+            <table style="width:100%;border-collapse:collapse;margin:0 0 15px 0;">
+              ${emailRow("Full Legal Name", fullLegalName)}
+              ${emailRow("ID Type", governmentIdType)}
+              ${emailRow("Country", country)}
             </table>
+
+            <h3 style="color:#0F3DD1;margin-top:16px;margin-bottom:8px;">Recipient Address</h3>
+            <table style="width:100%;border-collapse:collapse;margin:0 0 15px 0;">
+              ${emailRow("Apartment / Street", apartmentStreet)}
+              ${emailRow("City", city)}
+              ${emailRow("State / Province", stateProvince)}
+              ${emailRow("Postal / Zip Code", postalCode)}
+              ${emailRow("Full Address", !apartmentStreet && fullAddress ? fullAddress : null)}
+            </table>
+
+            <h3 style="color:#0F3DD1;margin-top:16px;margin-bottom:8px;">Bank Details</h3>
+            <table style="width:100%;border-collapse:collapse;margin:0 0 15px 0;">
+              ${emailRow("Bank Name", bankName)}
+              ${emailRow("SWIFT / BIC", swiftCode)}
+              ${emailRow("Account Number", accountNumber)}
+              ${emailRow("Account Holder", accountHolderName)}
+              ${emailRow("IBAN", iban)}
+              ${emailRow("Routing Number", routingNumber)}
+              ${emailRow("Sort Code", sortCode)}
+              ${emailRow("IFSC Code", ifscCode)}
+              ${emailRow("Bank Country", bankCountry)}
+              ${emailRow("Bank Address", bankAddress)}
+            </table>
+
+            ${passportSection}
+
             <div style="margin:24px 0;">
               <a href="https://a2a.global/#/admin/login" style="background:#0F3DD1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Open Admin Panel</a>
             </div>

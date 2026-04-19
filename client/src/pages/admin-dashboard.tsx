@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { FloatingHelp } from "@/components/floating-help";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient, safeArray } from "@/lib/queryClient";
+import { apiRequest, queryClient, safeArray, getFileDownloadUrl } from "@/lib/queryClient";
 import { getAdmin, setAdmin, clearAdmin } from "./admin-login";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -405,6 +405,30 @@ function ReviewQueuePanel() {
                   </pre>
                 </div>
               </div>
+
+              {/* BUG-2 fix: Expert file attachments */}
+              {safeArray(item.fileAttachments).length > 0 && (
+                <div className="px-5 py-3 border-t border-zinc-800">
+                  <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                    <Paperclip className="h-3.5 w-3.5" /> Attachments ({item.fileAttachments.length})
+                  </p>
+                  <div className="space-y-1.5">
+                    {safeArray(item.fileAttachments).map((f: any) => (
+                      <a
+                        key={f.id}
+                        href={getFileDownloadUrl(`/api/files/${item.id}/${encodeURIComponent(f.filename)}`)}
+                        target="_blank"
+                        download
+                        className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm"
+                      >
+                        <FileText className="h-4 w-4 shrink-0" />
+                        {f.filename} <span className="text-zinc-500">({(f.size / 1024).toFixed(1)} KB)</span>
+                        {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-400 border border-teal-500/30">Expert</span>}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Actions */}
               <div className="px-5 py-4 border-t border-zinc-800 flex flex-col gap-3">
@@ -1613,7 +1637,7 @@ function RequestsPage() {
                     {selectedFiles.map((f) => (
                       <a
                         key={f.id}
-                        href={`/api/files/${selected.id}/${encodeURIComponent(f.filename)}`}
+                        href={getFileDownloadUrl(`/api/files/${selected.id}/${encodeURIComponent(f.filename)}`)}
                         target="_blank"
                         download
                         className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm"
@@ -1791,8 +1815,13 @@ function WithdrawalsPage() {
   async function handleDownloadInvoicePDF(invoiceNumber: string) {
     try {
       const res = await apiRequest("GET", `/api/admin/invoices/${encodeURIComponent(invoiceNumber)}`);
-      if (!res.ok) throw new Error("Invoice not found");
       const d = await res.json();
+      if (!d || !d.invoice) throw new Error("Invoice data not found");
+      // BUG-5: Defensive defaults for missing fields
+      d.expert = d.expert || { id: 0, name: "Unknown", email: "", category: "general", tier: "standard" };
+      d.lineItems = d.lineItems || [];
+      d.totalAmountCents = d.totalAmountCents || 0;
+      d.netPayoutCents = d.netPayoutCents || 0;
       const { default: jsPDF } = await import("jspdf");
       const doc = new jsPDF({ unit: "mm", format: "a4" });
       const margin = 20;
@@ -1834,15 +1863,15 @@ function WithdrawalsPage() {
       doc.setFont("helvetica", "normal");
       doc.setTextColor(60, 60, 60);
       const infoRows = [
-        ["Statement Number", d.invoice.invoiceNumber],
-        ["Statement Date", new Date(d.invoice.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })],
-        ["Expert ID", `EX-${String(d.expert.id).padStart(6, "0")}`],
+        ["Statement Number", d.invoice.invoiceNumber || invoiceNumber],
+        ["Statement Date", d.invoice.createdAt ? new Date(d.invoice.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "N/A"],
+        ["Expert ID", `EX-${String(d.expert.id || 0).padStart(6, "0")}`],
       ];
       const expertRows = [
-        ["Name", d.expert.name],
-        ["Email", d.expert.email],
-        ["Category", d.expert.category],
-        ["Tier", d.expert.tier],
+        ["Name", d.expert.name || "Unknown"],
+        ["Email", d.expert.email || "N/A"],
+        ["Category", d.expert.category || "general"],
+        ["Tier", d.expert.tier || "standard"],
       ];
       doc.setFontSize(8);
       infoRows.forEach(([label, val]: string[], i: number) => {
@@ -1991,7 +2020,8 @@ function WithdrawalsPage() {
             <thead>
               <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
                 <th className="text-left px-4 py-3">Expert</th>
-                <th className="text-left px-4 py-3">Passport/ID</th>
+                <th className="text-left px-4 py-3">Country</th>
+                <th className="text-left px-4 py-3">ID Document</th>
                 <th className="text-left px-4 py-3">Account #</th>
                 <th className="text-left px-4 py-3">SWIFT</th>
                 <th className="text-left px-4 py-3">Bank</th>
@@ -2001,19 +2031,29 @@ function WithdrawalsPage() {
             </thead>
             <tbody>
               {safeArray(verifications).length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-6 text-center text-zinc-500 text-xs">No expert verifications submitted yet.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-6 text-center text-zinc-500 text-xs">No expert verifications submitted yet.</td></tr>
               ) : safeArray(verifications).map((v: any) => (
                 <tr key={v.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
-                  <td className="px-4 py-3 text-zinc-200 font-medium">{v.expertName || `Expert #${v.expertId}`}</td>
                   <td className="px-4 py-3">
-                    {/* Build 39 Fix 6: Check both passportFileUrl and DB-stored passport */}
+                    <div className="text-zinc-200 font-medium">{v.fullLegalName || v.expertName || `Expert #${v.expertId}`}</div>
+                    {v.fullLegalName && v.expertName && <div className="text-[10px] text-zinc-500">{v.expertName}</div>}
+                    {v.city && <div className="text-[10px] text-zinc-500">{[v.city, v.stateProvince].filter(Boolean).join(", ")}</div>}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-300 text-xs">{v.country || "—"}</td>
+                  <td className="px-4 py-3">
+                    {/* BUG-3b: View + Download document */}
                     <Button size="sm" variant="ghost" className="h-7 text-xs text-blue-400" onClick={() => setSelectedVerification(v)}>
-                      View Document
+                      <Paperclip className="w-3 h-3 mr-1" /> View / Download
                     </Button>
                   </td>
                   <td className="px-4 py-3 text-zinc-300 text-xs font-mono">{v.accountNumber || "—"}</td>
                   <td className="px-4 py-3 text-zinc-300 text-xs font-mono">{v.swiftCode || "—"}</td>
-                  <td className="px-4 py-3 text-zinc-300 text-xs">{v.bankName || "—"}{v.bankAddress ? `, ${v.bankAddress}` : ""}</td>
+                  <td className="px-4 py-3 text-zinc-300 text-xs">
+                    {v.bankName || "—"}
+                    {v.iban && <div className="text-[10px] text-zinc-500 font-mono">IBAN: {v.iban}</div>}
+                    {v.sortCode && <div className="text-[10px] text-zinc-500 font-mono">Sort: {v.sortCode}</div>}
+                    {v.ifscCode && <div className="text-[10px] text-zinc-500 font-mono">IFSC: {v.ifscCode}</div>}
+                  </td>
                   <td className="px-4 py-3">
                     <Badge className={`text-xs ${v.verifiedByAdmin ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"}`}>
                       {v.verifiedByAdmin ? "Verified" : "Pending"}
@@ -2033,31 +2073,94 @@ function WithdrawalsPage() {
         </div>
       </Card>
 
-      {/* OB-J: Passport/ID Viewer Dialog — Build 39: Use API endpoint for passport files */}
+      {/* OB-J: Passport/ID Viewer Dialog — BUG-3b: Show all fields, viewable + downloadable */}
       <Dialog open={!!selectedVerification} onOpenChange={() => setSelectedVerification(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Expert Verification Document</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            {/* Passport/ID Image */}
             {selectedVerification?.passportFileUrl ? (
-              <img src={selectedVerification.passportFileUrl} alt="Passport/ID" className="w-full rounded-lg border" />
+              <div className="space-y-2">
+                <img src={selectedVerification.passportFileUrl} alt="Government-issued ID" className="w-full rounded-lg border border-zinc-700" />
+                <a
+                  href={selectedVerification.passportFileUrl}
+                  download={`expert-${selectedVerification.expertId}-id-document`}
+                  className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 mt-1"
+                >
+                  <Download className="w-3 h-3" /> Download ID Document
+                </a>
+              </div>
             ) : selectedVerification ? (
               <div className="space-y-2">
                 <img
+                  id={`passport-img-${selectedVerification.expertId}`}
                   src={`/api/experts/${selectedVerification.expertId}/passport-file`}
-                  alt="Passport/ID"
-                  className="w-full rounded-lg border"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden'); }}
+                  alt="Government-issued ID"
+                  className="w-full rounded-lg border border-zinc-700"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; document.getElementById(`passport-fallback-${selectedVerification.expertId}`)?.classList.remove('hidden'); }}
                 />
-                <p className="text-zinc-500 text-xs hidden">No passport/ID document uploaded yet.</p>
+                <a
+                  href={`/api/experts/${selectedVerification.expertId}/passport-file`}
+                  download={`expert-${selectedVerification.expertId}-id-document`}
+                  className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 mt-1"
+                >
+                  <Download className="w-3 h-3" /> Download ID Document
+                </a>
+                <p id={`passport-fallback-${selectedVerification.expertId}`} className="text-zinc-500 text-xs hidden">No ID document uploaded yet.</p>
               </div>
             ) : null}
-            <div className="text-sm space-y-1 text-zinc-300">
-              <p><strong>Account:</strong> {selectedVerification?.accountNumber || "—"}</p>
-              <p><strong>SWIFT:</strong> {selectedVerification?.swiftCode || "—"}</p>
-              <p><strong>Bank:</strong> {selectedVerification?.bankName || "—"}</p>
-              <p><strong>Address:</strong> {selectedVerification?.bankAddress || "—"}</p>
+
+            {/* Personal Details */}
+            <div className="border-t border-zinc-800 pt-3">
+              <h4 className="text-xs font-semibold text-zinc-400 uppercase mb-2">Personal Details</h4>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <p className="text-zinc-500">Full Legal Name</p>
+                <p className="text-zinc-200">{selectedVerification?.fullLegalName || "—"}</p>
+                <p className="text-zinc-500">ID Type</p>
+                <p className="text-zinc-200">{selectedVerification?.governmentIdType || "—"}</p>
+                <p className="text-zinc-500">Country</p>
+                <p className="text-zinc-200">{selectedVerification?.country || "—"}</p>
+              </div>
+            </div>
+
+            {/* Recipient Address */}
+            <div className="border-t border-zinc-800 pt-3">
+              <h4 className="text-xs font-semibold text-zinc-400 uppercase mb-2">Recipient Address</h4>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <p className="text-zinc-500">Apartment / Street</p>
+                <p className="text-zinc-200">{selectedVerification?.apartmentStreet || "—"}</p>
+                <p className="text-zinc-500">City</p>
+                <p className="text-zinc-200">{selectedVerification?.city || "—"}</p>
+                <p className="text-zinc-500">State / Province</p>
+                <p className="text-zinc-200">{selectedVerification?.stateProvince || "—"}</p>
+                <p className="text-zinc-500">Postal / Zip Code</p>
+                <p className="text-zinc-200">{selectedVerification?.postalCode || "—"}</p>
+              </div>
+            </div>
+
+            {/* Bank Details */}
+            <div className="border-t border-zinc-800 pt-3">
+              <h4 className="text-xs font-semibold text-zinc-400 uppercase mb-2">Bank Details</h4>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <p className="text-zinc-500">Bank Name</p>
+                <p className="text-zinc-200">{selectedVerification?.bankName || "—"}</p>
+                <p className="text-zinc-500">Account Number</p>
+                <p className="text-zinc-200 font-mono">{selectedVerification?.accountNumber || "—"}</p>
+                <p className="text-zinc-500">SWIFT / BIC</p>
+                <p className="text-zinc-200 font-mono">{selectedVerification?.swiftCode || "—"}</p>
+                <p className="text-zinc-500">Account Holder</p>
+                <p className="text-zinc-200">{selectedVerification?.accountHolderName || "—"}</p>
+                {selectedVerification?.iban && <><p className="text-zinc-500">IBAN</p><p className="text-zinc-200 font-mono">{selectedVerification.iban}</p></>}
+                {selectedVerification?.routingNumber && <><p className="text-zinc-500">Routing Number</p><p className="text-zinc-200 font-mono">{selectedVerification.routingNumber}</p></>}
+                {selectedVerification?.sortCode && <><p className="text-zinc-500">Sort Code</p><p className="text-zinc-200 font-mono">{selectedVerification.sortCode}</p></>}
+                {selectedVerification?.ifscCode && <><p className="text-zinc-500">IFSC Code</p><p className="text-zinc-200 font-mono">{selectedVerification.ifscCode}</p></>}
+                <p className="text-zinc-500">Bank Country</p>
+                <p className="text-zinc-200">{selectedVerification?.bankCountry || "—"}</p>
+                <p className="text-zinc-500">Bank Address</p>
+                <p className="text-zinc-200">{selectedVerification?.bankAddress || "—"}</p>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -2104,7 +2207,18 @@ function WithdrawalsPage() {
                   <td className="px-4 py-3 text-right text-zinc-200 font-medium">${wr.amount}</td>
                   <td className="px-4 py-3 text-xs text-zinc-400">
                     {wr.verification ? (
-                      <span>{wr.verification.bankName} — {wr.verification.accountNumber}</span>
+                      <div>
+                        <span>{wr.verification.bankName} — {wr.verification.accountNumber}</span>
+                        {wr.verification.fullLegalName && <div className="text-[10px] text-zinc-500 mt-0.5">Name: {wr.verification.fullLegalName}</div>}
+                        {wr.verification.iban && <div className="text-[10px] text-zinc-500">IBAN: {wr.verification.iban}</div>}
+                        {wr.verification.swiftCode && <div className="text-[10px] text-zinc-500">SWIFT: {wr.verification.swiftCode}</div>}
+                        {wr.verification.sortCode && <div className="text-[10px] text-zinc-500">Sort: {wr.verification.sortCode}</div>}
+                        {wr.verification.ifscCode && <div className="text-[10px] text-zinc-500">IFSC: {wr.verification.ifscCode}</div>}
+                        {wr.verification.bankCountry && <div className="text-[10px] text-zinc-500">Country: {wr.verification.bankCountry}</div>}
+                        <Button size="sm" variant="ghost" className="h-5 text-[10px] text-blue-400 hover:text-blue-300 p-0 mt-1" onClick={() => setSelectedVerification(wr.verification)}>
+                          <Paperclip className="w-2.5 h-2.5 mr-0.5" /> View ID & Full Details
+                        </Button>
+                      </div>
                     ) : (
                       <span className="text-amber-400">No bank details</span>
                     )}

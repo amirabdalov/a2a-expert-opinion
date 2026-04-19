@@ -17,7 +17,7 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, getFileDownloadUrl } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useSSE } from "@/hooks/use-sse";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -349,7 +349,7 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
                 <p className="text-xs font-semibold text-muted-foreground mb-1">Attachments ({requestFiles.length})</p>
                 <div className="space-y-1">
                   {requestFiles.map((f: any) => (
-                    <a key={f.id} href={`/api/files/${requestId}/${encodeURIComponent(f.filename)}`} target="_blank" download className="flex items-center gap-1 text-primary hover:underline text-sm">
+                    <a key={f.id} href={getFileDownloadUrl(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`)} target="_blank" download className="flex items-center gap-1 text-primary hover:underline text-sm">
                       📎 {f.filename} ({(f.size / 1024).toFixed(1)} KB)
                     </a>
                   ))}
@@ -719,7 +719,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
               {parsedAttachments.map((a, i) => (
                 <a
                   key={`parsed-${i}`}
-                  href={`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`}
+                  href={getFileDownloadUrl(`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`)}
                   target="_blank"
                   download={a.name}
                   className="flex items-center gap-2 text-primary hover:underline text-sm"
@@ -732,7 +732,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
               {requestFiles?.map((f) => (
                 <a
                   key={`db-${f.id}`}
-                  href={`/api/files/${currentReview.requestId}/${encodeURIComponent(f.filename)}`}
+                  href={getFileDownloadUrl(`/api/files/${currentReview.requestId}/${encodeURIComponent(f.filename)}`)}
                   target="_blank"
                   download
                   className="flex items-center gap-2 text-primary hover:underline text-sm"
@@ -1339,6 +1339,22 @@ function Earnings({ userId }: { userId: number }) {
   const [bankSwiftCode, setBankSwiftCode] = useState("");
   const [bankName, setBankName] = useState("");
   const [bankAddress, setBankAddress] = useState("");
+  // BUG-3: Expanded verification fields
+  const [govIdType, setGovIdType] = useState("");
+  const [govIdNumber, setGovIdNumber] = useState("");
+  const [fullLegalName, setFullLegalName] = useState("");
+  const [verCountry, setVerCountry] = useState("");
+  const [fullAddress, setFullAddress] = useState(""); // legacy
+  const [apartmentStreet, setApartmentStreet] = useState("");
+  const [city, setCity] = useState("");
+  const [stateProvince, setStateProvince] = useState("");
+  const [postalCode, setPostalCode] = useState("");
+  const [accountHolderName, setAccountHolderName] = useState("");
+  const [bankCountry, setBankCountry] = useState("");
+  const [iban, setIban] = useState("");
+  const [routingNumber, setRoutingNumber] = useState("");
+  const [sortCode, setSortCode] = useState("");
+  const [ifscCode, setIfscCode] = useState("");
   const [passportFile, setPassportFile] = useState<File | null>(null);
   const [passportUploading, setPassportUploading] = useState(false);
   const passportInputRef = useRef<HTMLInputElement>(null);
@@ -1413,10 +1429,25 @@ function Earnings({ userId }: { userId: number }) {
       }
       const res = await apiRequest("POST", `/api/experts/${expert.id}/verification`, {
         passportFileUrl,
+        governmentIdType: govIdType,
+        governmentIdNumber: govIdNumber,
+        fullLegalName,
+        country: verCountry,
+        fullAddress,
+        apartmentStreet,
+        city,
+        stateProvince,
+        postalCode,
         accountNumber: bankAccountNumber,
         swiftCode: bankSwiftCode,
         bankName,
         bankAddress,
+        accountHolderName,
+        bankCountry,
+        iban,
+        routingNumber,
+        sortCode,
+        ifscCode,
       });
       return res.json();
     },
@@ -1675,8 +1706,7 @@ function Earnings({ userId }: { userId: number }) {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm">Current balance: <span className="font-bold">${balance}</span></p>
-                <p className="text-xs text-muted-foreground">Withdrawals are available for a minimum of $50.</p>
-                <p className="text-xs text-muted-foreground italic mt-0.5">We are working on reducing the withdrawal limits</p>
+                <p className="text-xs text-muted-foreground">Withdrawals are available for a minimum of $200.</p>
               </div>
               {/* G2-5: Block withdrawal for unverified experts */}
               {expert && expert.verified !== 1 ? (
@@ -1694,10 +1724,10 @@ function Earnings({ userId }: { userId: number }) {
               ) : (
                 <Button
                   onClick={() => {
-                    if (balance < 50) {
+                    if (balance < 200) {
                       toast({
                         title: "Minimum not reached",
-                        description: "Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits",
+                        description: "Withdrawals are available for a minimum of $200.",
                       });
                       return;
                     }
@@ -1720,13 +1750,28 @@ function Earnings({ userId }: { userId: number }) {
                   setBankSwiftCode(verification?.swiftCode || "");
                   setBankName(verification?.bankName || "");
                   setBankAddress(verification?.bankAddress || "");
+                  setGovIdType(verification?.governmentIdType || "");
+                  setGovIdNumber(verification?.governmentIdNumber || "");
+                  setFullLegalName(verification?.fullLegalName || "");
+                  setApartmentStreet(verification?.apartmentStreet || "");
+                  setCity(verification?.city || "");
+                  setStateProvince(verification?.stateProvince || "");
+                  setPostalCode(verification?.postalCode || "");
+                  setSortCode(verification?.sortCode || "");
+                  setIfscCode(verification?.ifscCode || "");
+                  setVerCountry(verification?.country || "");
+                  setFullAddress(verification?.fullAddress || "");
+                  setAccountHolderName(verification?.accountHolderName || "");
+                  setBankCountry(verification?.bankCountry || "");
+                  setIban(verification?.iban || "");
+                  setRoutingNumber(verification?.routingNumber || "");
                   setShowBankDetailsDialog(true);
                 }}>Edit</Button>
               </div>
             )}
-            {balance < 50 && balance > 0 && (
+            {balance < 200 && balance > 0 && (
               <p className="text-xs text-amber-600" data-testid="text-withdrawal-threshold">
-                Withdrawals are available for a minimum of $50. We are working on reducing the withdrawal limits
+                Withdrawals are available for a minimum of $200.
               </p>
             )}
           </div>
@@ -1740,9 +1785,11 @@ function Earnings({ userId }: { userId: number }) {
             <DialogTitle>Verification & Bank Details</DialogTitle>
             <DialogDescription>Upload your ID and enter bank details to enable withdrawals.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+            {/* Identity Section */}
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Identity Verification</p>
             <div>
-              <Label className="text-sm">Copy of Passport / ID</Label>
+              <Label className="text-sm">Copy of Government-issued ID (Passport, Driving License, Social Insurance, Aadhar etc)</Label>
               <input
                 ref={passportInputRef}
                 type="file"
@@ -1762,35 +1809,195 @@ function Earnings({ userId }: { userId: number }) {
                 )}
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">ID Type</Label>
+                <select
+                  value={govIdType}
+                  onChange={(e) => setGovIdType(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  data-testid="select-gov-id-type"
+                >
+                  <option value="">Select...</option>
+                  <option value="passport">Passport</option>
+                  <option value="national_id">National ID</option>
+                  <option value="drivers_license">Driver's License</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-sm">ID Number</Label>
+                <Input
+                  value={govIdNumber}
+                  onChange={(e) => setGovIdNumber(e.target.value)}
+                  placeholder="ID document number"
+                  className="mt-1"
+                  data-testid="input-gov-id-number"
+                />
+              </div>
+            </div>
             <div>
-              <Label className="text-sm">Account Number</Label>
+              <Label className="text-sm">Full Legal Name (as on ID)</Label>
               <Input
-                value={bankAccountNumber}
-                onChange={(e) => setBankAccountNumber(e.target.value)}
-                placeholder="e.g., 12345678"
+                value={fullLegalName}
+                onChange={(e) => setFullLegalName(e.target.value)}
+                placeholder="e.g., John Michael Smith"
                 className="mt-1"
-                data-testid="input-account-number"
+                data-testid="input-full-legal-name"
               />
             </div>
             <div>
-              <Label className="text-sm">SWIFT / BIC Code</Label>
+              <Label className="text-sm">Country</Label>
               <Input
-                value={bankSwiftCode}
-                onChange={(e) => setBankSwiftCode(e.target.value)}
-                placeholder="e.g., ABCDEF12"
+                value={verCountry}
+                onChange={(e) => setVerCountry(e.target.value)}
+                placeholder="e.g., United Kingdom"
                 className="mt-1"
-                data-testid="input-swift-code"
+                data-testid="input-country"
               />
             </div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide pt-1">Full Recipient Address</p>
             <div>
-              <Label className="text-sm">Bank Name</Label>
+              <Label className="text-sm">Apartment and Street</Label>
               <Input
-                value={bankName}
-                onChange={(e) => setBankName(e.target.value)}
-                placeholder="e.g., HSBC"
+                value={apartmentStreet}
+                onChange={(e) => setApartmentStreet(e.target.value)}
+                placeholder="e.g., 45B Baker Street, Apt 3"
                 className="mt-1"
-                data-testid="input-bank-name"
+                data-testid="input-apartment-street"
               />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">City</Label>
+                <Input
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="e.g., London"
+                  className="mt-1"
+                  data-testid="input-city"
+                />
+              </div>
+              <div>
+                <Label className="text-sm">State</Label>
+                <Input
+                  value={stateProvince}
+                  onChange={(e) => setStateProvince(e.target.value)}
+                  placeholder="e.g., England"
+                  className="mt-1"
+                  data-testid="input-state"
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-sm">Postal / Zip Code</Label>
+              <Input
+                value={postalCode}
+                onChange={(e) => setPostalCode(e.target.value)}
+                placeholder="e.g., NW1 6XE"
+                className="mt-1"
+                data-testid="input-postal-code"
+              />
+            </div>
+
+            {/* Bank Details Section */}
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide pt-2">Bank Details</p>
+            <div>
+              <Label className="text-sm">Account Holder Name</Label>
+              <Input
+                value={accountHolderName}
+                onChange={(e) => setAccountHolderName(e.target.value)}
+                placeholder="Name as it appears on the bank account"
+                className="mt-1"
+                data-testid="input-account-holder-name"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">Account Number *</Label>
+                <Input
+                  value={bankAccountNumber}
+                  onChange={(e) => setBankAccountNumber(e.target.value)}
+                  placeholder="e.g., 12345678"
+                  className="mt-1"
+                  data-testid="input-account-number"
+                />
+              </div>
+              <div>
+                <Label className="text-sm">IBAN (if applicable) <span className="text-muted-foreground">— Optional</span></Label>
+                <Input
+                  value={iban}
+                  onChange={(e) => setIban(e.target.value)}
+                  placeholder="e.g., GB29NWBK60161331926819"
+                  className="mt-1"
+                  data-testid="input-iban"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">SWIFT / BIC Code *</Label>
+                <Input
+                  value={bankSwiftCode}
+                  onChange={(e) => setBankSwiftCode(e.target.value)}
+                  placeholder="e.g., ABCDEF12"
+                  className="mt-1"
+                  data-testid="input-swift-code"
+                />
+              </div>
+              <div>
+                <Label className="text-sm">Routing Number (US only) <span className="text-muted-foreground">— Optional</span></Label>
+                <Input
+                  value={routingNumber}
+                  onChange={(e) => setRoutingNumber(e.target.value)}
+                  placeholder="e.g., 021000021"
+                  className="mt-1"
+                  data-testid="input-routing-number"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">Sort Code (if applicable) <span className="text-muted-foreground">— Optional</span></Label>
+                <Input
+                  value={sortCode}
+                  onChange={(e) => setSortCode(e.target.value)}
+                  placeholder="e.g., 60-16-13"
+                  className="mt-1"
+                  data-testid="input-sort-code"
+                />
+              </div>
+              <div>
+                <Label className="text-sm">IFSC Code (for India only) <span className="text-muted-foreground">— Optional</span></Label>
+                <Input
+                  value={ifscCode}
+                  onChange={(e) => setIfscCode(e.target.value)}
+                  placeholder="e.g., SBIN0001234"
+                  className="mt-1"
+                  data-testid="input-ifsc-code"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">Bank Name *</Label>
+                <Input
+                  value={bankName}
+                  onChange={(e) => setBankName(e.target.value)}
+                  placeholder="e.g., HSBC"
+                  className="mt-1"
+                  data-testid="input-bank-name"
+                />
+              </div>
+              <div>
+                <Label className="text-sm">Bank Country</Label>
+                <Input
+                  value={bankCountry}
+                  onChange={(e) => setBankCountry(e.target.value)}
+                  placeholder="e.g., United Kingdom"
+                  className="mt-1"
+                  data-testid="input-bank-country"
+                />
+              </div>
             </div>
             <div>
               <Label className="text-sm">Bank Address</Label>
@@ -1856,7 +2063,7 @@ function Earnings({ userId }: { userId: number }) {
             <Button variant="outline" onClick={() => setShowWithdrawDialog(false)}>Cancel</Button>
             <Button
               onClick={() => createWithdrawalMutation.mutate()}
-              disabled={withdrawAmount < 50 || createWithdrawalMutation.isPending}
+              disabled={withdrawAmount < 200 || createWithdrawalMutation.isPending}
               data-testid="button-confirm-withdraw"
             >
               <Receipt className="mr-2 h-4 w-4" />
