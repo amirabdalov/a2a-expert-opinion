@@ -401,11 +401,8 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/experts/user", expert.userId] });
       toast({ title: "Rate saved!" });
-      if (isUltimateTier) {
-        onComplete();
-      } else {
-        onSkipToVerified();
-      }
+      // All tiers (including guru) skip straight to verified — no test assignment required
+      onSkipToVerified();
     },
     onError: (err: Error) => {
       toast({ title: "Error saving rate", description: err.message, variant: "destructive" });

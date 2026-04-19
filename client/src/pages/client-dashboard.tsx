@@ -494,6 +494,14 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
     }
   }, [draftData]);
 
+  // FIX-3: Fetch DB-stored files for draft so previously uploaded files are visible
+  const draftRequestId = draftId || editDraftId;
+  const { data: draftDbFiles } = useQuery<Array<{ id: number; filename: string; size: number; uploader_role?: string }>>({
+    queryKey: ["/api/files", draftRequestId],
+    queryFn: () => apiRequest("GET", `/api/files/${draftRequestId}`).then(r => r.json()),
+    enabled: !!draftRequestId,
+  });
+
   useEffect(() => {
     if (prefill) clearPrefillData();
   }, []);
@@ -904,6 +912,23 @@ function NewRequest({ userId, setView, setSelectedRequest, editDraftId }: { user
                   <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)} KB</span>
                   <button onClick={() => removeAttachment(i)} className="text-muted-foreground hover:text-destructive" data-testid={`button-remove-attachment-${i}`}><X className="h-3 w-3" /></button>
                 </div>
+              ))}
+            </div>
+          )}
+          {/* FIX-3: Show previously uploaded DB-stored files for draft */}
+          {draftDbFiles && draftDbFiles.length > 0 && (
+            <div className="mt-2 space-y-1">
+              <p className="text-xs text-muted-foreground font-medium">Previously uploaded files:</p>
+              {draftDbFiles.map((f) => (
+                <button
+                  key={`db-${f.id}`}
+                  onClick={() => downloadFile(`/api/files/${draftRequestId}/${encodeURIComponent(f.filename)}`, f.filename)}
+                  className="flex items-center gap-2 p-2 bg-muted/50 rounded text-xs w-full text-left cursor-pointer hover:bg-muted"
+                >
+                  <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="font-medium flex-1 truncate">{f.filename}</span>
+                  <span className="text-muted-foreground">{(f.size / 1024).toFixed(0)} KB</span>
+                </button>
               ))}
             </div>
           )}
@@ -1789,7 +1814,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
                 </button>
               ))}
               {/* DB-stored file attachments */}
-              {requestFiles?.map((f) => (
+              {requestFiles?.map((f: any) => (
                 <button
                   key={`db-${f.id}`}
                   onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`, f.filename)}
@@ -1797,6 +1822,8 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
                 >
                   <Paperclip className="h-4 w-4 shrink-0" />
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                  {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
+                  {f.uploader_role === 'client' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
                 </button>
               ))}
             </div>
@@ -2828,6 +2855,10 @@ export default function ClientDashboard() {
             {view === "credits" && <Credits userId={user.id} onContinueDraft={(id) => { setEditDraftId(id); setView("new-request"); }} />}
             {view === "settings" && <SettingsView userId={user.id} />}
             {view === "chat-ai" && <ChatAIView setView={setView} />}
+            {/* FIX-2: Soft-launch banner */}
+            <div className="w-full text-center py-3 text-red-500 text-xs font-medium border-t">
+              That's a soft launch of our product. Sometimes you need to refresh the page to reflect all your changes
+            </div>
           </main>
         </div>
         {showTour && <OnboardingTour steps={CLIENT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}

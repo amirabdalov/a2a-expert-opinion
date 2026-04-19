@@ -4024,8 +4024,16 @@ export async function registerRoutes(
   });
 
   // Build 39 Fix 5b: Serve passport file from DB
-  app.get("/api/experts/:expertId/passport-file", userOrAdminAuth, (req, res) => {
+  // FIX-5a: Accept ?token=JWT query param so <img src> and downloadFile() both work
+  app.get("/api/experts/:expertId/passport-file", (req, res) => {
     try {
+      // Authenticate via Authorization header OR ?token query param
+      const authHeader = req.headers.authorization;
+      const queryToken = req.query.token as string | undefined;
+      const tokenStr = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : queryToken;
+      if (!tokenStr) return res.status(401).json({ error: true, message: "Authentication required" });
+      try { jwt.verify(tokenStr, JWT_SECRET); } catch { return res.status(401).json({ error: true, message: "Invalid or expired token" }); }
+
       const expertId = parseInt(req.params.expertId);
       // Try expert_passport_files table first
       sqlite.prepare(`
@@ -4194,10 +4202,37 @@ export async function registerRoutes(
         const emailRow = (label: string, value: string | null | undefined) =>
           value ? `<tr><td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;color:#333;width:40%;">${label}</td><td style="padding:8px;border-bottom:1px solid #eee;color:#111;">${value}</td></tr>` : "";
 
+        // FIX-5b: Build email attachments array with the actual ID file
+        const emailAttachments: Array<{ filename: string; content: Buffer }> = [];
+        try {
+          const passportDbFile = sqlite.prepare(
+            "SELECT filename, data, content_type FROM expert_passport_files WHERE expert_id = ? ORDER BY id DESC LIMIT 1"
+          ).get(expertId) as any;
+          if (passportDbFile?.data) {
+            emailAttachments.push({
+              filename: passportDbFile.filename || "expert-id-document.pdf",
+              content: Buffer.from(passportDbFile.data, "base64"),
+            });
+          }
+        } catch (_) {}
+        // If no DB file, try base64 data URL
+        if (emailAttachments.length === 0 && savedPassportUrl && savedPassportUrl.startsWith("data:")) {
+          try {
+            const base64Data = savedPassportUrl.split(",")[1];
+            const mimeMatch = savedPassportUrl.match(/data:([^;]+)/);
+            const ext = mimeMatch ? mimeMatch[1].split("/")[1] : "png";
+            emailAttachments.push({
+              filename: `expert-id-document.${ext}`,
+              content: Buffer.from(base64Data, "base64"),
+            });
+          } catch (_) {}
+        }
+
         await resend.emails.send({
           from: "A2A Global <noreply@a2a.global>",
           to: ["oleg@a2a.global", "amir@a2a.global"],
           subject: `Verification data for Expert ${expertUser?.name || "Unknown"} uploaded`,
+          attachments: emailAttachments.length > 0 ? emailAttachments : undefined,
           html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;background:#fff;">
             <div style="text-align:center;padding:15px;border-bottom:2px solid #0F3DD1;">
               <img src="https://a2a.global/a2a-blue-logo.svg" alt="A2A Global" height="36" />
@@ -4393,8 +4428,10 @@ export async function registerRoutes(
       const expertUser = expert ? storage.getUser(expert.userId) : null;
       if (expertUser) {
         const payoutCents = Math.round(Number(wr.amount) * 100);
+        const payoutCredits = Number(wr.amount); // credits are in dollars, not cents
         const newBalance = Math.max(0, (expertUser.walletBalance || 0) - payoutCents);
-        storage.updateUser(expertUser.id, { walletBalance: newBalance });
+        const newCredits = Math.max(0, (expertUser.credits || 0) - payoutCredits);
+        storage.updateUser(expertUser.id, { walletBalance: newBalance, credits: newCredits });
         storage.createWalletTransaction({
           userId: expertUser.id,
           amountCents: -payoutCents,
@@ -4403,8 +4440,15 @@ export async function registerRoutes(
           createdAt: new Date().toISOString(),
           stripePaymentId: null,
         });
-        writeUserToCloudSql({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits, walletBalance: newBalance }).catch(() => {});
-        writeUserToBigQuery({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: expertUser.credits, createdAt: expertUser.createdAt || undefined }).catch(() => {});
+        // FIX-1: Also record in credit_transactions so it appears in expert transaction history
+        storage.createTransaction({
+          userId: expertUser.id,
+          amount: -payoutCredits,
+          type: "payout",
+          description: `Payout initiated: Invoice ${wr.invoiceNumber}`,
+        });
+        writeUserToCloudSql({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: newCredits, walletBalance: newBalance }).catch(() => {});
+        writeUserToBigQuery({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: newCredits, createdAt: expertUser.createdAt || undefined }).catch(() => {});
 
         createAndSyncNotification({
           userId: expertUser.id,

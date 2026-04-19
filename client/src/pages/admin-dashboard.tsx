@@ -2092,18 +2092,17 @@ function WithdrawalsPage() {
               <div className="space-y-2">
                 <img
                   id={`passport-img-${selectedVerification.expertId}`}
-                  src={`/api/experts/${selectedVerification.expertId}/passport-file`}
+                  src={getFileDownloadUrl(`/api/experts/${selectedVerification.expertId}/passport-file`)}
                   alt="Government-issued ID"
                   className="w-full rounded-lg border border-zinc-700"
                   onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; document.getElementById(`passport-fallback-${selectedVerification.expertId}`)?.classList.remove('hidden'); }}
                 />
-                <a
-                  href={`/api/experts/${selectedVerification.expertId}/passport-file`}
-                  download={`expert-${selectedVerification.expertId}-id-document`}
-                  className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 mt-1"
+                <button
+                  onClick={() => downloadFile(`/api/experts/${selectedVerification.expertId}/passport-file`, `expert-${selectedVerification.expertId}-id-document`)}
+                  className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 mt-1 bg-transparent border-0 p-0 cursor-pointer"
                 >
                   <Download className="w-3 h-3" /> Download ID Document
-                </a>
+                </button>
                 <p id={`passport-fallback-${selectedVerification.expertId}`} className="text-zinc-500 text-xs hidden">No ID document uploaded yet.</p>
               </div>
             ) : null}

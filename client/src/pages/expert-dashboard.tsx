@@ -351,6 +351,8 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
                   {requestFiles.map((f: any) => (
                     <button key={f.id} onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`, f.filename)} className="flex items-center gap-1 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left">
                       📎 {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                      {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
+                      {f.uploader_role === 'client' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
                     </button>
                   ))}
                 </div>
@@ -727,7 +729,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                 </button>
               ))}
               {/* DB-stored file attachments */}
-              {requestFiles?.map((f) => (
+              {requestFiles?.map((f: any) => (
                 <button
                   key={`db-${f.id}`}
                   onClick={() => downloadFile(`/api/files/${currentReview.requestId}/${encodeURIComponent(f.filename)}`, f.filename)}
@@ -735,6 +737,8 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                 >
                   <Paperclip className="h-4 w-4 shrink-0" />
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                  {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
+                  {f.uploader_role === 'client' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
                 </button>
               ))}
               {/* G2-4: Expert file upload */}
@@ -2948,6 +2952,10 @@ export default function ExpertDashboard() {
                 {view === "review-detail" && <ReviewDetail reviewId={selectedReview} expertId={expert.id} setView={setView} />}
               </>
             )}
+            {/* FIX-2: Soft-launch banner */}
+            <div className="w-full text-center py-3 text-red-500 text-xs font-medium border-t">
+              That's a soft launch of our product. Sometimes you need to refresh the page to reflect all your changes
+            </div>
           </main>
         </div>
         {/* Mobile bottom tab bar */}
