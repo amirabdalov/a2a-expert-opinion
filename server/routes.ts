@@ -4278,6 +4278,10 @@ export async function registerRoutes(
       if (!amount || parseFloat(amount) <= 0) {
         return res.status(400).json({ error: true, message: "Invalid withdrawal amount" });
       }
+      // BUG-4: Enforce $200 minimum withdrawal
+      if (parseFloat(amount) < 200) {
+        return res.status(400).json({ error: true, message: "Minimum withdrawal amount is $200" });
+      }
 
       // Fix 7: Prevent duplicate withdrawals — check for existing pending withdrawal
       const existingWRs = storage.getWithdrawalRequestsByExpert(expertId);
@@ -4445,23 +4449,49 @@ export async function registerRoutes(
   // G2-6: Admin endpoint to fetch invoice data by invoice number (for PDF generation)
   app.get("/api/admin/invoices/:invoiceNumber", adminAuth, async (req, res) => {
     try {
-      const inv = storage.getInvoiceByNumber(req.params.invoiceNumber);
-      if (!inv) return res.status(404).json({ error: true, message: "Invoice not found" });
-      const expert = storage.getExpert(inv.expertId);
-      const user = expert ? storage.getUser(expert.userId) : null;
-      let categories: string[] = [];
-      try { categories = JSON.parse(expert?.categories || "[]"); } catch {}
-      let parsedItems: any[] = [];
-      try { parsedItems = JSON.parse(inv.lineItems || "[]"); } catch {}
-      return res.json({
-        invoice: inv,
-        expert: { id: expert?.id, name: user?.name || "Unknown", email: user?.email || "", category: categories[0] || "general", tier: normalizeTier(expert?.rateTier) },
-        lineItems: parsedItems,
-        totalAmountCents: inv.totalAmount,
-        platformFeeRate: 0,
-        platformFeeCents: inv.platformFee,
-        netPayoutCents: inv.netPayout,
-      });
+      const invoiceNumber = req.params.invoiceNumber;
+      const inv = storage.getInvoiceByNumber(invoiceNumber);
+      if (inv) {
+        // Found in invoices table (credit-based withdrawal flow)
+        const expert = storage.getExpert(inv.expertId);
+        const user = expert ? storage.getUser(expert.userId) : null;
+        let categories: string[] = [];
+        try { categories = JSON.parse(expert?.categories || "[]"); } catch {}
+        let parsedItems: any[] = [];
+        try { parsedItems = JSON.parse(inv.lineItems || "[]"); } catch {}
+        return res.json({
+          invoice: inv,
+          expert: { id: expert?.id, name: user?.name || "Unknown", email: user?.email || "", category: categories[0] || "general", tier: normalizeTier(expert?.rateTier) },
+          lineItems: parsedItems,
+          totalAmountCents: inv.totalAmount,
+          platformFeeRate: 0,
+          platformFeeCents: inv.platformFee,
+          netPayoutCents: inv.netPayout,
+        });
+      }
+
+      // BUG-5: Fallback — look up from withdrawal_requests table (new expert payout flow)
+      const allWRs = storage.getAllWithdrawalRequests();
+      const wr = allWRs.find((w: any) => w.invoiceNumber === invoiceNumber);
+      if (wr) {
+        const expert = storage.getExpert(wr.expertId);
+        const user = expert ? storage.getUser(expert.userId) : null;
+        const verification = storage.getExpertVerificationByExpert(wr.expertId);
+        let categories: string[] = [];
+        try { categories = JSON.parse(expert?.categories || "[]"); } catch {}
+        const amountCents = Math.round(parseFloat(wr.amount) * 100);
+        return res.json({
+          invoice: { invoiceNumber: wr.invoiceNumber, createdAt: wr.createdAt, expertId: wr.expertId, status: wr.status },
+          expert: { id: expert?.id, name: verification?.fullLegalName || user?.name || "Unknown", email: user?.email || "", category: categories[0] || "general", tier: normalizeTier(expert?.rateTier) },
+          lineItems: [{ title: "Expert Payout", serviceType: "Bank Transfer", completedAt: wr.createdAt, creditsCost: parseFloat(wr.amount), amountCents }],
+          totalAmountCents: amountCents,
+          platformFeeRate: 0,
+          platformFeeCents: 0,
+          netPayoutCents: amountCents,
+        });
+      }
+
+      return res.status(404).json({ error: true, message: "Invoice not found" });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
