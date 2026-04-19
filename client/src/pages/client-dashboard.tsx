@@ -18,7 +18,7 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient, getFileDownloadUrl } from "@/lib/queryClient";
+import { apiRequest, queryClient, getFileDownloadUrl, downloadFile } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useSSE } from "@/hooks/use-sse";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -1779,29 +1779,25 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
             <div className="space-y-2">
               {/* Legacy JSON-stored attachments */}
               {parsedAttachments.map((a, i) => (
-                <a
+                <button
                   key={`parsed-${i}`}
-                  href={getFileDownloadUrl(`/api/files/${requestId}/${encodeURIComponent(a.name)}`)}
-                  target="_blank"
-                  download={a.name}
-                  className="flex items-center gap-2 text-primary hover:underline text-sm"
+                  onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(a.name)}`, a.name)}
+                  className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
                 >
                   <FileText className="h-4 w-4 shrink-0" />
                   {a.name}
-                </a>
+                </button>
               ))}
               {/* DB-stored file attachments */}
               {requestFiles?.map((f) => (
-                <a
+                <button
                   key={`db-${f.id}`}
-                  href={getFileDownloadUrl(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`)}
-                  target="_blank"
-                  download
-                  className="flex items-center gap-2 text-primary hover:underline text-sm"
+                  onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`, f.filename)}
+                  className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
                 >
                   <Paperclip className="h-4 w-4 shrink-0" />
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
-                </a>
+                </button>
               ))}
             </div>
           </CardContent>

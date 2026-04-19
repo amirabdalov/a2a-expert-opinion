@@ -31,12 +31,46 @@ export function safeArray<T = any>(val: unknown): T[] {
   return [];
 }
 
-/** BUG-1 fix: Build a file download URL with ?token=JWT so <a href> links authenticate properly */
+/** BUG-1 fix: Build a file download URL with ?token=JWT so <a href> links authenticate properly.
+ *  Also tries cookie-based token as fallback (covers edge cases where in-memory token is lost on refresh). */
 export function getFileDownloadUrl(path: string): string {
   const adminToken = sessionStorage.getItem("adminToken");
-  const token = adminToken || getToken();
+  let token = adminToken || getToken();
+  // Fallback: read token directly from cookie if in-memory token is null
+  if (!token) {
+    try {
+      const match = document.cookie.match(/(?:^|;\s*)a2a_token=([^;]*)/);
+      if (match) token = decodeURIComponent(match[1]);
+    } catch {}
+  }
+  if (!token || token === "null" || token === "undefined") {
+    // No valid token — return plain URL; the server will return 401
+    // but at least we won't send a garbage token
+    return `${API_BASE}${path}`;
+  }
   const separator = path.includes("?") ? "&" : "?";
-  return `${API_BASE}${path}${token ? `${separator}token=${token}` : ""}`;
+  return `${API_BASE}${path}${separator}token=${encodeURIComponent(token)}`;
+}
+
+/** BUG-1 robust fix: Programmatic file download using fetch() with Authorization header.
+ *  This works even if the token can't be embedded in a URL (e.g., very long tokens).
+ *  Falls back to token-in-URL approach if fetch fails. */
+export async function downloadFile(apiPath: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE}${apiPath}`, { headers: getAuthHeaders() });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  } catch {
+    // Fallback: open the token-URL in a new tab
+    window.open(getFileDownloadUrl(apiPath), "_blank");
+  }
 }
 
 export async function apiRequest(

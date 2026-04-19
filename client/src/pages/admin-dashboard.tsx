@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { FloatingHelp } from "@/components/floating-help";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient, safeArray, getFileDownloadUrl } from "@/lib/queryClient";
+import { apiRequest, queryClient, safeArray, getFileDownloadUrl, downloadFile } from "@/lib/queryClient";
 import { getAdmin, setAdmin, clearAdmin } from "./admin-login";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -414,17 +414,15 @@ function ReviewQueuePanel() {
                   </p>
                   <div className="space-y-1.5">
                     {safeArray(item.fileAttachments).map((f: any) => (
-                      <a
+                      <button
                         key={f.id}
-                        href={getFileDownloadUrl(`/api/files/${item.id}/${encodeURIComponent(f.filename)}`)}
-                        target="_blank"
-                        download
-                        className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm"
+                        onClick={() => downloadFile(`/api/files/${item.id}/${encodeURIComponent(f.filename)}`, f.filename)}
+                        className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
                       >
                         <FileText className="h-4 w-4 shrink-0" />
                         {f.filename} <span className="text-zinc-500">({(f.size / 1024).toFixed(1)} KB)</span>
                         {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-400 border border-teal-500/30">Expert</span>}
-                      </a>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -1635,16 +1633,14 @@ function RequestsPage() {
                   <span className="text-zinc-500 text-xs flex items-center gap-1 mt-2"><Paperclip className="h-3 w-3" /> Attachments ({selectedFiles.length})</span>
                   <div className="mt-2 space-y-1.5">
                     {selectedFiles.map((f) => (
-                      <a
+                      <button
                         key={f.id}
-                        href={getFileDownloadUrl(`/api/files/${selected.id}/${encodeURIComponent(f.filename)}`)}
-                        target="_blank"
-                        download
-                        className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm"
+                        onClick={() => downloadFile(`/api/files/${selected.id}/${encodeURIComponent(f.filename)}`, f.filename)}
+                        className="flex items-center gap-2 text-blue-400 hover:text-blue-300 hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
                       >
                         <FileText className="h-4 w-4 shrink-0" />
                         {f.filename} <span className="text-zinc-500">({(f.size / 1024).toFixed(1)} KB)</span>
-                      </a>
+                      </button>
                     ))}
                   </div>
                 </div>
