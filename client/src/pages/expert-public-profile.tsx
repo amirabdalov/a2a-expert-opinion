@@ -5,8 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Award, Star, CheckCircle, GraduationCap, Briefcase, Clock,
-  ArrowLeft, UserCircle, ExternalLink, Share2,
+  ArrowLeft, UserCircle, ExternalLink, Share2, MessageSquare,
 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
 import type { Expert, User } from "@shared/schema";
 import logoSrc from "@assets/a2a-blue-logo.svg";
 
@@ -185,6 +186,9 @@ export default function ExpertPublicProfile() {
           </Card>
         )}
 
+        {/* FIX-2: Client Reviews */}
+        <PublicClientReviews expertId={expertId} />
+
         {/* CTA */}
         <div className="text-center py-8 bg-primary/5 rounded-lg border border-primary/10" data-testid="section-cta">
           <Award className="h-8 w-8 text-primary mx-auto mb-3" />
@@ -200,3 +204,44 @@ export default function ExpertPublicProfile() {
     </div>
   );
 }
+
+function PublicClientReviews({ expertId }: { expertId: number }) {
+  const { data: reviews } = useQuery<any[]>({
+    queryKey: ["/api/experts", expertId, "client-reviews"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/experts/${expertId}/client-reviews`);
+      return res.json();
+    },
+    enabled: !!expertId,
+  });
+
+  if (!reviews || reviews.length === 0) return null;
+
+  return (
+    <Card className="mb-6" data-testid="card-client-reviews">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <Star className="h-4 w-4 text-amber-400 fill-amber-400" /> Client Reviews ({reviews.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {reviews.map((r: any) => (
+          <div key={r.requestId} className="border-b last:border-0 pb-3 last:pb-0">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-sm font-medium truncate">{r.title}</p>
+              <div className="flex items-center gap-1">
+                <Star className="h-3 w-3 text-amber-400 fill-amber-400" />
+                <span className="text-sm font-bold">{r.clientRating}/5</span>
+              </div>
+            </div>
+            {r.clientRatingComment && (
+              <p className="text-xs text-muted-foreground italic">"{r.clientRatingComment}"</p>
+            )}
+            <p className="text-[10px] text-muted-foreground mt-1">{r.category}{r.clientName ? ` · ${r.clientName}` : ""}</p>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+

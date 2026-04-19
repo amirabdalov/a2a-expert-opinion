@@ -252,6 +252,15 @@ interface DetailedReview extends ExpertReview {
   expert?: Expert & { userName: string };
 }
 
+// 2nd-Priority Fix 3: Format date to US Central time (h:mm AM/PM)
+function formatCentralTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return "—";
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+  } catch { return "—"; }
+}
+
 type ClientView = "overview" | "new-request" | "my-requests" | "request-detail" | "credits" | "settings" | "chat-ai";
 type ServiceType = "sense_check" | "prompt_calibration" | "full_review" | "other";
 type ExpertTierOverride = "standard" | "pro" | "guru";
@@ -332,7 +341,7 @@ function ClientSidebar({ view, setView, onLogout, onResetDraft }: { view: Client
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <img src="/a2a-blue-logo.svg" alt="A2A" className="h-7 w-7 shrink-0" />
+          <img src="/a2a-blue-logo.svg" alt="A2A" className="h-14 w-14 shrink-0 bg-white rounded-lg p-1" />
           <span className="font-semibold text-sm text-sidebar-foreground">Client Portal</span>
         </div>
       </SidebarHeader>
@@ -404,7 +413,7 @@ function Overview({ userId, setView, setSelectedRequest }: { userId: number; set
             <p className="text-sm text-muted-foreground py-4 text-center">No requests yet. <button onClick={() => setView("new-request")} className="text-primary font-medium">Create one</button></p>
           ) : (
             <div className="space-y-2">
-              {requests.slice(0, 5).map((r) => (
+              {[...requests].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()).slice(0, 5).map((r) => (
                 <div key={r.id} className="flex items-center justify-between p-3 rounded-lg hover:bg-muted/50 cursor-pointer transition" onClick={() => { setSelectedRequest(r.id); setView("request-detail"); }} data-testid={`request-row-${r.id}`}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
@@ -1054,7 +1063,13 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
   const nonDraftRequests = requests?.filter((r) => r.status !== "draft" && r.status !== "deleted");
   // FEAT-013: "all" includes drafts too
   const allIncludingDrafts = [...(nonDraftRequests || []), ...(drafts || [])];
-  const filtered = statusFilter === "all" ? allIncludingDrafts : statusFilter === "drafts" ? drafts : nonDraftRequests?.filter((r) => r.status === statusFilter);
+  const filteredUnsorted = statusFilter === "all" ? allIncludingDrafts : statusFilter === "drafts" ? drafts : nonDraftRequests?.filter((r) => r.status === statusFilter);
+  // 2nd-Priority Fix 3: Sort requests latest-first
+  const filtered = [...(filteredUnsorted || [])].sort((a, b) => {
+    const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return bTime - aTime;
+  });
   // Count helpers for badges
   const pendingCount = nonDraftRequests?.filter((r) => r.status === "pending").length ?? 0;
   const inProgressCount = nonDraftRequests?.filter((r) => r.status === "in_progress").length ?? 0;
@@ -1147,7 +1162,7 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
                     </div>
                     <span>${r.creditsCost} credits</span>
                   </div>
-                  <p className="text-[10px] text-muted-foreground mt-1 capitalize">{r.category} · {r.createdAt ? new Date(r.createdAt).toLocaleDateString() : ''}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1 capitalize">{r.category} · {formatCentralTime(r.createdAt)}</p>
                 </Card>
               ))}
             </div>
@@ -1169,7 +1184,7 @@ function MyRequests({ userId, setView, setSelectedRequest, onContinueDraft }: { 
                     <tr><td colSpan={6} className="p-6 text-center text-muted-foreground text-sm">No requests found</td></tr>
                   ) : (filtered as ExpertRequest[]).map((r) => (
                     <tr key={r.id} className="border-t hover:bg-muted/30 cursor-pointer transition" onClick={() => { if (r.status === 'draft') { onContinueDraft(r.id); return; } setSelectedRequest(r.id); setView("request-detail"); }} data-testid={`request-table-row-${r.id}`}>
-                      <td className="p-3 text-xs text-muted-foreground">{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : "—"}</td>
+                      <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(r.createdAt)}</td>
                       <td className="p-3 text-sm font-medium">{r.title}</td>
                       <td className="p-3"><Badge className={`text-[10px] ${serviceTypeBadge(r.serviceType)}`}>{serviceTypeLabel(r.serviceType)}</Badge></td>
                       <td className="p-3 text-xs capitalize">{r.category}</td>
@@ -1588,7 +1603,7 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId, messag
                       <p className="text-xs font-medium mb-0.5 opacity-75">{e.actorName || (isClient ? 'You' : 'Expert')}</p>
                       <p className="text-sm">{e.message}</p>
                       <p className={`text-[10px] mt-1 opacity-60 ${isClient ? 'text-right' : 'text-left'}`}>
-                        {new Date(e.createdAt).toLocaleString()}
+                        {formatCentralTime(e.createdAt)}
                       </p>
                     </div>
                   </div>
@@ -1608,7 +1623,7 @@ function RequestTimeline({ requestId, userId, userName, expertIdByUserId, messag
                 <div className="mt-0.5 shrink-0">{eventIcon(e.type)}</div>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs">{eventLabel(e)}</p>
-                  <p className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</p>
+                  <p className="text-[10px] text-muted-foreground">{formatCentralTime(e.createdAt)}</p>
                 </div>
               </div>
             ))}
@@ -2049,7 +2064,8 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
 // ─── Credits & Billing (Custom Top-Up) ───
 function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?: (draftId: number) => void }) {
   const { data, isLoading } = useQuery<{ credits: number; transactions: CreditTransaction[] }>({ queryKey: ["/api/credits", userId] });
-  const [topUpAmount, setTopUpAmount] = useState(25);
+  const [topUpAmountStr, setTopUpAmountStr] = useState("25");
+  const topUpAmount = Math.max(5, Math.min(10000, Number(topUpAmountStr) || 0));
   const [showDraftBanner, setShowDraftBanner] = useState(false);
   const [draftIdForBanner, setDraftIdForBanner] = useState<number | null>(null);
   const { toast } = useToast();
@@ -2196,8 +2212,9 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
                     type="number"
                     min={5}
                     max={10000}
-                    value={topUpAmount}
-                    onChange={(e) => setTopUpAmount(Math.max(5, Math.min(10000, Number(e.target.value) || 5)))}
+                    value={topUpAmountStr}
+                    onChange={(e) => setTopUpAmountStr(e.target.value)}
+                    onBlur={() => { if (!topUpAmountStr || Number(topUpAmountStr) < 5) setTopUpAmountStr("5"); }}
                     className="pl-8"
                     data-testid="input-topup-amount"
                   />
@@ -2211,7 +2228,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
             <div>
               <Slider
                 value={[topUpAmount]}
-                onValueChange={([v]) => setTopUpAmount(v)}
+                onValueChange={([v]) => setTopUpAmountStr(String(v))}
                 min={5} max={500} step={5}
                 className="mt-1"
                 data-testid="slider-topup"
@@ -2262,7 +2279,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
               <tr><td colSpan={4} className="p-4 text-center text-sm text-muted-foreground">No transactions</td></tr>
             ) : data.transactions.map((tx) => (
               <tr key={tx.id} className="border-t">
-                <td className="p-3 text-xs text-muted-foreground">{new Date(tx.createdAt).toLocaleDateString()}</td>
+                <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(tx.createdAt)}</td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3"><Badge variant="secondary" className="text-xs capitalize">{tx.type}</Badge></td>
                 <td className={`p-3 text-right text-sm font-medium ${["charged", "hold", "debit", "withdrawal"].includes(tx.type) ? "text-red-600" : tx.amount < 0 ? "text-red-600" : "text-green-600"}`}>{["charged", "hold", "debit", "withdrawal"].includes(tx.type) || tx.amount < 0 ? "-" : "+"}${Math.abs(tx.amount)} credits</td>
@@ -2468,8 +2485,10 @@ function SettingsView({ userId }: { userId: number }) {
     try {
       const formData = new FormData();
       formData.append('photo', file);
+      const token = document.cookie.match(/(?:^|;\s*)a2a_token=([^;]*)/)?.[1];
       const res = await fetch(`/api/users/${userId}/photo`, {
         method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${decodeURIComponent(token)}` } : {},
         body: formData,
       });
       if (!res.ok) throw new Error(await res.text());

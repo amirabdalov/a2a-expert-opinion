@@ -115,6 +115,15 @@ sqlite.exec(`
     client_rating_comment TEXT,
     refunded INTEGER DEFAULT 0
   );
+  CREATE TABLE IF NOT EXISTS admin_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_email TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id INTEGER,
+    details TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS expert_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id INTEGER NOT NULL REFERENCES requests(id),
@@ -528,6 +537,9 @@ export interface IStorage {
   createSession(id: string, userId: number, expiresAt: string): void;
   getSession(id: string): { id: string; userId: number; expiresAt: string } | undefined;
   deleteSession(id: string): void;
+  // Admin Actions
+  createAdminAction(data: { adminEmail: string; actionType: string; targetType: string; targetId?: number; details?: string }): any;
+  getAllAdminActions(): any[];
   // Request Events
   createRequestEvent(e: InsertRequestEvent): RequestEvent;
   getRequestEventsByRequest(requestId: number): RequestEvent[];
@@ -785,6 +797,17 @@ export class DatabaseStorage implements IStorage {
   }
   deleteSession(id: string): void {
     db.delete(sessions).where(eq(sessions.id, id)).run();
+  }
+
+  // Admin Actions (action journal)
+  createAdminAction(data: { adminEmail: string; actionType: string; targetType: string; targetId?: number; details?: string }): any {
+    const stmt = sqlite.prepare("INSERT INTO admin_actions (admin_email, action_type, target_type, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?)");
+    const now = new Date().toISOString();
+    stmt.run(data.adminEmail, data.actionType, data.targetType, data.targetId || null, data.details || null, now);
+    return { ...data, createdAt: now };
+  }
+  getAllAdminActions(): any[] {
+    return sqlite.prepare("SELECT * FROM admin_actions ORDER BY created_at DESC").all();
   }
 
   // Request Events

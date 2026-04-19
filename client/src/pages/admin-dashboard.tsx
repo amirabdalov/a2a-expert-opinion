@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { FloatingHelp } from "@/components/floating-help";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, safeArray, getFileDownloadUrl, downloadFile } from "@/lib/queryClient";
+import { formatCentralTime } from "@/lib/utils";
 import { getAdmin, setAdmin, clearAdmin } from "./admin-login";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -487,6 +488,9 @@ function ReviewQueuePanel() {
           ))}
         </div>
       )}
+
+      {/* 2nd-Priority Fix 9: Action History/Journal */}
+      <AdminActionJournal />
     </div>
   );
 }
@@ -1653,6 +1657,103 @@ function RequestsPage() {
   );
 }
 
+
+// 2nd-Priority Fix 9: Admin Action Journal
+function AdminActionJournal() {
+  const { data: actions, isLoading } = useQuery<any[]>({
+    queryKey: ["/api/admin/actions"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/actions");
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  const safeActions = safeArray(actions);
+
+  function downloadActionsExcel() {
+    const headers = ["ID", "Admin", "Action", "Target Type", "Target ID", "Details", "Date"];
+    const rows = safeActions.map((a: any) => [
+      a.id ?? "",
+      a.admin_email ?? a.adminEmail ?? "",
+      a.action_type ?? a.actionType ?? "",
+      a.target_type ?? a.targetType ?? "",
+      a.target_id ?? a.targetId ?? "",
+      (a.details ?? "").replace(/,/g, " "),
+      a.created_at ?? a.createdAt ? new Date(a.created_at || a.createdAt).toLocaleString() : "",
+    ]);
+    const csvContent = [headers, ...rows].map(r => r.map((c: any) => `"${c}"`).join(",")).join("\n");
+    const BOM = "\uFEFF";
+    const blob = new Blob([BOM + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `a2a-admin-actions-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="mt-8" data-testid="admin-action-journal">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
+          <Clock className="h-5 w-5 text-blue-400" />
+          Action History
+        </h2>
+        <Button
+          size="sm"
+          variant="outline"
+          className="bg-zinc-800 border-zinc-700 text-zinc-200 h-9 text-xs"
+          onClick={downloadActionsExcel}
+          disabled={safeActions.length === 0}
+          data-testid="button-download-actions"
+        >
+          <Download className="h-3.5 w-3.5 mr-1" /> Download Excel
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="text-center py-4 text-zinc-500 text-sm">Loading actions...</div>
+      ) : safeActions.length === 0 ? (
+        <div className="text-center py-8 text-zinc-500 text-sm">No actions recorded yet.</div>
+      ) : (
+        <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
+                  <th className="text-left px-3 py-3">Admin</th>
+                  <th className="text-left px-3 py-3">Action</th>
+                  <th className="text-left px-3 py-3">Target</th>
+                  <th className="text-left px-3 py-3">Details</th>
+                  <th className="text-left px-3 py-3">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {safeActions.slice(0, 50).map((a: any) => (
+                  <tr key={a.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
+                    <td className="px-3 py-3 text-zinc-300 text-xs">{a.admin_email || a.adminEmail}</td>
+                    <td className="px-3 py-3">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                        (a.action_type || a.actionType) === "approve"
+                          ? "bg-green-500/15 text-green-400 border border-green-500/30"
+                          : "bg-red-500/15 text-red-400 border border-red-500/30"
+                      }`}>
+                        {(a.action_type || a.actionType) === "approve" ? "Approved" : "Rejected"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-zinc-400 text-xs">#{a.target_id || a.targetId}</td>
+                    <td className="px-3 py-3 text-zinc-400 text-xs max-w-[300px] truncate">{a.details}</td>
+                    <td className="px-3 py-3 text-zinc-500 text-xs">{(a.created_at || a.createdAt) ? new Date(a.created_at || a.createdAt).toLocaleString() : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ─── Transactions Page ───
 
 function TransactionsPage() {
@@ -1685,6 +1786,37 @@ function TransactionsPage() {
     <div data-testid="admin-transactions-page">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-lg font-semibold">Transactions</h1>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="bg-zinc-800 border-zinc-700 text-zinc-200 h-9 text-xs"
+            onClick={() => {
+              const headers = ["ID","User","Type","Amount","Take Rate %","Platform Fee","Expert Payout","Client Paid","Description","Date"];
+              const rows = filtered.map((t: any) => [
+                t?.id ?? "",
+                t?.userName ?? "",
+                t?.type ?? "",
+                t?.amount ?? 0,
+                t?.takeRatePercent ?? "",
+                t?.platformFee ?? "",
+                t?.expertPayout ?? "",
+                t?.clientPaid ?? "",
+                (t?.description ?? "").replace(/,/g, " "),
+                t?.createdAt ? new Date(t.createdAt).toLocaleString() : "",
+              ]);
+              const csvContent = [headers, ...rows].map(r => r.map((c: any) => `"${c}"`).join(",")).join("\n");
+              const BOM = "\uFEFF";
+              const blob = new Blob([BOM + csvContent], { type: "text/csv;charset=utf-8;" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url; a.download = `a2a-transactions-${new Date().toISOString().split("T")[0]}.csv`;
+              a.click(); URL.revokeObjectURL(url);
+            }}
+            data-testid="button-download-transactions"
+          >
+            <Download className="h-3.5 w-3.5 mr-1" /> Download Excel
+          </Button>
         <Select value={typeFilter} onValueChange={setTypeFilter}>
           <SelectTrigger className="w-36 bg-zinc-900 border-zinc-700 text-zinc-200 h-9 text-xs">
             <SelectValue placeholder="Type" />
@@ -1701,6 +1833,7 @@ function TransactionsPage() {
             <SelectItem value="admin_grant">Admin Grant</SelectItem>
           </SelectContent>
         </Select>
+        </div>
       </div>
 
       {/* Fix 10: Loading and error states */}
@@ -1790,7 +1923,7 @@ function TransactionsPage() {
                   <td className="px-3 py-3 text-right text-amber-400 text-xs">{t?.expertPayout != null ? `$${t.expertPayout}` : "—"}</td>
                   <td className="px-3 py-3 text-right text-zinc-300 text-xs">{t?.clientPaid != null ? `$${t.clientPaid}` : "—"}</td>
                   <td className="px-3 py-3 text-zinc-400 text-xs max-w-[200px] truncate">{t?.description ?? "—"}</td>
-                  <td className="px-3 py-3 text-zinc-500 text-xs">{t?.createdAt ? new Date(t.createdAt).toLocaleDateString() : "—"}</td>
+                  <td className="px-3 py-3 text-zinc-500 text-xs">{formatCentralTime(t?.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -2223,7 +2356,7 @@ function WithdrawalsPage() {
                       {wr.status === "pending" ? "Pending" : wr.status === "payout_initiated" ? "Payout Initiated" : wr.status === "completed" ? "Completed" : wr.status}
                     </Badge>
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{new Date(wr.createdAt).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(wr.createdAt)}</td>
                   <td className="px-4 py-3 text-right">
                     {wr.status === "pending" && (
                       <div className="space-y-1">
@@ -2275,8 +2408,8 @@ function WithdrawalsPage() {
                   <td className="px-4 py-3">
                     <Badge className={`text-xs ${statusColor[w.status] || ""}`}>{w.status}</Badge>
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{new Date(w.createdAt).toLocaleDateString()}</td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{w.processedAt ? new Date(w.processedAt).toLocaleDateString() : "—"}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(w.createdAt)}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(w.processedAt)}</td>
                   <td className="px-4 py-3 text-right">
                     {w.status === "pending" ? (
                       <div className="flex items-center justify-end gap-1">
@@ -2347,7 +2480,7 @@ function NotificationsPage() {
                       <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 text-[10px]">Unread</Badge>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-zinc-500 text-xs">{new Date(n.createdAt).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{formatCentralTime(n.createdAt)}</td>
                 </tr>
               ))}
             </tbody>

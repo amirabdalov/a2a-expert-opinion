@@ -6,7 +6,7 @@ const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 function getAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   // Admin token takes priority (for admin panel), user JWT is fallback
-  const adminToken = sessionStorage.getItem("adminToken");
+  const adminToken = localStorage.getItem("adminToken");
   if (adminToken) {
     headers["Authorization"] = `Bearer ${adminToken}`;
   } else {
@@ -34,7 +34,7 @@ export function safeArray<T = any>(val: unknown): T[] {
 /** BUG-1 fix: Build a file download URL with ?token=JWT so <a href> links authenticate properly.
  *  Also tries cookie-based token as fallback (covers edge cases where in-memory token is lost on refresh). */
 export function getFileDownloadUrl(path: string): string {
-  const adminToken = sessionStorage.getItem("adminToken");
+  const adminToken = localStorage.getItem("adminToken");
   let token = adminToken || getToken();
   // Fallback: read token directly from cookie if in-memory token is null
   if (!token) {

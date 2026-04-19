@@ -44,10 +44,10 @@ function AuthGuard({ children }: { children: ReactNode }) {
 }
 
 // Fix 6: Admin auth guard — redirect to admin login
-// Admin uses sessionStorage (adminToken) or in-memory state
+// Admin uses localStorage (adminToken) for 24h session persistence
 function AdminGuard({ children }: { children: ReactNode }) {
   const [, setLocation] = useLocation();
-  const hasToken = typeof sessionStorage !== "undefined" && !!sessionStorage.getItem("adminToken");
+  const hasToken = typeof localStorage !== "undefined" && !!localStorage.getItem("adminToken");
   useEffect(() => {
     if (!hasToken) {
       setLocation("/admin/login");

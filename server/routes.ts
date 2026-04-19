@@ -1375,6 +1375,31 @@ export async function registerRoutes(
     }
   });
 
+  // FIX-2: Public client reviews for expert (no auth required)
+  app.get("/api/experts/:expertId/client-reviews", async (req, res) => {
+    try {
+      const expertId = parseInt(req.params.expertId);
+      const requests = storage.getRequestsByExpert(expertId);
+      const reviews = requests
+        .filter((r: any) => r.clientRating != null || r.clientRatingComment)
+        .map((r: any) => {
+          const client = r.userId ? storage.getUser(r.userId) : null;
+          return {
+            requestId: r.id,
+            title: r.title,
+            category: r.category,
+            clientRating: r.clientRating,
+            clientRatingComment: r.clientRatingComment || null,
+            clientName: client?.name ? client.name.split(" ")[0] + " " + (client.name.split(" ")[1] || "").charAt(0) + "." : null,
+            completedAt: r.completedAt || r.updatedAt,
+          };
+        });
+      return res.json(reviews);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
   // ─── Request routes ───
 
   app.get("/api/requests/user/:userId", userOrAdminAuth, async (req, res) => {
@@ -2460,6 +2485,16 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/admin/actions — admin action journal
+  app.get("/api/admin/actions", adminAuth, async (_req, res) => {
+    try {
+      const actions = storage.getAllAdminActions();
+      return res.json(actions);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
   // POST /api/admin/reviews/:requestId/approve — approve response, send to client
   // OB-I: Charge client on admin approval. Expert credited later on completion.
   app.post("/api/admin/reviews/:requestId/approve", adminAuth, async (req, res) => {
@@ -2467,6 +2502,9 @@ export async function registerRoutes(
       const requestId = parseInt(String(req.params.requestId));
       const request = storage.getRequest(requestId);
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+      // 2nd-Priority Fix 9: Log admin action
+      const admin = (req as any).admin;
+      storage.createAdminAction({ adminEmail: admin?.email || "unknown", actionType: "approve", targetType: "review", targetId: requestId, details: `Approved request #${requestId}: ${request.title}` });
       if (request.status !== "under_review") {
         return res.status(400).json({ error: true, message: "Request is not under review" });
       }
@@ -2567,6 +2605,9 @@ export async function registerRoutes(
       const { feedback } = req.body;
       const request = storage.getRequest(requestId);
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+      // 2nd-Priority Fix 9: Log admin action
+      const adminUser = (req as any).admin;
+      storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "reject", targetType: "review", targetId: requestId, details: `Rejected request #${requestId}: ${request.title}. Feedback: ${feedback || "none"}` });
       if (request.status !== "under_review") {
         return res.status(400).json({ error: true, message: "Request is not under review" });
       }
@@ -4422,6 +4463,9 @@ export async function registerRoutes(
       if (!wr) return res.status(404).json({ error: true, message: "Withdrawal request not found" });
 
       writeWithdrawalRequestToCloudSql(wr).catch(() => {});
+      // FIX-9: Log admin action
+      const payoutAdmin = (req as any).admin;
+      storage.createAdminAction({ adminEmail: payoutAdmin?.email || "unknown", actionType: "initiate_payout", targetType: "withdrawal", targetId: wrId, details: `Payout $${wr.amount} for invoice ${wr.invoiceNumber}` });
 
       // G2-7: Deduct payout amount from expert's wallet balance
       const expert = storage.getExpert(wr.expertId);
@@ -4551,6 +4595,9 @@ export async function registerRoutes(
       });
       if (!v) return res.status(404).json({ error: true, message: "Verification not found" });
       writeExpertVerificationToCloudSql(v).catch(() => {});
+      // FIX-9: Log admin action
+      const adminUser = (req as any).admin;
+      storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "verify_bank", targetType: "verification", targetId: vId, details: `Verified bank details for expert verification #${vId}` });
       return res.json(v);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });

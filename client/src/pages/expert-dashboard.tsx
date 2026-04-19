@@ -35,6 +35,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Request as ExpertRequest, Expert, ExpertReview, Message, CreditTransaction } from "@shared/schema";
 
+// 2nd-Priority Fix 3: Format date to US Central time (h:mm AM/PM)
+function formatCentralTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return "—";
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+  } catch { return "—"; }
+}
+
 type ExpertView = "overview" | "queue" | "active" | "completed" | "earnings" | "profile" | "review-detail";
 
 // ─── Mobile Bottom Tab Bar ───
@@ -113,7 +122,7 @@ function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView:
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <img src="/a2a-blue-logo.svg" alt="A2A" className="h-7 w-7 shrink-0" />
+          <img src="/a2a-blue-logo.svg" alt="A2A" className="h-14 w-14 shrink-0 bg-white rounded-lg p-1" />
           <span className="font-semibold text-sm text-sidebar-foreground">Expert Portal</span>
         </div>
       </SidebarHeader>
@@ -317,7 +326,7 @@ function PendingRequestGroup({ requestId, reviews, onClaim, isPending, onSkip }:
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
-            <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{request.createdAt ? new Date(request.createdAt).toLocaleDateString() : "—"}</span>
+            <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{formatCentralTime(request.createdAt)}</span>
             <span className="flex items-center gap-1" data-testid={`time-${requestId}`}><Clock className="h-3 w-3" />{payout.time}</span>
             {request.serviceType === "rate" && (
               <span className="flex items-center gap-1"><User className="h-3 w-3" />{completedCount}/{totalCount} responded</span>
@@ -943,19 +952,46 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
             <Clock className="h-5 w-5 text-amber-500 shrink-0" />
             <div>
               <p className="text-sm font-semibold text-amber-800 dark:text-amber-400">Under A2A Global Verification</p>
-              <p className="text-xs text-muted-foreground">${getExpertPayout(request)} payout pending after A2A Global verification</p>
+              <p className="text-xs text-muted-foreground">${getExpertPayout(request)} pending (under client's review)</p>
             </div>
           </CardContent>
         </Card>
       )}
       {isCompleted && (request.status === "awaiting_followup" || request.status === "completed") && (
-        <Card className="mt-4 border-green-300 bg-green-50/50 dark:bg-green-900/10 dark:border-green-900/30">
+        <Card className={`mt-4 ${request.clientRating != null ? "border-green-300 bg-green-50/50 dark:bg-green-900/10 dark:border-green-900/30" : "border-amber-300 bg-amber-50/50 dark:bg-amber-900/10 dark:border-amber-900/30"}`}>
           <CardContent className="p-4 flex items-center gap-3">
-            <CheckCircle className="h-5 w-5 text-green-500 shrink-0" />
-            <div>
-              <p className="text-sm font-semibold text-green-800 dark:text-green-400">Verified & Approved</p>
-              <p className="text-xs text-green-600">${getExpertPayout(request)} earned</p>
+            {request.clientRating != null ? (
+              <>
+                <CheckCircle className="h-5 w-5 text-green-500 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-green-800 dark:text-green-400">Verified & Approved</p>
+                  <p className="text-xs text-green-600">${getExpertPayout(request)} earned</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <Clock className="h-5 w-5 text-amber-500 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-amber-800 dark:text-amber-400">Awaiting Client's Review</p>
+                  <p className="text-xs text-amber-600">${getExpertPayout(request)} pending (under client's review)</p>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* FIX-2: Client review/feedback display */}
+      {request.clientRating && (
+        <Card className="mt-4 border-yellow-200 bg-yellow-50/50 dark:bg-yellow-900/10 dark:border-yellow-800/30">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Star className="h-4 w-4 text-yellow-500" />
+              <p className="text-sm font-semibold">Client Review: {request.clientRating}/5</p>
             </div>
+            {request.clientRatingComment && (
+              <p className="text-sm text-muted-foreground italic">"{request.clientRatingComment}"</p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -1000,7 +1036,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                       }`}>{evt.actorName || "Client"}</p>
                       <p className="whitespace-pre-wrap text-foreground">{evt.message}</p>
                       {evt.createdAt && (
-                        <p className="text-[10px] text-muted-foreground mt-1">{new Date(evt.createdAt).toLocaleString()}</p>
+                        <p className="text-[10px] text-muted-foreground mt-1">{formatCentralTime(evt.createdAt)}</p>
                       )}
                     </div>
                   </div>
@@ -1046,7 +1082,7 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
 // ─── Completed History ───
 function CompletedHistory({ expertId, setView, setSelectedReview }: { expertId: number; setView: (v: ExpertView) => void; setSelectedReview: (id: number) => void }) {
   const { data: allReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expertId] });
-  const completed = allReviews?.filter((r) => r.status === "completed") ?? [];
+  const completed = [...(allReviews?.filter((r) => r.status === "completed") ?? [])].sort((a, b) => new Date(b.completedAt || 0).getTime() - new Date(a.completedAt || 0).getTime());
 
   return (
     <div className="p-6" data-testid="expert-view-completed">
@@ -1082,7 +1118,7 @@ function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClic
               <h3 className="text-sm font-semibold">{request.title}</h3>
               <Badge className={`text-[10px] ${serviceTypeBadge(request.serviceType)}`}>{request.serviceType}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">{request.category} · Submitted {review.completedAt ? new Date(review.completedAt).toLocaleDateString() : ""}</p>
+            <p className="text-xs text-muted-foreground">{request.category} · Submitted {formatCentralTime(review.completedAt)}</p>
           </div>
           <div className="text-right space-y-1">
             {request.serviceType === "rate" && review.rating && (
@@ -1094,10 +1130,16 @@ function CompletedReviewCard({ review, onClick }: { review: ExpertReview; onClic
                 <p className="text-[10px] text-muted-foreground">${getExpertPayout(request)} payout pending after verification</p>
               </>
             )}
-            {isApproved && (
+            {isApproved && request.clientRating != null && (
               <>
                 <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 text-xs">Approved</Badge>
                 <p className="text-[10px] text-green-600 font-medium">${getExpertPayout(request)} earned</p>
+              </>
+            )}
+            {isApproved && request.clientRating == null && (
+              <>
+                <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 text-xs">Approved</Badge>
+                <p className="text-[10px] text-amber-600 font-medium">${getExpertPayout(request)} pending (under client's review)</p>
               </>
             )}
             {!isUnderReview && !isApproved && (
@@ -1237,7 +1279,7 @@ function InvoiceDocument({ data, userId }: { data: InvoiceData; userId: number }
             {data.lineItems.map((item, idx) => (
               <tr key={idx} className="border-b border-slate-100">
                 <td className="py-2 px-3">{item.title} — {item.serviceType} review</td>
-                <td className="py-2 px-3 text-slate-500">{new Date(item.completedAt).toLocaleDateString()}</td>
+                <td className="py-2 px-3 text-slate-500">{formatCentralTime(item.completedAt)}</td>
                 <td className="py-2 px-3 text-right">{item.creditsCost}</td>
                 <td className="py-2 px-3 text-right font-mono">${(item.amountCents / 100).toFixed(2)}</td>
               </tr>
@@ -1309,7 +1351,7 @@ function WithdrawalHistory({ expertId }: { expertId?: number }) {
           <tbody>
             {invoices.map((inv: any) => (
               <tr key={inv.id} className="border-t">
-                <td className="p-3 text-xs text-muted-foreground">{new Date(inv.createdAt).toLocaleDateString()}</td>
+                <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(inv.createdAt)}</td>
                 <td className="p-3 text-sm font-mono">{inv.invoiceNumber}</td>
                 <td className="p-3 text-right text-sm">${(inv.totalAmount / 100).toFixed(2)}</td>
                 <td className="p-3 text-right text-sm font-medium text-green-600">${(inv.netPayout / 100).toFixed(2)}</td>
@@ -2118,7 +2160,7 @@ function Earnings({ userId }: { userId: number }) {
               <tbody>
                 {withdrawalRequests.map((wr: any) => (
                   <tr key={wr.id} className="border-t">
-                    <td className="p-3 text-xs text-muted-foreground">{new Date(wr.createdAt).toLocaleDateString()}</td>
+                    <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(wr.createdAt)}</td>
                     <td className="p-3 text-sm font-mono">{wr.invoiceNumber}</td>
                     <td className="p-3 text-right text-sm font-medium">${wr.amount}</td>
                     <td className="p-3 text-right">
@@ -2152,7 +2194,7 @@ function Earnings({ userId }: { userId: number }) {
               <tr><td colSpan={3} className="p-6 text-center text-sm text-muted-foreground">No earnings yet</td></tr>
             ) : earningsTxs.map((tx) => (
               <tr key={tx.id} className="border-t">
-                <td className="p-3 text-xs text-muted-foreground">{new Date(tx.createdAt).toLocaleDateString()}</td>
+                <td className="p-3 text-xs text-muted-foreground">{formatCentralTime(tx.createdAt)}</td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3 text-right text-sm font-medium text-green-600">+${tx.amount} credits</td>
               </tr>
@@ -2244,8 +2286,10 @@ function ExpertProfile({ expert }: { expert: Expert }) {
     try {
       const formData = new FormData();
       formData.append('photo', file);
+      const token = document.cookie.match(/(?:^|;\s*)a2a_token=([^;]*)/)?.[1];
       const res = await fetch(`/api/users/${user.id}/photo`, {
         method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${decodeURIComponent(token)}` } : {},
         body: formData,
       });
       if (!res.ok) throw new Error(await res.text());
@@ -2570,7 +2614,53 @@ function ExpertProfile({ expert }: { expert: Expert }) {
           {mutation.isPending ? "Saving..." : "Save Profile"}
         </Button>
       </div>
+
+      {/* FIX-2: Client Reviews section */}
+      <ClientReviewsSection expertId={expert.id} />
     </div>
+  );
+}
+
+function ClientReviewsSection({ expertId }: { expertId: number }) {
+  const { data: reviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expertId] });
+  const completedReviews = (reviews || []).filter((r: any) => r.status === "completed");
+
+  // Fetch requests for completed reviews to get clientRating
+  const requestIds = completedReviews.map((r: any) => r.requestId).filter(Boolean);
+  const requestQueries = requestIds.map((rid: number) =>
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useQuery<any>({ queryKey: ["/api/requests", rid], enabled: !!rid })
+  );
+  const requests = requestQueries.map((q: any) => q.data).filter(Boolean);
+  const reviewedRequests = requests.filter((r: any) => r.clientRating != null);
+
+  if (reviewedRequests.length === 0) return null;
+
+  return (
+    <Card className="mt-6">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Star className="h-4 w-4 text-yellow-500" />
+          Client Reviews ({reviewedRequests.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {reviewedRequests.map((req: any) => (
+          <div key={req.id} className="border-b border-muted last:border-0 pb-3 last:pb-0">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-sm font-medium truncate">{req.title}</p>
+              <div className="flex items-center gap-1">
+                <Star className="h-3 w-3 text-yellow-500" />
+                <span className="text-sm font-bold">{req.clientRating}/5</span>
+              </div>
+            </div>
+            {req.clientRatingComment && (
+              <p className="text-xs text-muted-foreground italic">"{req.clientRatingComment}"</p>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2847,7 +2937,7 @@ export default function ExpertDashboard() {
           <header className="flex items-center justify-between px-4 py-2 border-b bg-background gap-3">
             <div className="hidden md:block"><SidebarTrigger data-testid="button-expert-sidebar-toggle" /></div>
             <div className="md:hidden flex items-center gap-2">
-              <img src="/a2a-blue-logo.svg" alt="A2A" className="h-7 w-7 shrink-0" />
+              <img src="/a2a-blue-logo.svg" alt="A2A" className="h-14 w-14 shrink-0 bg-white rounded-lg p-1" />
               <span className="font-semibold text-sm">A2A</span>
             </div>
             {/* Global search bar (change #11) */}

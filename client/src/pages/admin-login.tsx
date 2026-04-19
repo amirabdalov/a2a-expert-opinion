@@ -15,22 +15,36 @@ const adminListeners: Array<() => void> = [];
 export function setAdmin(admin: typeof currentAdmin) {
   currentAdmin = admin;
   if (admin?.token) {
-    sessionStorage.setItem("adminToken", admin.token);
+    localStorage.setItem("adminToken", admin.token);
+  }
+  if (admin) {
+    localStorage.setItem("adminData", JSON.stringify({ id: admin.id, email: admin.email, name: admin.name }));
   }
   adminListeners.forEach(fn => fn());
 }
 
 export function getAdmin() {
+  if (!currentAdmin) {
+    const saved = localStorage.getItem("adminData");
+    const token = localStorage.getItem("adminToken");
+    if (saved && token) {
+      try {
+        const parsed = JSON.parse(saved);
+        currentAdmin = { ...parsed, token };
+      } catch {}
+    }
+  }
   return currentAdmin;
 }
 
 export function getAdminToken(): string | null {
-  return currentAdmin?.token || sessionStorage.getItem("adminToken") || null;
+  return currentAdmin?.token || localStorage.getItem("adminToken") || null;
 }
 
 export function clearAdmin() {
   currentAdmin = null;
-  sessionStorage.removeItem("adminToken");
+  localStorage.removeItem("adminToken");
+  localStorage.removeItem("adminData");
   adminListeners.forEach(fn => fn());
 }
 
