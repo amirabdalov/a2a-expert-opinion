@@ -1586,12 +1586,13 @@ export async function registerRoutes(
 
       const numReviews = sType === "rate" ? Math.max(1, Math.min(10, expertsNeeded || 1)) : 1;
       for (let i = 0; i < numReviews; i++) {
-        storage.createExpertReview({
+        const pendingReview = storage.createExpertReview({
           requestId: request.id, expertId: null, status: "pending",
           rating: null, ratingComment: null,
           correctPoints: null, incorrectPoints: null, suggestions: null,
           deliverable: null, completedAt: null,
         });
+        writeExpertReviewToCloudSql(pendingReview).catch(() => {});
       }
 
       // Log timeline event
@@ -2412,6 +2413,7 @@ export async function registerRoutes(
         expertId,
         status: "in_progress",
       });
+      writeExpertReviewToCloudSql(newReview).catch(() => {});
       // Update the request
       storage.updateRequest(request.id, { expertId, status: "in_progress" });
 
@@ -2444,6 +2446,7 @@ export async function registerRoutes(
     const updated = storage.updateExpertReview(review.id, {
       expertId, status: "in_progress",
     });
+    if (updated) writeExpertReviewToCloudSql(updated).catch(() => {});
 
     // Also update the parent request: set expertId and status to in_progress
     const request = storage.getRequest(review.requestId);
@@ -2489,6 +2492,7 @@ export async function registerRoutes(
         expertId: request.expertId,
         status: "in_progress",
       });
+      writeExpertReviewToCloudSql(review).catch(() => {});
     }
 
     // Verify authUser is the review's expert
@@ -2509,6 +2513,7 @@ export async function registerRoutes(
       ...(suggestions !== undefined && { suggestions }),
       ...(deliverable !== undefined && { deliverable }),
     });
+    if (updated) writeExpertReviewToCloudSql(updated).catch(() => {});
 
     if (updated) {
       const allReviews = storage.getReviewsByRequest(review.requestId);
@@ -2624,6 +2629,7 @@ export async function registerRoutes(
           expertId: request.expertId,
           status: "in_progress",
         });
+        writeExpertReviewToCloudSql(review).catch(() => {});
       }
       if (review.status === "completed") {
         return res.status(400).json({ error: true, message: "Review already completed" });
@@ -2641,6 +2647,7 @@ export async function registerRoutes(
         status: "completed",
         completedAt: new Date().toISOString(),
       });
+      if (updated) writeExpertReviewToCloudSql(updated).catch(() => {});
 
       // Mark the REQUEST as under_review (not yet visible to client)
       storage.updateRequest(review.requestId, { status: "under_review" });
@@ -2855,8 +2862,9 @@ export async function registerRoutes(
       const allReviews = storage.getReviewsByRequest(requestId);
       for (const rev of allReviews) {
         if (rev.status === "completed") {
-          storage.updateExpertReview(rev.id, { status: "in_progress" });
+          const revertedReview = storage.updateExpertReview(rev.id, { status: "in_progress" });
           sqlite.prepare("UPDATE expert_reviews SET completed_at = NULL WHERE id = ?").run(rev.id);
+          if (revertedReview) writeExpertReviewToCloudSql({ ...revertedReview, completedAt: null }).catch(() => {});
         }
       }
 
