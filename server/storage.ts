@@ -124,6 +124,19 @@ sqlite.exec(`
     details TEXT,
     created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS topup_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT,
+    amount_dollars REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_notes TEXT,
+    verified_by TEXT,
+    verified_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS expert_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id INTEGER NOT NULL REFERENCES requests(id),
@@ -321,6 +334,26 @@ try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN uploader_id INTEGER")
 try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN uploader_role TEXT"); } catch {}
 try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN gcs_path TEXT"); } catch {}
 console.log("[DB] file_attachments uploader columns ensured.");
+
+// Topup requests table — ensure it exists (may already be created by inline DDL)
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS topup_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL DEFAULT '',
+    user_name TEXT,
+    amount_dollars REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_notes TEXT,
+    verified_by TEXT,
+    verified_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+  console.log("[DB] topup_requests table ensured.");
+} catch (e: any) {
+  console.log("[DB] topup_requests migration:", e.message);
+}
 
 // Fix mislogged admin actions: update action_type values for withdrawal actions that were logged
 // with wrong types (e.g., "approve" instead of "approve_withdrawal" for withdrawal targets)
@@ -813,11 +846,31 @@ export class DatabaseStorage implements IStorage {
   createAdminAction(data: { adminEmail: string; actionType: string; targetType: string; targetId?: number; details?: string }): any {
     const stmt = sqlite.prepare("INSERT INTO admin_actions (admin_email, action_type, target_type, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?)");
     const now = new Date().toISOString();
-    stmt.run(data.adminEmail, data.actionType, data.targetType, data.targetId || null, data.details || null, now);
-    return { ...data, createdAt: now };
+    const result = stmt.run(data.adminEmail, data.actionType, data.targetType, data.targetId || null, data.details || null, now);
+    const id = Number(result.lastInsertRowid);
+    return { id, ...data, createdAt: now };
   }
   getAllAdminActions(): any[] {
     return sqlite.prepare("SELECT * FROM admin_actions ORDER BY created_at DESC").all();
+  }
+
+  // Topup Requests
+  createTopupRequest(data: { userId: number; userEmail: string; userName: string; amountDollars: number }): any {
+    const now = new Date().toISOString();
+    const result = sqlite.prepare("INSERT INTO topup_requests (user_id, user_email, user_name, amount_dollars, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)").run(data.userId, data.userEmail, data.userName, data.amountDollars, now, now);
+    return { id: Number(result.lastInsertRowid), userId: data.userId, userEmail: data.userEmail, userName: data.userName, amountDollars: data.amountDollars, status: "pending", createdAt: now };
+  }
+  getAllTopupRequests(): any[] {
+    return sqlite.prepare("SELECT * FROM topup_requests ORDER BY created_at DESC").all();
+  }
+  getTopupRequest(id: number): any {
+    return sqlite.prepare("SELECT * FROM topup_requests WHERE id = ?").get(id);
+  }
+  updateTopupRequest(id: number, updates: Record<string, any>): any {
+    const fields = Object.keys(updates).map(k => `${k} = ?`).join(", ");
+    const values = Object.values(updates);
+    sqlite.prepare(`UPDATE topup_requests SET ${fields}, updated_at = ? WHERE id = ?`).run(...values, new Date().toISOString(), id);
+    return sqlite.prepare("SELECT * FROM topup_requests WHERE id = ?").get(id);
   }
 
   // Request Events

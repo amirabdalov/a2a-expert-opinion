@@ -331,6 +331,30 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       created_at TEXT,
       updated_at TEXT
     )`,
+    // Admin actions table for Cloud SQL persistence
+    `CREATE TABLE IF NOT EXISTS admin_actions (
+      id SERIAL PRIMARY KEY,
+      admin_email TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id INTEGER,
+      details TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    // Topup requests table for manual bank transfer top-ups
+    `CREATE TABLE IF NOT EXISTS topup_requests (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      user_email TEXT NOT NULL DEFAULT '',
+      user_name TEXT,
+      amount_dollars REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      admin_notes TEXT,
+      verified_by TEXT,
+      verified_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
     // Backfill NULLs in Cloud SQL
     "UPDATE users SET created_at = NOW() WHERE created_at IS NULL",
     "UPDATE users SET updated_at = NOW() WHERE updated_at IS NULL",
@@ -671,6 +695,58 @@ export async function writeWithdrawalRequestToCloudSql(w: any): Promise<void> {
     );
   } catch (err) {
     console.error("[CLOUD-SQL] WithdrawalRequest write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+export async function writeAdminActionToCloudSql(action: {
+  id: number;
+  adminEmail: string;
+  actionType: string;
+  targetType: string;
+  targetId?: number | null;
+  details?: string | null;
+  createdAt: string;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO admin_actions (id, admin_email, action_type, target_type, target_id, details, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET
+         admin_email = EXCLUDED.admin_email,
+         action_type = EXCLUDED.action_type,
+         target_type = EXCLUDED.target_type,
+         target_id = EXCLUDED.target_id,
+         details = EXCLUDED.details`,
+      [action.id, action.adminEmail, action.actionType, action.targetType, action.targetId || null, action.details || null, action.createdAt]
+    );
+  } catch (err) {
+    console.error("[CLOUD-SQL] AdminAction write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+export async function writeTopupRequestToCloudSql(data: {
+  id: number; userId: number; userEmail?: string; userName?: string; amountDollars: number; status: string;
+  adminNotes?: string | null; verifiedBy?: string | null; verifiedAt?: string | null; createdAt: string;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO topup_requests (id, user_id, user_email, user_name, amount_dollars, status, admin_notes, verified_by, verified_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         admin_notes = EXCLUDED.admin_notes,
+         verified_by = EXCLUDED.verified_by,
+         verified_at = EXCLUDED.verified_at,
+         updated_at = NOW()`,
+      [data.id, data.userId, data.userEmail || '', data.userName || null, data.amountDollars, data.status,
+       data.adminNotes || null, data.verifiedBy || null, data.verifiedAt || null, data.createdAt]
+    );
+  } catch (err) {
+    console.error("[CLOUD-SQL] TopupRequest write failed:", (err as Error).message?.substring(0, 100));
   }
 }
 
@@ -1072,6 +1148,46 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       }
       console.log(`[RESTORE] Withdrawal requests: ${wrInserted} inserted, ${wrUpdated} updated, ${wrSkipped} skipped`);
     } catch (err) { console.error("[RESTORE] withdrawal_requests failed:", (err as Error).message?.substring(0, 80)); }
+
+    // Restore topup_requests
+    try {
+      const result = await pool.query("SELECT * FROM topup_requests ORDER BY id");
+      let trInserted = 0;
+      for (const t of result.rows) {
+        try {
+          const existing = sqliteDb.prepare("SELECT id FROM topup_requests WHERE id = ?").get(t.id);
+          if (!existing) {
+            sqliteDb.prepare("INSERT INTO topup_requests (id, user_id, user_email, user_name, amount_dollars, status, admin_notes, verified_by, verified_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+              t.id, t.user_id, t.user_email || '', t.user_name || null, t.amount_dollars, t.status, t.admin_notes || null,
+              t.verified_by || null,
+              t.verified_at ? new Date(t.verified_at).toISOString() : null,
+              t.created_at ? new Date(t.created_at).toISOString() : new Date().toISOString(), new Date().toISOString()
+            );
+            trInserted++;
+          }
+        } catch {}
+      }
+      console.log(`[RESTORE] Topup requests: ${trInserted} inserted, ${result.rows.length - trInserted} skipped`);
+    } catch (err) { console.error("[RESTORE] topup_requests failed:", (err as Error).message?.substring(0, 80)); }
+
+    // Restore admin_actions
+    try {
+      const result = await pool.query("SELECT * FROM admin_actions ORDER BY id");
+      let aaInserted = 0;
+      for (const a of result.rows) {
+        try {
+          const existing = sqliteDb.prepare("SELECT id FROM admin_actions WHERE id = ?").get(a.id);
+          if (!existing) {
+            sqliteDb.prepare("INSERT INTO admin_actions (id, admin_email, action_type, target_type, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+              a.id, a.admin_email, a.action_type, a.target_type, a.target_id || null, a.details || null,
+              a.created_at ? new Date(a.created_at).toISOString() : new Date().toISOString()
+            );
+            aaInserted++;
+          }
+        } catch {}
+      }
+      console.log(`[RESTORE] Admin actions: ${aaInserted} inserted, ${result.rows.length - aaInserted} skipped`);
+    } catch (err) { console.error("[RESTORE] admin_actions failed:", (err as Error).message?.substring(0, 80)); }
 
     // Verify
     const countResult = sqliteDb.prepare("SELECT COUNT(*) as cnt FROM users").get() as { cnt: number };

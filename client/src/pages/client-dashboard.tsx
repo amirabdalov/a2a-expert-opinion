@@ -32,10 +32,10 @@ import {
 } from "@/lib/pricing-tiers";
 import {
   LayoutDashboard, PlusCircle, List, CreditCard, Settings, LogOut,
-  Send, Clock, CheckCircle, AlertCircle, Coins, ArrowRight, ArrowLeft, MessageSquare,
+  Send, Clock, CheckCircle, CheckCircle2, AlertCircle, Coins, ArrowRight, ArrowLeft, MessageSquare,
   Star, Search, Wrench, Paperclip, X, FileText, User, DollarSign, RefreshCcw,
   ChevronDown, ChevronUp, ShieldCheck, Briefcase, Timer, FileBarChart, Circle,
-  Upload, Camera, Bot, HelpCircle, Mail, Phone, ExternalLink,
+  Upload, Camera, Bot, HelpCircle, Mail, Phone, ExternalLink, Info,
 } from "lucide-react";
 import type { Request as ExpertRequest, Message, CreditTransaction, ExpertReview, Expert, RequestEvent } from "@shared/schema";
 
@@ -2070,6 +2070,7 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
   const topUpAmount = Math.max(5, Math.min(10000, Number(topUpAmountStr) || 0));
   const [showDraftBanner, setShowDraftBanner] = useState(false);
   const [draftIdForBanner, setDraftIdForBanner] = useState<number | null>(null);
+  const [showTopUpConfirmation, setShowTopUpConfirmation] = useState(false);
   const { toast } = useToast();
 
   // Fetch existing drafts
@@ -2083,19 +2084,18 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
 
   const topUpMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/credits/topup", { userId, amountDollars: topUpAmount });
+      const res = await apiRequest("POST", "/api/credits/topup-request", { userId, amountDollars: topUpAmount });
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/credits", userId] });
-      // FIX-3: Immediately sync credits balance after top-up
       queryClient.invalidateQueries({ queryKey: ['/api/users', userId] });
-      toast({ title: "Credits purchased!", description: `$${topUpAmount} added to your account.` });
+      toast({ title: "Top-up request submitted", description: "We'll send you a bank transfer invoice via email shortly." });
+      setShowTopUpConfirmation(true);
       // Check for draft requests and show notification
       if (drafts && drafts.length > 0) {
         setShowDraftBanner(true);
         setDraftIdForBanner(drafts[0].id);
-        // Also create a notification via API
         apiRequest("POST", "/api/notifications/create", {
           userId,
           title: "Draft request waiting",
@@ -2198,66 +2198,101 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
         </CardContent>
       </Card>
 
-      {/* Custom Top-Up */}
-      <Card className="mb-6" data-testid="card-custom-topup">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Top Up Credits</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
+      {/* Bank Transfer Info */}
+      <Card className="mb-6 border-blue-200 bg-blue-50 dark:bg-blue-900/10 dark:border-blue-900/30">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <Info className="h-5 w-5 text-blue-500 mt-0.5 shrink-0" />
             <div>
-              <Label className="text-sm">Enter amount ($5 – $10,000)</Label>
-              <div className="flex gap-3 mt-2">
-                <div className="relative flex-1">
-                  <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    type="number"
-                    min={5}
-                    max={10000}
-                    value={topUpAmountStr}
-                    onChange={(e) => setTopUpAmountStr(e.target.value)}
-                    onBlur={() => { if (!topUpAmountStr || Number(topUpAmountStr) < 5) setTopUpAmountStr("5"); }}
-                    className="pl-8"
-                    data-testid="input-topup-amount"
-                  />
-                </div>
-                <Button onClick={() => topUpMutation.mutate()} disabled={topUpMutation.isPending || topUpAmount < 5} data-testid="button-topup">
-                  {topUpMutation.isPending ? "Processing..." : `Top Up $${topUpAmount}`}
-                </Button>
-              </div>
-            </div>
-
-            <div>
-              <Slider
-                value={[topUpAmount]}
-                onValueChange={([v]) => setTopUpAmountStr(String(v))}
-                min={5} max={500} step={5}
-                className="mt-1"
-                data-testid="slider-topup"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
-                <span>$5</span><span>$250</span><span>$500</span>
-              </div>
-            </div>
-
-            <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg p-3" data-testid="topup-breakdown">
-              <p className="text-xs font-medium text-blue-800 dark:text-blue-300 mb-2">With ${topUpAmount}, you can submit approximately:</p>
-              <div className="grid grid-cols-3 gap-3 text-center">
-                <div>
-                  <p className="text-lg font-bold text-blue-600">{topUpBreakdown.standard}</p>
-                  <p className="text-[10px] text-muted-foreground">Standard sense checks ($2.50 each)</p>
-                </div>
-                <div>
-                  <p className="text-lg font-bold text-indigo-600">{topUpBreakdown.pro}</p>
-                  <p className="text-[10px] text-muted-foreground">Pro full reviews ($50 each)</p>
-                </div>
-                <div>
-                  <p className="text-lg font-bold text-amber-600">{topUpBreakdown.guru}</p>
-                  <p className="text-[10px] text-muted-foreground">Guru consultations ($300 each)</p>
-                </div>
-              </div>
+              <p className="text-sm font-medium text-blue-800 dark:text-blue-300 mb-2">Soft-Launch: Bank Transfers Only</p>
+              <p className="text-sm text-blue-700 dark:text-blue-400">
+                During the soft-launch period, we accept bank transfers only. Submit a top-up request below and we will send you an invoice with the requested amount via email. After you make the transfer and we receive the funds, we will add the credits to your account.
+              </p>
+              <p className="text-sm text-blue-600 dark:text-blue-500 mt-2 font-medium">
+                Card payments will be available within the next 3 weeks.
+              </p>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Top-Up Request Form */}
+      <Card className="mb-6" data-testid="card-custom-topup">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Request Top-Up</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {showTopUpConfirmation ? (
+            <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800/30 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-green-800 dark:text-green-300">Top-up request submitted</p>
+                  <p className="text-sm text-green-700 dark:text-green-400 mt-1">
+                    We will send you an invoice via email shortly. Once the bank transfer is received and verified, credits will be added to your account automatically.
+                  </p>
+                  <Button size="sm" variant="outline" className="mt-3" onClick={() => setShowTopUpConfirmation(false)} data-testid="button-new-topup">
+                    Submit another request
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <Label className="text-sm">Enter amount ($5 \u2013 $10,000)</Label>
+                <div className="flex gap-3 mt-2">
+                  <div className="relative flex-1">
+                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="number"
+                      min={5}
+                      max={10000}
+                      value={topUpAmountStr}
+                      onChange={(e) => setTopUpAmountStr(e.target.value)}
+                      onBlur={() => { if (!topUpAmountStr || Number(topUpAmountStr) < 5) setTopUpAmountStr("5"); }}
+                      className="pl-8"
+                      data-testid="input-topup-amount"
+                    />
+                  </div>
+                  <Button onClick={() => topUpMutation.mutate()} disabled={topUpMutation.isPending || topUpAmount < 5} data-testid="button-topup">
+                    {topUpMutation.isPending ? "Submitting..." : `Request $${topUpAmount} Top-Up`}
+                  </Button>
+                </div>
+              </div>
+
+              <div>
+                <Slider
+                  value={[topUpAmount]}
+                  onValueChange={([v]) => setTopUpAmountStr(String(v))}
+                  min={5} max={500} step={5}
+                  className="mt-1"
+                  data-testid="slider-topup"
+                />
+                <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                  <span>$5</span><span>$250</span><span>$500</span>
+                </div>
+              </div>
+
+              <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg p-3" data-testid="topup-breakdown">
+                <p className="text-xs font-medium text-blue-800 dark:text-blue-300 mb-2">With ${topUpAmount}, you can submit approximately:</p>
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div>
+                    <p className="text-lg font-bold text-blue-600">{topUpBreakdown.standard}</p>
+                    <p className="text-[10px] text-muted-foreground">Standard sense checks ($2.50 each)</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-indigo-600">{topUpBreakdown.pro}</p>
+                    <p className="text-[10px] text-muted-foreground">Pro full reviews ($50 each)</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-amber-600">{topUpBreakdown.guru}</p>
+                    <p className="text-[10px] text-muted-foreground">Guru consultations ($300 each)</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -489,6 +489,9 @@ function ReviewQueuePanel() {
         </div>
       )}
 
+      {/* Top-Up Requests (soft launch — bank transfer) */}
+      <TopUpRequestsSection />
+
       {/* 2nd-Priority Fix 9: Action History/Journal */}
       <AdminActionJournal />
     </div>
@@ -1658,6 +1661,105 @@ function RequestsPage() {
 }
 
 
+// ─── Top-Up Requests Section (soft launch — bank transfer) ───
+function TopUpRequestsSection() {
+  const { data: requests, isLoading } = useQuery<any[]>({
+    queryKey: ["/api/admin/topup-requests"],
+    refetchInterval: 30000,
+  });
+  const { toast } = useToast();
+  const verifyMut = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/admin/topup-requests/${id}/verify`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/topup-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/actions"] });
+      toast({ title: "Top-up verified", description: "Credits added and client notified via email." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+  const rejectMut = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/admin/topup-requests/${id}/reject`, { reason: "Bank transfer not received" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/topup-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/actions"] });
+      toast({ title: "Top-up rejected", description: "Client has been notified." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const safeRequests = Array.isArray(requests) ? requests : [];
+  const pending = safeRequests.filter((r: any) => r.status === "pending");
+
+  if (isLoading) return null;
+  if (safeRequests.length === 0) return null;
+
+  return (
+    <div className="mt-8">
+      <h2 className="text-lg font-semibold text-zinc-100 flex items-center gap-2 mb-4">
+        <CreditCard className="h-5 w-5 text-green-400" />
+        Top-Up Requests {pending.length > 0 && <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-xs">{pending.length} pending</Badge>}
+      </h2>
+      <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
+                <th className="text-left px-3 py-3">Client</th>
+                <th className="text-left px-3 py-3">Amount</th>
+                <th className="text-left px-3 py-3">Current Balance</th>
+                <th className="text-left px-3 py-3">Status</th>
+                <th className="text-left px-3 py-3">Date</th>
+                <th className="text-right px-3 py-3">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {safeRequests.map((r: any) => (
+                <tr key={r.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
+                  <td className="px-3 py-3">
+                    <p className="text-zinc-200 text-xs font-medium">{r.userName || r.user_name}</p>
+                    <p className="text-zinc-500 text-[10px]">{r.userEmail || r.user_email}</p>
+                  </td>
+                  <td className="px-3 py-3 text-green-400 font-semibold text-sm">${r.amount_dollars || r.amountDollars}</td>
+                  <td className="px-3 py-3 text-zinc-400 text-xs">{r.userCredits ?? r.user_credits ?? "—"} credits</td>
+                  <td className="px-3 py-3">
+                    <Badge className={`text-[10px] ${r.status === "pending" ? "bg-amber-500/15 text-amber-400 border-amber-500/30" : r.status === "rejected" ? "bg-red-500/15 text-red-400 border-red-500/30" : "bg-green-500/15 text-green-400 border-green-500/30"}`}>
+                      {r.status === "pending" ? "Pending" : r.status === "rejected" ? "Rejected" : "Verified"}
+                    </Badge>
+                  </td>
+                  <td className="px-3 py-3 text-zinc-500 text-xs"><span title="US Central time zone">{formatCentralTime(r.created_at || r.createdAt)}</span></td>
+                  <td className="px-3 py-3 text-right">
+                    {r.status === "pending" && (
+                      <div className="flex gap-2 justify-end">
+                        <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white" onClick={() => verifyMut.mutate(r.id)} disabled={verifyMut.isPending || rejectMut.isPending}>
+                          {verifyMut.isPending ? "..." : "Verify"}
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-7 text-xs border-red-500/30 text-red-400 hover:bg-red-500/10" onClick={() => rejectMut.mutate(r.id)} disabled={verifyMut.isPending || rejectMut.isPending}>
+                          {rejectMut.isPending ? "..." : "Reject"}
+                        </Button>
+                      </div>
+                    )}
+                    {r.status === "verified" && (
+                      <span className="text-[10px] text-zinc-500">By {r.verified_by || r.adminVerifiedBy}</span>
+                    )}
+                    {r.status === "rejected" && (
+                      <span className="text-[10px] text-zinc-500">By {r.verified_by || r.adminVerifiedBy}</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 // 2nd-Priority Fix 9: Admin Action Journal
 function AdminActionJournal() {
   const { data: actions, isLoading } = useQuery<any[]>({
@@ -1734,7 +1836,7 @@ function AdminActionJournal() {
                     <td className="px-3 py-3">
                       {(() => {
                         const actionType = a.action_type || a.actionType;
-                        const greenActions = ["approve", "verify_bank", "approve_withdrawal"];
+                        const greenActions = ["approve", "verify_bank", "approve_withdrawal", "verify_topup"];
                         const blueActions = ["initiate_payout"];
                         const labelMap: Record<string, string> = {
                           approve: "Approve Review",
@@ -1743,6 +1845,8 @@ function AdminActionJournal() {
                           initiate_payout: "Initiate Payout",
                           approve_withdrawal: "Approve Withdrawal",
                           reject_withdrawal: "Reject Withdrawal",
+                          verify_topup: "Verify Top-Up",
+                          reject_topup: "Reject Top-Up",
                         };
                         const colorClass = greenActions.includes(actionType)
                           ? "bg-green-500/15 text-green-400 border border-green-500/30"

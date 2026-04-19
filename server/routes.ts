@@ -13,7 +13,7 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql } from "./user-data-persist";
 
 // Bug-2 fix: Track server start time for health check grace period
 const SERVER_START_TIME = Date.now();
@@ -1185,13 +1185,14 @@ export async function registerRoutes(
         read: 0,
         createdAt: new Date().toISOString(),
       });
-      storage.createAdminAction({
+      const aaApprove = storage.createAdminAction({
         adminEmail: (req as any).admin?.email || "unknown",
         actionType: "approve_withdrawal",
         targetType: "withdrawal",
         targetId: w.id,
         details: `Approved withdrawal of $${(w.amountCents / 100).toFixed(2)} for user #${w.userId}`,
       });
+      writeAdminActionToCloudSql({ id: aaApprove.id, adminEmail: aaApprove.adminEmail, actionType: aaApprove.actionType, targetType: aaApprove.targetType, targetId: aaApprove.targetId, details: aaApprove.details, createdAt: aaApprove.createdAt }).catch(() => {});
       return res.json(w);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1219,13 +1220,14 @@ export async function registerRoutes(
         read: 0,
         createdAt: new Date().toISOString(),
       });
-      storage.createAdminAction({
+      const aaReject = storage.createAdminAction({
         adminEmail: (req as any).admin?.email || "unknown",
         actionType: "reject_withdrawal",
         targetType: "withdrawal",
         targetId: wOld.id,
         details: `Rejected withdrawal of $${(wOld.amountCents / 100).toFixed(2)} for user #${wOld.userId}; funds refunded`,
       });
+      writeAdminActionToCloudSql({ id: aaReject.id, adminEmail: aaReject.adminEmail, actionType: aaReject.actionType, targetType: aaReject.targetType, targetId: aaReject.targetId, details: aaReject.details, createdAt: aaReject.createdAt }).catch(() => {});
       return res.json(w);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1777,6 +1779,224 @@ export async function registerRoutes(
         writeUserToBigQuery({ id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role, company: updatedUser.company, credits: updatedUser.credits, createdAt: updatedUser.createdAt || undefined }).catch(() => {});
       }
       return res.json({ credits: updatedUser?.credits, success: true });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // ─── Manual Top-Up Request (soft launch — bank transfer only) ───
+  app.post("/api/credits/topup-request", userOrAdminAuth, async (req, res) => {
+    try {
+      if (!ownerOrAdmin(req, res, 'userId', 'body')) return;
+      const { userId, amountDollars } = req.body;
+      const amount = Number(amountDollars);
+      if (!amount || amount < 5 || amount > 10000) {
+        return res.status(400).json({ error: true, message: "Amount must be between $5 and $10,000" });
+      }
+      const user = storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: true, message: "User not found" });
+
+      const topup = storage.createTopupRequest({ userId, userEmail: user.email, userName: user.name, amountDollars: amount });
+
+      // Send notification email to admins
+      try {
+        const { Resend } = await import("resend");
+        const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        await resend.emails.send({
+          from: "A2A Global <noreply@a2a.global>",
+          to: ["oleg@a2a.global", "amir@a2a.global"],
+          subject: `Top-Up Request: ${user.name} ($${amount})`,
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;">
+              <h2 style="color:#1e3a5f;">New Top-Up Request</h2>
+              <p>Client <strong>${user.name}</strong> (${user.email}) has requested a top-up of <strong>$${amount}</strong>.</p>
+              <table style="border-collapse:collapse;margin:16px 0;">
+                <tr><td style="padding:4px 12px;border:1px solid #ddd;font-weight:bold;">Client</td><td style="padding:4px 12px;border:1px solid #ddd;">${user.name} (${user.email})</td></tr>
+                <tr><td style="padding:4px 12px;border:1px solid #ddd;font-weight:bold;">Amount</td><td style="padding:4px 12px;border:1px solid #ddd;">$${amount}</td></tr>
+                <tr><td style="padding:4px 12px;border:1px solid #ddd;font-weight:bold;">Request ID</td><td style="padding:4px 12px;border:1px solid #ddd;">#${topup.id}</td></tr>
+                <tr><td style="padding:4px 12px;border:1px solid #ddd;font-weight:bold;">Current Balance</td><td style="padding:4px 12px;border:1px solid #ddd;">${user.credits} credits</td></tr>
+              </table>
+              <p>Please verify the bank transfer in Mercury, then click "Verify" in the admin panel.</p>
+            </div>
+          `,
+        });
+      } catch (emailErr) {
+        console.error("[EMAIL] Top-up notification failed:", (emailErr as Error).message);
+      }
+
+      // In-app notification for admins
+      createAndSyncNotification({
+        userId: 1,
+        title: "New Top-Up Request",
+        message: `${user.name} requested $${amount} top-up. Verify in admin panel.`,
+        type: "topup_request",
+        read: 0,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Sync to Cloud SQL
+      writeTopupRequestToCloudSql({ id: topup.id, userId, amountDollars: amount, status: "pending", createdAt: topup.createdAt }).catch(() => {});
+
+      return res.json({ success: true, requestId: topup.id, message: "Top-up request submitted" });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Admin: List pending top-up requests
+  app.get("/api/admin/topup-requests", adminAuth, async (_req, res) => {
+    try {
+      const requests = storage.getAllTopupRequests();
+      const allUsers = storage.getAllUsers();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      return res.json(requests.map((r: any) => ({
+        ...r,
+        userName: r.user_name || userMap.get(r.user_id)?.name || "Unknown",
+        userEmail: r.user_email || userMap.get(r.user_id)?.email || "",
+        userCredits: userMap.get(r.user_id)?.credits || 0,
+      })));
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Admin: Verify top-up (funds received)
+  app.post("/api/admin/topup-requests/:id/verify", adminAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const topupReq = storage.getTopupRequest(id);
+      if (!topupReq) return res.status(404).json({ error: true, message: "Top-up request not found" });
+      if (topupReq.status !== "pending") return res.status(400).json({ error: true, message: "Already processed" });
+
+      const adminUser = (req as any).admin;
+      const now = new Date().toISOString();
+      const amount = topupReq.amount_dollars;
+      const userId = topupReq.user_id;
+
+      // Update request status
+      storage.updateTopupRequest(id, { status: "verified", verified_by: adminUser?.email || "unknown", verified_at: now });
+
+      // Add credits to user
+      const user = storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: true, message: "User not found" });
+
+      const creditsToAdd = Math.round(amount);
+      storage.updateUser(userId, { credits: user.credits + creditsToAdd });
+      storage.createTransaction({
+        userId, amount: creditsToAdd, type: "purchase",
+        description: `Bank transfer top-up — $${amount} — ${creditsToAdd} credits (verified by admin)`,
+      });
+      storage.createWalletTransaction({
+        userId,
+        amountCents: Math.round(amount * 100),
+        type: "topup",
+        description: `Bank transfer top-up: $${amount} (verified)`,
+        createdAt: now,
+        stripePaymentId: `bank_transfer_${id}`,
+      });
+
+      // Sync to cloud
+      syncUserToCloud(userId);
+      syncCreditTxToCloud({ userId, amount: creditsToAdd, type: "purchase", description: `Bank transfer top-up — $${amount}` });
+
+      // Log admin action
+      const action = storage.createAdminAction({
+        adminEmail: adminUser?.email || "unknown",
+        actionType: "verify_topup",
+        targetType: "topup_request",
+        targetId: id,
+        details: `Verified $${amount} top-up for ${user.name} (${user.email})`,
+      });
+      writeAdminActionToCloudSql({ id: action.id, adminEmail: action.adminEmail, actionType: action.actionType, targetType: action.targetType, targetId: action.targetId, details: action.details, createdAt: action.createdAt }).catch(() => {});
+
+      // Send confirmation email to client
+      try {
+        const { Resend } = await import("resend");
+        const resend = new Resend(process.env.RESEND_API_KEY || "re_PrjaSqsY_fdEew3xntXPQsouj46kysKRF");
+        await resend.emails.send({
+          from: "A2A Global <noreply@a2a.global>",
+          to: [user.email],
+          subject: `Credits Added: $${amount} Top-Up Confirmed`,
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;">
+              <h2 style="color:#1e3a5f;">Credits Added to Your Account</h2>
+              <p>Hi ${user.name},</p>
+              <p>We've received your bank transfer and added <strong>${creditsToAdd} credits ($${amount})</strong> to your account.</p>
+              <p>Your new balance: <strong>${user.credits + creditsToAdd} credits</strong></p>
+              <p style="margin-top:20px;">You can now submit requests using your credits.</p>
+              <p style="color:#888;font-size:12px;margin-top:20px;">A2A Global Inc.</p>
+            </div>
+          `,
+        });
+      } catch (emailErr) {
+        console.error("[EMAIL] Top-up confirmation failed:", (emailErr as Error).message);
+      }
+
+      // In-app notification to client
+      createAndSyncNotification({
+        userId,
+        title: "Credits Added",
+        message: `$${amount} top-up confirmed. ${creditsToAdd} credits added to your account.`,
+        type: "topup_confirmed",
+        read: 0,
+        createdAt: now,
+      });
+
+      // Sync topup request to cloud
+      writeTopupRequestToCloudSql({ id, userId, userEmail: topupReq.user_email, userName: topupReq.user_name, amountDollars: amount, status: "verified", verifiedBy: adminUser?.email, verifiedAt: now, createdAt: topupReq.created_at }).catch(() => {});
+
+      triggerBackup();
+      return res.json({ success: true, newBalance: user.credits + creditsToAdd });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Admin: Reject top-up request
+  app.post("/api/admin/topup-requests/:id/reject", adminAuth, async (req, res) => {
+    try {
+      const topupId = parseInt(req.params.id);
+      const { reason } = req.body;
+      const topup = storage.getTopupRequest(topupId);
+      if (!topup) return res.status(404).json({ error: true, message: "Top-up request not found" });
+      if (topup.status !== "pending") return res.status(400).json({ error: true, message: "Request is not pending" });
+
+      const adminUser = (req as any).admin;
+      const now = new Date().toISOString();
+
+      const updated = storage.updateTopupRequest(topupId, {
+        status: "rejected",
+        admin_notes: reason || "Rejected by admin",
+        verified_by: adminUser?.email || "admin",
+        verified_at: now,
+      });
+      writeTopupRequestToCloudSql({
+        id: topupId, userId: topup.user_id, userEmail: topup.user_email, userName: topup.user_name,
+        amountDollars: topup.amount_dollars, status: "rejected", adminNotes: reason || "Rejected by admin",
+        verifiedBy: adminUser?.email || "admin", verifiedAt: now, createdAt: topup.created_at,
+      }).catch(() => {});
+
+      // Log admin action
+      const aa = storage.createAdminAction({
+        adminEmail: adminUser?.email || "unknown",
+        actionType: "reject_topup",
+        targetType: "topup_request",
+        targetId: topupId,
+        details: `Rejected top-up #${topupId}: $${topup.amount_dollars} for ${topup.user_email}. Reason: ${reason || "none"}`,
+      });
+      writeAdminActionToCloudSql({ id: aa.id, adminEmail: aa.adminEmail, actionType: aa.actionType, targetType: aa.targetType, targetId: aa.targetId, details: aa.details, createdAt: aa.createdAt }).catch(() => {});
+
+      // Notify client
+      createAndSyncNotification({
+        userId: topup.user_id,
+        title: "Top-Up Request Update",
+        message: `Your top-up request of $${topup.amount_dollars} could not be verified. ${reason ? `Reason: ${reason}` : "Please contact support."}`,
+        type: "topup_rejected",
+        read: 0,
+        createdAt: now,
+      });
+
+      return res.json({ success: true, topupRequest: updated });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
@@ -2518,7 +2738,8 @@ export async function registerRoutes(
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
       // 2nd-Priority Fix 9: Log admin action
       const admin = (req as any).admin;
-      storage.createAdminAction({ adminEmail: admin?.email || "unknown", actionType: "approve", targetType: "review", targetId: requestId, details: `Approved request #${requestId}: ${request.title}` });
+      const aaApproveReview = storage.createAdminAction({ adminEmail: admin?.email || "unknown", actionType: "approve", targetType: "review", targetId: requestId, details: `Approved request #${requestId}: ${request.title}` });
+      writeAdminActionToCloudSql({ id: aaApproveReview.id, adminEmail: aaApproveReview.adminEmail, actionType: aaApproveReview.actionType, targetType: aaApproveReview.targetType, targetId: aaApproveReview.targetId, details: aaApproveReview.details, createdAt: aaApproveReview.createdAt }).catch(() => {});
       if (request.status !== "under_review") {
         return res.status(400).json({ error: true, message: "Request is not under review" });
       }
@@ -2621,7 +2842,8 @@ export async function registerRoutes(
       if (!request) return res.status(404).json({ error: true, message: "Request not found" });
       // 2nd-Priority Fix 9: Log admin action
       const adminUser = (req as any).admin;
-      storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "reject", targetType: "review", targetId: requestId, details: `Rejected request #${requestId}: ${request.title}. Feedback: ${feedback || "none"}` });
+      const aaRejectReview = storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "reject", targetType: "review", targetId: requestId, details: `Rejected request #${requestId}: ${request.title}. Feedback: ${feedback || "none"}` });
+      writeAdminActionToCloudSql({ id: aaRejectReview.id, adminEmail: aaRejectReview.adminEmail, actionType: aaRejectReview.actionType, targetType: aaRejectReview.targetType, targetId: aaRejectReview.targetId, details: aaRejectReview.details, createdAt: aaRejectReview.createdAt }).catch(() => {});
       if (request.status !== "under_review") {
         return res.status(400).json({ error: true, message: "Request is not under review" });
       }
@@ -4479,7 +4701,8 @@ export async function registerRoutes(
       writeWithdrawalRequestToCloudSql(wr).catch(() => {});
       // FIX-9: Log admin action
       const payoutAdmin = (req as any).admin;
-      storage.createAdminAction({ adminEmail: payoutAdmin?.email || "unknown", actionType: "initiate_payout", targetType: "withdrawal", targetId: wrId, details: `Payout $${wr.amount} for invoice ${wr.invoiceNumber}` });
+      const aaPayout = storage.createAdminAction({ adminEmail: payoutAdmin?.email || "unknown", actionType: "initiate_payout", targetType: "withdrawal", targetId: wrId, details: `Payout $${wr.amount} for invoice ${wr.invoiceNumber}` });
+      writeAdminActionToCloudSql({ id: aaPayout.id, adminEmail: aaPayout.adminEmail, actionType: aaPayout.actionType, targetType: aaPayout.targetType, targetId: aaPayout.targetId, details: aaPayout.details, createdAt: aaPayout.createdAt }).catch(() => {});
 
       // G2-7: Deduct payout amount from expert's wallet balance
       const expert = storage.getExpert(wr.expertId);
@@ -4611,7 +4834,8 @@ export async function registerRoutes(
       writeExpertVerificationToCloudSql(v).catch(() => {});
       // FIX-9: Log admin action
       const adminUser = (req as any).admin;
-      storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "verify_bank", targetType: "verification", targetId: vId, details: `Verified bank details for expert verification #${vId}` });
+      const aaVerify = storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "verify_bank", targetType: "verification", targetId: vId, details: `Verified bank details for expert verification #${vId}` });
+      writeAdminActionToCloudSql({ id: aaVerify.id, adminEmail: aaVerify.adminEmail, actionType: aaVerify.actionType, targetType: aaVerify.targetType, targetId: aaVerify.targetId, details: aaVerify.details, createdAt: aaVerify.createdAt }).catch(() => {});
       return res.json(v);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
