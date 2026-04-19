@@ -1765,7 +1765,7 @@ export async function registerRoutes(
         userId, amount: creditsToAdd, type: "purchase",
         description: `Custom top-up — $${amount} — ${creditsToAdd} credits`,
       });
-      storage.createWalletTransaction({
+      const wtxTopup = storage.createWalletTransaction({
         userId,
         amountCents: Math.round(amount * 100),
         type: "topup",
@@ -1773,6 +1773,7 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         stripePaymentId: `mock_${uuidv4().slice(0, 8)}`,
       });
+      writeWalletTransactionToCloudSql(wtxTopup).catch(() => {});
       syncUserToCloud(userId);
       syncCreditTxToCloud({ userId, amount: creditsToAdd, type: "purchase", description: `Custom top-up — $${amount}` });
       const updatedUser = storage.getUser(userId);
@@ -1887,7 +1888,7 @@ export async function registerRoutes(
         userId, amount: creditsToAdd, type: "purchase",
         description: `Bank transfer top-up — $${amount} — ${creditsToAdd} credits (verified by admin)`,
       });
-      storage.createWalletTransaction({
+      const wtxBank = storage.createWalletTransaction({
         userId,
         amountCents: Math.round(amount * 100),
         type: "topup",
@@ -1895,6 +1896,7 @@ export async function registerRoutes(
         createdAt: now,
         stripePaymentId: `bank_transfer_${id}`,
       });
+      writeWalletTransactionToCloudSql(wtxBank).catch(() => {});
 
       // Sync to cloud
       syncUserToCloud(userId);
@@ -2140,7 +2142,7 @@ export async function registerRoutes(
           const earningCents = earning * 100;
           const freshExpertUser = storage.getUser(expertUser.id);
           storage.updateUser(expertUser.id, { walletBalance: (freshExpertUser?.walletBalance || 0) + earningCents });
-          storage.createWalletTransaction({
+          const wtxEarning1 = storage.createWalletTransaction({
             userId: expertUser.id,
             amountCents: earningCents,
             type: "earning",
@@ -2148,6 +2150,7 @@ export async function registerRoutes(
             createdAt: new Date().toISOString(),
             stripePaymentId: null,
           });
+          writeWalletTransactionToCloudSql(wtxEarning1).catch(() => {});
           syncCreditTxToCloud({ userId: expertUser.id, amount: earning, type: "earning", description: `Completed: ${r.title}`, takeRatePercent: Math.round(takeRate * 100), platformFee: finalizePlatformFee, expertPayout: earning, clientPaid: r.creditsCost });
           syncExpertToCloud(expert.id);
           syncUserToCloud(expertUser.id);
@@ -2263,13 +2266,14 @@ export async function registerRoutes(
       const responseText = (response || "").toString().trim();
       const passed = responseText.length >= 200;
 
-      storage.createVerificationTest({
+      const vTest = storage.createVerificationTest({
         expertId: expert.id,
         category: (category || "").toString(),
         answers: JSON.stringify({ assignmentId: assignmentId || null, response: responseText }),
         score: passed ? 100 : 0,
         passed: passed ? 1 : 0,
       });
+      writeVerificationTestToCloudSql(vTest).catch(() => {});
 
       if (passed) {
         storage.updateExpert(expert.id, {
@@ -2563,7 +2567,7 @@ export async function registerRoutes(
             // Add wallet earnings too
             const earningCents = earning * 100;
             storage.updateUser(user.id, { walletBalance: (storage.getUser(user.id)?.walletBalance || 0) + earningCents });
-            storage.createWalletTransaction({
+            const wtxEarning2 = storage.createWalletTransaction({
               userId: user.id,
               amountCents: earningCents,
               type: "earning",
@@ -2571,6 +2575,7 @@ export async function registerRoutes(
               createdAt: new Date().toISOString(),
               stripePaymentId: null,
             });
+            writeWalletTransactionToCloudSql(wtxEarning2).catch(() => {});
           }
         }
       }
@@ -3008,7 +3013,7 @@ export async function registerRoutes(
         userId, amount: pack.credits, type: "purchase",
         description: `${pack.name} — ${pack.credits} credits`,
       });
-      storage.createWalletTransaction({
+      const wtxPack = storage.createWalletTransaction({
         userId,
         amountCents: pack.dollars * 100,
         type: "topup",
@@ -3016,6 +3021,7 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         stripePaymentId: `mock_${uuidv4().slice(0, 8)}`,
       });
+      writeWalletTransactionToCloudSql(wtxPack).catch(() => {});
       syncUserToCloud(userId);
       syncCreditTxToCloud({ userId, amount: pack.credits, type: "purchase", description: `${pack.name}` });
 
@@ -3048,7 +3054,7 @@ export async function registerRoutes(
 
       const expert = storage.getExpertByUserId(userId);
       storage.updateUser(userId, { walletBalance: user.walletBalance - amountCents });
-      storage.createWalletTransaction({
+      const wtxWithdraw = storage.createWalletTransaction({
         userId,
         amountCents: -amountCents,
         type: "withdrawal",
@@ -3056,7 +3062,8 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         stripePaymentId: null,
       });
-      storage.createWithdrawal({
+      writeWalletTransactionToCloudSql(wtxWithdraw).catch(() => {});
+      const wdRecord = storage.createWithdrawal({
         userId,
         expertId: expert?.id || null,
         amountCents,
@@ -3064,6 +3071,7 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         processedAt: null,
       });
+      writeWithdrawalToCloudSql(wdRecord).catch(() => {});
 
       syncUserToCloud(userId);
       return res.json({ message: "Withdrawal submitted", walletBalance: user.walletBalance - amountCents });
@@ -3660,13 +3668,14 @@ export async function registerRoutes(
         lineItems: JSON.stringify(lineItems),
         createdAt: new Date().toISOString(),
       });
+      writeInvoiceToCloudSql(invoice).catch(() => {});
 
       // Mark reviews as invoiced
       const reviewIds = uninvoicedReviews.map((r) => r.id);
       storage.markReviewsInvoiced(reviewIds);
 
       // Create a withdrawal record
-      storage.createWithdrawal({
+      const wdInvoice = storage.createWithdrawal({
         userId: user.id,
         expertId,
         amountCents: netPayoutCents,
@@ -3674,6 +3683,7 @@ export async function registerRoutes(
         createdAt: new Date().toISOString(),
         processedAt: null,
       });
+      writeWithdrawalToCloudSql(wdInvoice).catch(() => {});
 
       // Deduct credits from user
       const creditAmount = Math.round(netPayoutCents / 100);
@@ -4721,7 +4731,7 @@ export async function registerRoutes(
         const newBalance = Math.max(0, (expertUser.walletBalance || 0) - payoutCents);
         const newCredits = Math.max(0, (expertUser.credits || 0) - payoutCredits);
         storage.updateUser(expertUser.id, { walletBalance: newBalance, credits: newCredits });
-        storage.createWalletTransaction({
+        const wtxPayout = storage.createWalletTransaction({
           userId: expertUser.id,
           amountCents: -payoutCents,
           type: "payout",
@@ -4729,6 +4739,7 @@ export async function registerRoutes(
           createdAt: new Date().toISOString(),
           stripePaymentId: null,
         });
+        writeWalletTransactionToCloudSql(wtxPayout).catch(() => {});
         // FIX-1: Also record in credit_transactions so it appears in expert transaction history
         storage.createTransaction({
           userId: expertUser.id,
