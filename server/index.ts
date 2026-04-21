@@ -185,15 +185,45 @@ app.use((req, res, next) => {
             lastReportedUserCount = allUsers.length;
             const allExperts = storage.getAllExperts();
             await sendFullUserDataEmail(allUsers, allExperts);
-            // Also sync Cloud SQL when we have new users
             const allRequests = storage.getAllRequests ? storage.getAllRequests() : [];
             await syncAllToCloudSql(allUsers, allExperts, allRequests);
             console.log(`[HOURLY] New users detected (${allUsers.length}), report sent + Cloud SQL synced`);
           }
         } catch (err) {
-          console.error("[DAILY] Failed:", err);
+          console.error("[HOURLY] Failed:", err);
         }
-      }, 60 * 60 * 1000); // check every hour, only send if new users
+      }, 60 * 60 * 1000);
+
+      // Build 45.2 — unconditional safety-net sync every 5 minutes.
+      // Guards against any storage.create*/update* site that forgot to fire
+      // a per-entity Cloud SQL write. Without this, SQLite-only rows vanish
+      // on the next Cloud Run revision flip (root cause of the "Failed to
+      // load expert profile" bug reported on staging 2026-04-21).
+      setInterval(async () => {
+        try {
+          const { storage: stor, sqlite: sqlDb } = await import("./storage");
+          const allUsers = stor.getAllUsers();
+          const allExperts = stor.getAllExperts();
+          const allRequests = stor.getAllRequests ? stor.getAllRequests() : [];
+          const reviews = sqlDb.prepare("SELECT * FROM expert_reviews").all() as any[];
+          const messages = sqlDb.prepare("SELECT * FROM messages").all() as any[];
+          const notifications = sqlDb.prepare("SELECT * FROM notifications").all() as any[];
+          const events = sqlDb.prepare("SELECT * FROM request_events").all() as any[];
+          const walletTx = stor.getAllWalletTransactions();
+          const withdrawals = stor.getAllWithdrawals();
+          const invoices = sqlDb.prepare("SELECT * FROM invoices").all() as any[];
+          const verificationTests = sqlDb.prepare("SELECT * FROM verification_tests").all() as any[];
+          const expertVerifications = sqlDb.prepare("SELECT * FROM expert_verifications").all() as any[];
+          const withdrawalRequests = sqlDb.prepare("SELECT * FROM withdrawal_requests").all() as any[];
+          await syncAllToCloudSql(allUsers, allExperts, allRequests, {
+            reviews, messages, notifications, events, walletTx,
+            withdrawals, invoices, verificationTests, expertVerifications, withdrawalRequests,
+          });
+          console.log(`[PERIODIC-SYNC] Safety-net sync OK (users=${allUsers.length}, experts=${allExperts.length}, requests=${allRequests.length})`);
+        } catch (err) {
+          console.error("[PERIODIC-SYNC] Failed:", err);
+        }
+      }, 5 * 60 * 1000); // every 5 minutes
     },
   );
 })();

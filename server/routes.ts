@@ -549,12 +549,9 @@ export async function registerRoutes(
       });
 
       // FIX-2: Create welcome bonus transaction so credit history is correct
-      storage.createTransaction({
-        userId: user.id,
-        amount: 5,
-        type: "bonus",
-        description: "Welcome bonus — $5 free credits",
-      });
+      const welcomeTx = { userId: user.id, amount: 5, type: "bonus", description: "Welcome bonus — $5 free credits" };
+      storage.createTransaction(welcomeTx);
+      syncCreditTxToCloud(welcomeTx); // Build 45.2 — persist to Cloud SQL
       // Log Terms of Use and Privacy Policy acceptance
       const ip = req.headers["x-forwarded-for"] as string || req.socket.remoteAddress || "unknown";
       const ua = req.headers["user-agent"] || "unknown";
@@ -1593,14 +1590,16 @@ export async function registerRoutes(
       const holdTakeRatePercent = Math.round(holdTakeRate * 100);
       const holdExpertPayout = Math.max(1, Math.floor(cost * (1 - holdTakeRate)));
       const holdPlatformFee = cost - holdExpertPayout;
-      storage.createTransaction({
+      const holdTx = {
         userId, amount: -cost, type: "hold",
         description: `Credits frozen for request: ${title}`,
         takeRatePercent: holdTakeRatePercent,
         platformFee: holdPlatformFee,
         expertPayout: holdExpertPayout,
         clientPaid: cost,
-      });
+      };
+      storage.createTransaction(holdTx);
+      syncCreditTxToCloud(holdTx); // Build 45.2 — persist to Cloud SQL
 
       // Fix 1: XSS — sanitize user-provided text fields
       const request = storage.createRequest({
@@ -1747,6 +1746,7 @@ export async function registerRoutes(
         clientRatingComment: null,
         refunded: 0,
       });
+      syncRequestToCloud(request.id); // Build 45.2 — persist draft request to Cloud SQL
       return res.json(request);
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
@@ -1837,6 +1837,7 @@ export async function registerRoutes(
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
 
       const topup = storage.createTopupRequest({ userId, userEmail: user.email, userName: user.name, amountDollars: amount });
+      writeTopupRequestToCloudSql({ id: topup.id, userId, userEmail: user.email, userName: user.name, amountDollars: amount, status: topup.status, createdAt: topup.createdAt }).catch((e) => console.error("[B45.2] topup sync fail:", e)); // Build 45.2
 
       // Send notification email to admins
       try {
@@ -2568,14 +2569,16 @@ export async function registerRoutes(
           const chargeTakeRate = TAKE_RATES[(completedRequest.priceTier || completedRequest.tier || "standard").toLowerCase()] ?? 0.50;
           const chargeExpertPayout = Math.max(1, Math.floor(completedRequest.creditsCost * (1 - chargeTakeRate)));
           const chargePlatformFee = completedRequest.creditsCost - chargeExpertPayout;
-          storage.createTransaction({
+          const chargeTx = {
             userId: completedRequest.userId, amount: completedRequest.creditsCost, type: "charged",
             description: `Credits charged for completed request: ${completedRequest.title}`,
             takeRatePercent: Math.round(chargeTakeRate * 100),
             platformFee: chargePlatformFee,
             expertPayout: chargeExpertPayout,
             clientPaid: completedRequest.creditsCost,
-          });
+          };
+          storage.createTransaction(chargeTx);
+          syncCreditTxToCloud(chargeTx); // Build 45.2
         }
       }
 
@@ -2592,15 +2595,19 @@ export async function registerRoutes(
             const earning = Math.max(1, Math.floor(perReviewCost * (1 - takeRate)));
             const reviewPlatformFee = Math.round(perReviewCost) - earning;
             storage.updateUser(user.id, { credits: user.credits + earning });
-            storage.createTransaction({
+            const reviewEarnTx = {
               userId: user.id, amount: earning, type: "earning",
               description: `Completed review: ${request.title}`,
               takeRatePercent: Math.round(takeRate * 100),
               platformFee: reviewPlatformFee,
               expertPayout: earning,
               clientPaid: Math.round(perReviewCost),
-            });
+            };
+            storage.createTransaction(reviewEarnTx);
+            syncCreditTxToCloud(reviewEarnTx); // Build 45.2
+            syncUserToCloud(user.id); // persist credits balance
             storage.updateExpert(expert.id, { totalReviews: expert.totalReviews + 1 });
+            syncExpertToCloud(expert.id); // Build 45.2 — persist review count
 
             // Add wallet earnings too
             const earningCents = earning * 100;
@@ -3596,10 +3603,13 @@ export async function registerRoutes(
       if (amount < 200) return res.status(400).json({ error: true, message: "Minimum withdrawal amount is $200" });
 
       storage.updateUser(userId, { credits: effectiveBalance - amount });
-      storage.createTransaction({
+      syncUserToCloud(userId); // Build 45.2 — persist new balance
+      const withdrawTx = {
         userId, amount: -amount, type: "withdrawal",
         description: `Withdrawal: ${amount} credits ($${Number(amount).toFixed(2)}) via Bank Transfer`,
-      });
+      };
+      storage.createTransaction(withdrawTx);
+      syncCreditTxToCloud(withdrawTx); // Build 45.2
 
       return res.json({ message: "Withdrawal submitted", credits: effectiveBalance - amount });
     } catch (e: any) {
@@ -3782,12 +3792,15 @@ export async function registerRoutes(
       const creditAmount = Math.round(netPayoutCents / 100);
       if (user.credits >= creditAmount) {
         storage.updateUser(user.id, { credits: user.credits - creditAmount });
-        storage.createTransaction({
+        syncUserToCloud(user.id); // Build 45.2
+        const invoiceWithdrawTx = {
           userId: user.id,
           amount: -creditAmount,
           type: "withdrawal",
           description: `Withdrawal: ${creditAmount} credits — Invoice ${invoiceNumber}`,
-        });
+        };
+        storage.createTransaction(invoiceWithdrawTx);
+        syncCreditTxToCloud(invoiceWithdrawTx); // Build 45.2
       }
 
       let categories: string[] = [];
@@ -4778,7 +4791,6 @@ export async function registerRoutes(
         createdAt: now,
         updatedAt: now,
       });
-
       writeWithdrawalRequestToCloudSql(wr).catch(() => {});
 
       // OB-K: Email to cofounders
@@ -4885,12 +4897,14 @@ export async function registerRoutes(
         });
         writeWalletTransactionToCloudSql(wtxPayout).catch(() => {});
         // FIX-1: Also record in credit_transactions so it appears in expert transaction history
-        storage.createTransaction({
+        const payoutTx = {
           userId: expertUser.id,
           amount: -payoutCredits,
           type: "payout",
           description: `Payout initiated: Invoice ${wr.invoiceNumber}`,
-        });
+        };
+        storage.createTransaction(payoutTx);
+        syncCreditTxToCloud(payoutTx); // Build 45.2
         writeUserToCloudSql({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: newCredits, walletBalance: newBalance }).catch(() => {});
         writeUserToBigQuery({ id: expertUser.id, name: expertUser.name, email: expertUser.email, role: expertUser.role, company: expertUser.company, credits: newCredits, createdAt: expertUser.createdAt || undefined }).catch(() => {});
 
