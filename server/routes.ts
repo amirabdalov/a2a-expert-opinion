@@ -574,7 +574,7 @@ export async function registerRoutes(
       });
 
       if (role === "expert") {
-        storage.createExpert({
+        const newExpert = storage.createExpert({
           userId: user.id,
           bio: "", expertise: "", credentials: "",
           rating: 50, totalReviews: 0, verified: 0,
@@ -584,6 +584,15 @@ export async function registerRoutes(
           onboardingComplete: 0, verificationScore: null,
           ratePerMinute: null, rateTier: null,
         });
+        // Build 45.1 — sync expert row to Cloud SQL immediately so it survives
+        // container restarts / new revisions. Without this, new experts were
+        // lost on revision flip and /api/experts/user/:id returned 404
+        // — surfaced to the UI as "Failed to load expert profile".
+        try {
+          syncExpertToCloud(newExpert.id);
+        } catch (e) {
+          console.error("[REGISTER] Failed to syncExpertToCloud for new expert", newExpert.id, e);
+        }
       }
 
       // Save UTM / acquisition source
