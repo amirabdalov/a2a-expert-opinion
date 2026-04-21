@@ -4288,6 +4288,280 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Build 45.6: RL Insights (LLM-generated actionable suggestions) ───
+
+  /** Collect signals used as LLM context. Kept small & deterministic. */
+  function collectRLSignals() {
+    const allUsers = storage.getAllUsers();
+    const allExperts = storage.getAllExperts();
+    const allRequests = storage.getAllRequests();
+    const allTx = storage.getAllTransactions();
+
+    const now = Date.now();
+    const last7 = now - 7 * 86400000;
+    const last30 = now - 30 * 86400000;
+
+    const clients = allUsers.filter(u => u.role === "client");
+    const experts = allExperts;
+    const tiers = {
+      standard: experts.filter(e => e.rateTier === "standard" || !e.rateTier).length,
+      pro: experts.filter(e => e.rateTier === "pro").length,
+      guru: experts.filter(e => e.rateTier === "guru").length,
+    };
+    const verifiedExperts = experts.filter(e => e.verified).length;
+    const availableExperts = experts.filter(e => e.availability === 1 || e.availability === "online").length;
+    const rates = experts.map(e => Number(e.ratePerMinute ?? 0)).filter(n => n > 0);
+    const avgRateHour = rates.length ? (rates.reduce((a, b) => a + b, 0) / rates.length) : 0;
+    const completedReq = allRequests.filter(r => r.status === "completed").length;
+    const pendingReq = allRequests.filter(r => r.status === "pending").length;
+    const inReviewReq = allRequests.filter(r => r.status === "in_review").length;
+    const completionRate = allRequests.length > 0 ? (completedReq / allRequests.length) : 0;
+    const purchases = allTx.filter((t: any) => t.type === "purchase");
+    const totalRevenue = purchases.reduce((s: number, t: any) => s + Math.abs(t.amount), 0);
+    const paidClients = new Set(purchases.map((t: any) => t.userId)).size;
+    const paidClientRatio = clients.length > 0 ? (paidClients / clients.length) : 0;
+    const avgRevPerPaid = paidClients > 0 ? (totalRevenue / paidClients) : 0;
+
+    // Take-rate (platform fee percent). Default 20% if not configured.
+    let takeRatePct = 20;
+    try {
+      const row = sqlite.prepare("SELECT rate FROM take_rate_history ORDER BY id DESC LIMIT 1").get() as any;
+      if (row?.rate) takeRatePct = Number(row.rate);
+    } catch { /* ignore */ }
+
+    // Recent feedback (last 20 msgs) for qualitative pattern spotting
+    let recentFeedback: string[] = [];
+    try {
+      const fb = sqlite.prepare("SELECT message FROM feedback ORDER BY id DESC LIMIT 20").all() as any[];
+      recentFeedback = fb.map(f => (f.message || "").slice(0, 280));
+    } catch { /* table may not exist yet */ }
+
+    // Top-up requests funnel
+    let topupPending = 0, topupVerified = 0;
+    try {
+      topupPending = (sqlite.prepare("SELECT COUNT(*) c FROM topup_requests WHERE status='pending'").get() as any)?.c || 0;
+      topupVerified = (sqlite.prepare("SELECT COUNT(*) c FROM topup_requests WHERE status='verified'").get() as any)?.c || 0;
+    } catch { /* ignore */ }
+
+    return {
+      totals: {
+        users: allUsers.length,
+        clients: clients.length,
+        experts: experts.length,
+        verifiedExperts,
+        availableExperts,
+        requests: allRequests.length,
+        completedRequests: completedReq,
+        pendingRequests: pendingReq,
+        inReviewRequests: inReviewReq,
+      },
+      tiers,
+      funnel: {
+        paidClients,
+        paidClientRatio: Number(paidClientRatio.toFixed(3)),
+        completionRate: Number(completionRate.toFixed(3)),
+      },
+      economics: {
+        totalRevenue,
+        avgRevenuePerPaidClient: Math.round(avgRevPerPaid),
+        avgExpertRateHour: Math.round(avgRateHour),
+        takeRatePct,
+      },
+      topups: { pending: topupPending, verified: topupVerified },
+      recentFeedbackSamples: recentFeedback.slice(0, 10),
+    };
+  }
+
+  /** Deterministic heuristic insights — used as fallback and as LLM seed. */
+  function heuristicInsights(signals: any): any[] {
+    const out: any[] = [];
+    const { totals, tiers, funnel, economics, topups } = signals;
+
+    if (topups.pending > 0) {
+      out.push({
+        title: `Clear ${topups.pending} pending top-up request${topups.pending === 1 ? "" : "s"}`,
+        rationale: `Clients have submitted bank top-ups that haven't been verified. Each pending request blocks revenue from entering the platform.`,
+        impact: "high",
+        difficulty: "easy",
+        suggestion: "Open the admin panel top-up section, confirm wires in Mercury, and click Verify. Consider auto-sending a wire-instructions email to clients at request submission time.",
+      });
+    }
+    if (totals.experts > 0 && totals.availableExperts === 0) {
+      out.push({
+        title: "No experts currently online",
+        rationale: `You have ${totals.experts} registered experts but ${totals.availableExperts} are set to Available. Zero supply kills liquidity for any inbound client request.`,
+        impact: "high",
+        difficulty: "easy",
+        suggestion: "Email top experts asking them to toggle Online; or add a small availability bonus for experts who stay online 2+ hours/day.",
+      });
+    }
+    if (totals.clients >= 5 && funnel.paidClientRatio < 0.10) {
+      out.push({
+        title: `Only ${Math.round(funnel.paidClientRatio * 100)}% of clients have paid`,
+        rationale: `${funnel.paidClients} of ${totals.clients} clients converted to paid. Payment friction or unclear value proposition is the most common cause at this ratio.`,
+        impact: "high",
+        difficulty: "medium",
+        suggestion: "A/B test: (a) increase signup credits from $5 to $10 to let clients try a full review for free; (b) send a 24h follow-up email to non-payers with a sample expert response.",
+      });
+    }
+    if (totals.requests > 0 && funnel.completionRate < 0.5) {
+      out.push({
+        title: `Completion rate is only ${Math.round(funnel.completionRate * 100)}%`,
+        rationale: `${totals.completedRequests} of ${totals.requests} requests completed. Stalled requests erode trust and delay payouts.`,
+        impact: "high",
+        difficulty: "medium",
+        suggestion: "Auto-reassign requests idle in queue >2h to a different expert; SMS-notify experts when a Guru-tier request lands in their domain.",
+      });
+    }
+    if (tiers.guru === 0 && totals.experts >= 3) {
+      out.push({
+        title: "Zero Guru-tier experts",
+        rationale: "Guru tier captures the highest per-request revenue ($600-$1800/h). Without any Guru experts, high-value client requests have nowhere to land.",
+        impact: "medium",
+        difficulty: "medium",
+        suggestion: "Manually recruit 2-3 senior specialists via LinkedIn; offer fee waivers for their first 5 reviews to seed supply.",
+      });
+    }
+    if (economics.takeRatePct && economics.takeRatePct > 25) {
+      out.push({
+        title: `Take rate at ${economics.takeRatePct}% may suppress expert supply`,
+        rationale: "Industry benchmarks for expert marketplaces (Clarity, Intro, GLG) sit between 15-25%. A take rate above this discourages expert retention.",
+        impact: "medium",
+        difficulty: "easy",
+        suggestion: "A/B test lowering take rate to 20% for new experts; measure impact on expert retention and new-expert acquisition.",
+      });
+    } else if (economics.takeRatePct && economics.takeRatePct < 15 && funnel.paidClients >= 10) {
+      out.push({
+        title: `Take rate at ${economics.takeRatePct}% may leave revenue on the table`,
+        rationale: "With a paying client base established, platforms typically lift take rate to 18-22% with minimal supply impact.",
+        impact: "medium",
+        difficulty: "easy",
+        suggestion: "Test a 2pp take rate bump on new requests only; existing experts keep current rate for 90 days.",
+      });
+    }
+    if (totals.experts > 0 && totals.verifiedExperts / totals.experts < 0.5) {
+      out.push({
+        title: `Only ${Math.round((totals.verifiedExperts / totals.experts) * 100)}% of experts are verified`,
+        rationale: "Unverified experts hurt marketplace trust and reduce request matching. Drop-off during verification is usually a UX issue.",
+        impact: "medium",
+        difficulty: "easy",
+        suggestion: "Send a single reminder email with a 2-click verification link to unverified experts; simplify the verification step further.",
+      });
+    }
+    if (totals.users < 20) {
+      out.push({
+        title: "Total users below 20 — MVP acquisition stage",
+        rationale: "Below 20 users, qualitative feedback beats statistical signal. Every user interaction should feed into product iteration.",
+        impact: "high",
+        difficulty: "medium",
+        suggestion: "Set up weekly 15-min calls with every new user; keep sign-up bonus at $5; cold-email 10 target personas per day via Apollo.",
+      });
+    }
+    return out.slice(0, 5);
+  }
+
+  async function generateGroqInsights(signals: any, heuristics: any[]): Promise<any[] | null> {
+    if (!groq) return null;
+    const systemPrompt = `You are a senior growth & product strategist for A2A Global, a two-sided marketplace where clients pay experts to verify AI-generated answers. Your job: given platform signals, return 3-5 concrete, high-leverage operator suggestions the two founders can execute this week.
+
+RULES:
+- Output STRICT JSON: {"insights": [{"title": string, "rationale": string (<=220 chars, cite numbers from signals), "impact": "high"|"medium"|"low", "difficulty": "easy"|"medium"|"hard", "suggestion": string (<=280 chars, one clear action)}]}
+- No markdown, no prose outside JSON.
+- Focus on levers: take rate, signup credits, expert onboarding, pricing tiers, matching, retention emails, cold outbound, top-up flow, verification UX.
+- Rank by expected impact ÷ effort. Do NOT repeat generic advice. Tie every suggestion to a number in the signals.
+- Exactly 3-5 insights.`;
+    const userPrompt = `SIGNALS:\n${JSON.stringify(signals, null, 2)}\n\nHEURISTIC SEEDS (you may refine, combine, or replace):\n${JSON.stringify(heuristics, null, 2)}`;
+
+    try {
+      const resp = await groq.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 1600,
+        response_format: { type: "json_object" },
+      });
+      const raw = resp.choices?.[0]?.message?.content || "";
+      const parsed = JSON.parse(raw);
+      const arr = Array.isArray(parsed.insights) ? parsed.insights : [];
+      // Validate shape
+      const clean = arr.filter((x: any) => x && x.title && x.suggestion).slice(0, 5).map((x: any) => ({
+        title: String(x.title).slice(0, 120),
+        rationale: String(x.rationale || "").slice(0, 280),
+        impact: ["high", "medium", "low"].includes(x.impact) ? x.impact : "medium",
+        difficulty: ["easy", "medium", "hard"].includes(x.difficulty) ? x.difficulty : "medium",
+        suggestion: String(x.suggestion).slice(0, 340),
+      }));
+      return clean.length >= 3 ? clean : null;
+    } catch (e: any) {
+      console.error("[RL-INSIGHTS] Groq failed:", e.message?.slice(0, 200));
+      return null;
+    }
+  }
+
+  async function computeAndCacheInsights(): Promise<{ insights: any[]; signals: any; source: string; generatedAt: string }> {
+    const signals = collectRLSignals();
+    const heuristics = heuristicInsights(signals);
+    const llm = await generateGroqInsights(signals, heuristics);
+    const insights = (llm && llm.length >= 3) ? llm : heuristics;
+    const source = (llm && llm.length >= 3) ? "groq" : "heuristic";
+    const generatedAt = new Date().toISOString();
+    try {
+      sqlite.prepare(`INSERT INTO rl_insights (generated_at, source, signals_json, insights_json, model_version) VALUES (?, ?, ?, ?, ?)`).run(
+        generatedAt, source, JSON.stringify(signals), JSON.stringify(insights), "llama-3.3-70b-versatile",
+      );
+      // Keep only last 50 rows
+      sqlite.prepare(`DELETE FROM rl_insights WHERE id NOT IN (SELECT id FROM rl_insights ORDER BY id DESC LIMIT 50)`).run();
+    } catch (e: any) {
+      console.error("[RL-INSIGHTS] persist failed:", e.message);
+    }
+    return { insights, signals, source, generatedAt };
+  }
+
+  // GET latest cached insights (auto-refresh if older than 30 min)
+  app.get("/api/admin/rl-insights", adminAuth, async (_req, res) => {
+    try {
+      const latest = sqlite.prepare("SELECT * FROM rl_insights ORDER BY id DESC LIMIT 1").get() as any;
+      const THIRTY_MIN = 30 * 60 * 1000;
+      const isStale = !latest || (Date.now() - new Date(latest.generated_at).getTime() > THIRTY_MIN);
+      if (isStale) {
+        const fresh = await computeAndCacheInsights();
+        return res.json({ insights: fresh.insights, signals: fresh.signals, source: fresh.source, generatedAt: fresh.generatedAt, cached: false });
+      }
+      return res.json({
+        insights: JSON.parse(latest.insights_json),
+        signals: JSON.parse(latest.signals_json),
+        source: latest.source,
+        generatedAt: latest.generated_at,
+        cached: true,
+      });
+    } catch (e: any) {
+      console.error("[RL-INSIGHTS] GET failed:", e);
+      res.json({ error: e.message, insights: [] });
+    }
+  });
+
+  // POST force-refresh (admin button)
+  app.post("/api/admin/rl-insights/refresh", adminAuth, async (_req, res) => {
+    try {
+      const fresh = await computeAndCacheInsights();
+      res.json({ insights: fresh.insights, signals: fresh.signals, source: fresh.source, generatedAt: fresh.generatedAt, cached: false });
+    } catch (e: any) {
+      console.error("[RL-INSIGHTS] refresh failed:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Background warmer: compute insights every 6 hours so the dashboard is always hot.
+  setInterval(async () => {
+    try { await computeAndCacheInsights(); }
+    catch (e: any) { console.error("[RL-INSIGHTS] bg warm failed:", e.message); }
+  }, 6 * 60 * 60 * 1000);
+  // Kick one on boot (non-blocking)
+  setTimeout(() => { computeAndCacheInsights().catch(() => {}); }, 30000);
+
   // ─── ADMIN ACQUISITION ANALYTICS ───
 
   app.get("/api/admin/acquisition", adminAuth, (req, res) => {

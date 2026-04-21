@@ -171,7 +171,6 @@ function ExpertOverview({ expert, userId, setView }: { expert: Expert; userId: n
     <div className="p-6 space-y-6" data-testid="expert-view-overview">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Expert Dashboard</h1>
-        <FeedbackButton />
       </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("earnings")} data-testid="card-stat-credits">
@@ -3017,6 +3016,8 @@ export default function ExpertDashboard() {
                 </div>
               )}
               {expert?.verified === 1 && <Badge className="hidden sm:flex bg-green-100 text-green-800 text-xs"><Award className="h-3 w-3 mr-1" />Verified</Badge>}
+              {/* Build 45.6: Feedback button visible on every section */}
+              <div className="hidden sm:block"><FeedbackButton /></div>
               {/* Fix 7: Expert name clickable → profile; Fix 4: avatar in header */}
               <button
                 className="flex items-center gap-2 hover:opacity-80 transition-opacity"

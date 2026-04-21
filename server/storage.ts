@@ -310,6 +310,16 @@ sqlite.exec(`
     effective_from TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+
+  -- Build 45.6: RL insights cache (LLM-generated recommendations for admins)
+  CREATE TABLE IF NOT EXISTS rl_insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generated_at TEXT NOT NULL,
+    source TEXT NOT NULL,              -- 'groq' | 'heuristic'
+    signals_json TEXT NOT NULL,         -- snapshot of metrics used
+    insights_json TEXT NOT NULL,        -- array of {title, rationale, impact, difficulty, suggestion}
+    model_version TEXT
+  );
 `);
 
 // FIX-5: Migration guard for file_attachments table on existing DBs

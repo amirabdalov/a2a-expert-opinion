@@ -219,7 +219,33 @@ export default function AdminDashboard() {
 
   return (
     <AdminErrorBoundary>
-    <div className="flex h-screen bg-zinc-950 text-zinc-100" data-testid="admin-dashboard">
+    {/* Build 45.6: scoped light theme override — remaps zinc dark palette to light */}
+    <style>{`
+      [data-admin-theme="light"] { background-color: #ffffff; color: #18181b; }
+      [data-admin-theme="light"] .bg-zinc-950 { background-color: #ffffff !important; }
+      [data-admin-theme="light"] .bg-zinc-900 { background-color: #ffffff !important; }
+      [data-admin-theme="light"] .bg-zinc-800 { background-color: #f4f4f5 !important; }
+      [data-admin-theme="light"] .bg-zinc-700 { background-color: #e4e4e7 !important; }
+      [data-admin-theme="light"] .bg-zinc-600 { background-color: #d4d4d8 !important; }
+      [data-admin-theme="light"] .hover\:bg-zinc-800:hover { background-color: #f4f4f5 !important; }
+      [data-admin-theme="light"] .hover\:bg-zinc-700:hover { background-color: #e4e4e7 !important; }
+      [data-admin-theme="light"] .bg-zinc-800\/50 { background-color: rgba(244,244,245,0.6) !important; }
+      [data-admin-theme="light"] .bg-zinc-800\/60 { background-color: rgba(244,244,245,0.7) !important; }
+      [data-admin-theme="light"] .text-zinc-100 { color: #18181b !important; }
+      [data-admin-theme="light"] .text-zinc-200 { color: #27272a !important; }
+      [data-admin-theme="light"] .text-zinc-300 { color: #3f3f46 !important; }
+      [data-admin-theme="light"] .text-zinc-400 { color: #52525b !important; }
+      [data-admin-theme="light"] .text-zinc-500 { color: #71717a !important; }
+      [data-admin-theme="light"] .text-zinc-600 { color: #52525b !important; }
+      [data-admin-theme="light"] .text-zinc-700 { color: #3f3f46 !important; }
+      [data-admin-theme="light"] .hover\:text-zinc-100:hover { color: #18181b !important; }
+      [data-admin-theme="light"] .hover\:text-zinc-300:hover { color: #3f3f46 !important; }
+      [data-admin-theme="light"] .border-zinc-700 { border-color: #e4e4e7 !important; }
+      [data-admin-theme="light"] .border-zinc-800 { border-color: #e4e4e7 !important; }
+      [data-admin-theme="light"] .divide-zinc-800 > :not([hidden]) ~ :not([hidden]) { border-color: #e4e4e7 !important; }
+      [data-admin-theme="light"] .placeholder\:text-zinc-500::placeholder { color: #a1a1aa !important; }
+    `}</style>
+    <div data-admin-theme="light" className="flex h-screen bg-white text-zinc-900" data-testid="admin-dashboard">
       {/* Command Palette */}
       <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} onAction={handleCmdAction} />
 
@@ -2695,11 +2721,38 @@ function SettingsPage() {
 // ===== RL CORE & BUSINESS INTELLIGENCE PAGE =====
 function IntelligencePage() {
   const { data, isLoading } = useQuery<any>({ queryKey: ["/api/admin/rl-metrics"] });
+  // Build 45.6: LLM-generated operator recommendations
+  const { data: insightsData, isLoading: insightsLoading, refetch: refetchInsights, isFetching: insightsFetching } = useQuery<any>({
+    queryKey: ["/api/admin/rl-insights"],
+    staleTime: 10 * 60 * 1000,
+  });
+  const { toast } = useToast();
+  const handleRefreshInsights = async () => {
+    try {
+      await apiRequest("POST", "/api/admin/rl-insights/refresh");
+      await refetchInsights();
+      toast({ title: "Insights refreshed" });
+    } catch (e: any) {
+      toast({ title: "Refresh failed", description: e?.message || "Try again", variant: "destructive" });
+    }
+  };
 
   if (isLoading) return <div className="p-6 text-muted-foreground">Loading RL Core metrics...</div>;
   if (!data) return <div className="p-6 text-destructive">Failed to load metrics</div>;
 
   const { rlCore, business, tiers, domains, funnel, abTests, legal } = data;
+  const insights: any[] = insightsData?.insights || [];
+  const insightsSource: string = insightsData?.source || "";
+  const insightsGeneratedAt: string = insightsData?.generatedAt || "";
+
+  const impactColor = (impact: string) =>
+    impact === "high" ? "bg-rose-100 text-rose-700 border-rose-200" :
+    impact === "medium" ? "bg-amber-100 text-amber-700 border-amber-200" :
+    "bg-slate-100 text-slate-700 border-slate-200";
+  const diffColor = (d: string) =>
+    d === "easy" ? "bg-emerald-100 text-emerald-700 border-emerald-200" :
+    d === "hard" ? "bg-rose-100 text-rose-700 border-rose-200" :
+    "bg-sky-100 text-sky-700 border-sky-200";
 
   return (
     <div className="space-y-6">
@@ -2707,6 +2760,57 @@ function IntelligencePage() {
         <h2 className="text-lg font-semibold">RL Core & Business Intelligence</h2>
         <p className="text-sm text-muted-foreground">A2A Global Reinforcement Learning Core metrics, CAC analysis, and A/B test results</p>
       </div>
+
+      {/* Build 45.6: AI Operator Recommendations (always 3–5) */}
+      <Card className="border-2 border-primary/30">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Activity className="w-4 h-4 text-primary" />
+                AI Operator Recommendations
+              </CardTitle>
+              <p className="text-xs text-muted-foreground mt-1">
+                Powered by our Reinforcement Learning Core. Data from users, experts, requests, revenue, and feedback signals.
+                {insightsGeneratedAt && (
+                  <> Last updated {new Date(insightsGeneratedAt).toLocaleString()}.</>
+                )}
+                {insightsSource && (
+                  <> Source: <span className="font-mono">{insightsSource}</span>.</>
+                )}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={handleRefreshInsights} disabled={insightsFetching} data-testid="rl-insights-refresh">
+              <RefreshCw className={`w-3.5 h-3.5 mr-1 ${insightsFetching ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {insightsLoading ? (
+            <div className="text-sm text-muted-foreground">Generating insights…</div>
+          ) : insights.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No insights yet. Click Refresh to generate.</div>
+          ) : (
+            <div className="space-y-2" data-testid="rl-insights-list">
+              {insights.map((ins: any, i: number) => (
+                <div key={i} className="p-3 rounded-lg border border-slate-200 bg-white hover:shadow-sm transition">
+                  <div className="flex items-start gap-2 mb-1">
+                    <span className="text-[10px] font-mono text-muted-foreground mt-0.5">#{i + 1}</span>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold">{ins.title}</p>
+                    </div>
+                    <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${impactColor(ins.impact)}`}>{ins.impact} impact</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${diffColor(ins.difficulty)}`}>{ins.difficulty}</span>
+                  </div>
+                  {ins.rationale && <p className="text-xs text-muted-foreground ml-6 mb-1">{ins.rationale}</p>}
+                  <p className="text-xs ml-6 text-slate-700"><span className="font-semibold">Do this:</span> {ins.suggestion}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* RL Core Metrics */}
       <div>
