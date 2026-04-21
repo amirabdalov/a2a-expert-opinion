@@ -720,25 +720,20 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
         </Card>
       )}
 
-      {/* G2-4: Merged attachments section — parsed JSON + DB-stored files + expert upload */}
-      {(parsedAttachments.length > 0 || (requestFiles && requestFiles.length > 0) || !isCompleted) && (
+      {/* Attachments — Build 44 Fix 2 (OB 2026-04-21): de-duplicate JSON + DB-stored files.
+          DB-stored files carry uploader_role and are source-of-truth; JSON entries only shown
+          when they have no DB counterpart (legacy). Same logic as client-dashboard. */}
+      {(() => {
+        const dbFilenames = new Set((requestFiles || []).map((f: any) => (f.filename || '').toLowerCase()));
+        const jsonOnly = parsedAttachments.filter((a: any) => !dbFilenames.has((a.name || '').toLowerCase()));
+        const totalCount = (requestFiles?.length || 0) + jsonOnly.length;
+        if (totalCount === 0 && isCompleted) return null;
+        return (
         <Card className="mb-4">
-          <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments{totalCount > 0 ? ` (${totalCount})` : ''}</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {/* Parsed JSON attachments (legacy — uploaded by client) */}
-              {parsedAttachments.map((a, i) => (
-                <button
-                  key={`parsed-${i}`}
-                  onClick={() => downloadFile(`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`, a.name)}
-                  className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
-                >
-                  <FileText className="h-4 w-4 shrink-0" />
-                  {a.name}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
-                </button>
-              ))}
-              {/* DB-stored file attachments */}
+              {/* DB-stored file attachments — has uploader metadata (client vs expert) */}
               {requestFiles?.map((f: any) => (
                 <button
                   key={`db-${f.id}`}
@@ -747,8 +742,23 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
                 >
                   <Paperclip className="h-4 w-4 shrink-0" />
                   {f.filename} ({(f.size / 1024).toFixed(1)} KB)
-                  {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
-                  {(f.uploader_role === 'client' || !f.uploader_role) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
+                  {f.uploader_role === 'expert' ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>
+                  ) : (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
+                  )}
+                </button>
+              ))}
+              {/* Legacy JSON-only attachments (no DB row) — assumed Client-uploaded */}
+              {jsonOnly.map((a: any, i: number) => (
+                <button
+                  key={`parsed-${i}`}
+                  onClick={() => downloadFile(`/api/files/${currentReview?.requestId}/${encodeURIComponent(a.name)}`, a.name)}
+                  className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
+                >
+                  <FileText className="h-4 w-4 shrink-0" />
+                  {a.name}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
                 </button>
               ))}
               {/* G2-4: Expert file upload */}
@@ -787,7 +797,8 @@ function ReviewDetail({ reviewId, expertId, setView }: { reviewId: number; exper
             </div>
           </CardContent>
         </Card>
-      )}
+        );
+      })()}
 
       {request.instructions && (
         <Card className="mb-4 border-amber-200 bg-amber-50/50 dark:bg-amber-900/10 dark:border-amber-900/30">

@@ -110,13 +110,24 @@ export const getQueryFn: <T>(options: {
     return await res.json();
   };
 
+// Build 44 Fix 1: Real-time UI updates — make data freshness the default so users see
+// changes (credits, messages, requests) without needing to logout/re-login. The previous
+// defaults (staleTime: Infinity, refetchOnWindowFocus: false) meant queries were cached
+// forever until explicit invalidation, causing the stale-balance/stale-messages complaints.
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
-      refetchInterval: false,
-      refetchOnWindowFocus: false,
-      staleTime: Infinity,
+      // Poll every 15s by default — tabs in background get paused by RQ automatically.
+      refetchInterval: 15000,
+      // Refetch when the tab regains focus (e.g. user comes back from another tab).
+      refetchOnWindowFocus: true,
+      // Refetch when a component first subscribes to a query (even if cached).
+      refetchOnMount: true,
+      // Consider data stale after 5s — any subscriber triggers a refetch.
+      staleTime: 5000,
+      // Keep cached data for 5 min so navigation feels instant but fresh.
+      gcTime: 5 * 60 * 1000,
       retry: false,
     },
     mutations: {

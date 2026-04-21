@@ -422,7 +422,12 @@ function ReviewQueuePanel() {
                       >
                         <FileText className="h-4 w-4 shrink-0" />
                         {f.filename} <span className="text-zinc-500">({(f.size / 1024).toFixed(1)} KB)</span>
-                        {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-400 border border-teal-500/30">Expert</span>}
+                        {/* Build 44 Fix 4 (OB 2026-04-21): label both Client and Expert uploads (previously only Expert was tagged). */}
+                        {f.uploader_role === 'expert' ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-400 border border-teal-500/30">Expert</span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30">Client</span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -1476,7 +1481,7 @@ function RequestsPage() {
   const [selected, setSelected] = useState<any>(null);
 
   // Build 39 Fix: Fetch file attachments when a request is selected
-  const { data: selectedFiles } = useQuery<Array<{ id: number; filename: string; content_type: string; size: number; created_at: string }>>({
+  const { data: selectedFiles } = useQuery<Array<{ id: number; filename: string; content_type: string; size: number; created_at: string; uploader_id?: number | null; uploader_role?: string | null }>>({
     queryKey: ["/api/files", selected?.id],
     queryFn: () => apiRequest("GET", `/api/files/${selected.id}`).then(r => r.json()).catch(() => []),
     enabled: !!selected?.id,
@@ -1634,12 +1639,13 @@ function RequestsPage() {
                 </div>
               )}
               {/* Build 39 Fix: Show file attachments in admin request detail */}
+              {/* Build 44 Fix 4 (OB 2026-04-21): add Client/Expert uploader tag per attachment. */}
               {selectedFiles && selectedFiles.length > 0 && (
                 <div>
                   <Separator className="bg-zinc-800" />
                   <span className="text-zinc-500 text-xs flex items-center gap-1 mt-2"><Paperclip className="h-3 w-3" /> Attachments ({selectedFiles.length})</span>
                   <div className="mt-2 space-y-1.5">
-                    {selectedFiles.map((f) => (
+                    {selectedFiles.map((f: any) => (
                       <button
                         key={f.id}
                         onClick={() => downloadFile(`/api/files/${selected.id}/${encodeURIComponent(f.filename)}`, f.filename)}
@@ -1647,6 +1653,11 @@ function RequestsPage() {
                       >
                         <FileText className="h-4 w-4 shrink-0" />
                         {f.filename} <span className="text-zinc-500">({(f.size / 1024).toFixed(1)} KB)</span>
+                        {f.uploader_role === 'expert' ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-400 border border-teal-500/30">Expert</span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30">Client</span>
+                        )}
                       </button>
                     ))}
                   </div>

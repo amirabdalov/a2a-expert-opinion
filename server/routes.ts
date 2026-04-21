@@ -2697,6 +2697,28 @@ export async function registerRoutes(
       const userMap = new Map(allUsers.map((u) => [u.id, u]));
       const expertMap = new Map(allExperts.map((e) => [e.id, e]));
 
+      // Build 44 Fix 4 (OB 2026-04-21): pre-fetch file attachments with Cloud SQL fallback
+      // so admin review queue always sees them (even on a fresh container after deploy).
+      const cloudSqlFilesByReq = new Map<number, any[]>();
+      try {
+        const { getPgPool } = await import("./user-data-persist");
+        const pool = await getPgPool();
+        if (pool && pendingReview.length > 0) {
+          const ids = pendingReview.map((r) => r.id);
+          const { rows } = await pool.query(
+            "SELECT id, request_id, filename, content_type, size, uploader_id, uploader_role, created_at FROM file_attachments WHERE request_id = ANY($1::int[]) ORDER BY id",
+            [ids]
+          );
+          for (const row of rows as any[]) {
+            const arr = cloudSqlFilesByReq.get(row.request_id) || [];
+            arr.push(row);
+            cloudSqlFilesByReq.set(row.request_id, arr);
+          }
+        }
+      } catch (e: any) {
+        console.error("[ADMIN-REVIEW] Cloud SQL file fetch failed:", e.message);
+      }
+
       const enriched = pendingReview.map((r) => {
         const clientUser = userMap.get(r.userId);
         let expertName = "Unknown";
@@ -2713,9 +2735,13 @@ export async function registerRoutes(
           expertResponse = completedReview?.deliverable || "";
         }
         // BUG-2 fix: Include file attachments for admin review queue
-        const fileAttachments = sqlite.prepare(
+        // Build 44: prefer SQLite (fresh), fall back to Cloud SQL (persistent across deploys)
+        let fileAttachments = sqlite.prepare(
           "SELECT id, request_id, filename, content_type, size, uploader_id, uploader_role, created_at FROM file_attachments WHERE request_id = ?"
         ).all(r.id) as any[];
+        if (!fileAttachments || fileAttachments.length === 0) {
+          fileAttachments = cloudSqlFilesByReq.get(r.id) || [];
+        }
         return {
           ...r,
           clientName: clientUser?.name || "Unknown",
@@ -3184,8 +3210,12 @@ export async function registerRoutes(
       if (!file) return res.status(400).json({ error: true, message: "No file provided" });
 
       // Build 39 Fix: Track who uploaded the file
-      const uploaderId = (req as any).user?.id || null;
-      const uploaderRole = (req as any).user?.role || null;
+      // Build 44 Fix 3 (OB 2026-04-21): userOrAdminAuth sets req.authUser (not req.user).
+      // The previous code read req.user which is always undefined, so uploader_role was
+      // persisted as NULL — that's why expert uploads showed as "Client" in the UI.
+      const authUser = (req as any).authUser || (req as any).user || {};
+      const uploaderId: number | null = (authUser.id as number) ?? null;
+      const uploaderRole: string | null = (authUser.role as string) ?? null;
 
       const base64Data = file.buffer.toString("base64");
       const now = new Date().toISOString();
@@ -3206,6 +3236,8 @@ export async function registerRoutes(
         .catch((err) => console.error(`[FILE-GCS] GCS backup failed for ${file.originalname}:`, err.message));
 
       // Persist metadata to Cloud SQL (no blob data)
+      // Build 44 Fix 3 (OB 2026-04-21): include uploader_id/uploader_role so the client vs
+      // expert tag survives across deploys (previously dropped on Cloud SQL restore).
       writeFileAttachmentToCloudSql({
         id: Number(result.lastInsertRowid),
         requestId: Number(requestId),
@@ -3213,6 +3245,8 @@ export async function registerRoutes(
         contentType: file.mimetype,
         size: file.size,
         gcsPath: gcsPath,
+        uploaderId: uploaderId,
+        uploaderRole: uploaderRole,
         createdAt: now,
       }).catch(() => {});
 
@@ -3266,11 +3300,32 @@ export async function registerRoutes(
   });
 
   // FIX-5: List files for a request (Build 39: includes uploader tracking)
-  app.get("/api/files/:requestId", userOrAdminAuth, (req, res) => {
+  // Build 44 Fix 2/3 (OB 2026-04-21): Cloud SQL fallback so file lists survive deploys.
+  // Previously this only read SQLite, which is wiped on every container restart.
+  app.get("/api/files/:requestId", userOrAdminAuth, async (req, res) => {
     try {
-      const files = sqlite.prepare(
+      const requestId = Number(req.params.requestId);
+      let files: any[] = sqlite.prepare(
         "SELECT id, request_id, filename, content_type, size, uploader_id, uploader_role, created_at FROM file_attachments WHERE request_id = ?"
-      ).all(Number(req.params.requestId));
+      ).all(requestId) as any[];
+
+      // If SQLite has nothing (fresh container after deploy), try Cloud SQL.
+      if (!files || files.length === 0) {
+        try {
+          const { getPgPool } = await import("./user-data-persist");
+          const pool = await getPgPool();
+          if (pool) {
+            const { rows } = await pool.query(
+              "SELECT id, request_id, filename, content_type, size, uploader_id, uploader_role, created_at FROM file_attachments WHERE request_id = $1 ORDER BY id",
+              [requestId]
+            );
+            files = rows as any[];
+          }
+        } catch (pgErr: any) {
+          console.error(`[FILES] Cloud SQL fallback failed for request ${requestId}:`, pgErr.message);
+        }
+      }
+
       return res.json(files);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });

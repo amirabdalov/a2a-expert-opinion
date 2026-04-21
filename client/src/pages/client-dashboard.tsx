@@ -1812,41 +1812,54 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
         </Card>
       )}
 
-      {/* Attachments — Build 39 Fix 3: Show both JSON + DB-stored files */}
-      {(parsedAttachments.length > 0 || (requestFiles && requestFiles.length > 0)) && (
-        <Card className="mb-4">
-          <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments</CardTitle></CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {/* Legacy JSON-stored attachments (uploaded by client) */}
-              {parsedAttachments.map((a, i) => (
-                <button
-                  key={`parsed-${i}`}
-                  onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(a.name)}`, a.name)}
-                  className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
-                >
-                  <FileText className="h-4 w-4 shrink-0" />
-                  {a.name}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
-                </button>
-              ))}
-              {/* DB-stored file attachments */}
-              {requestFiles?.map((f: any) => (
-                <button
-                  key={`db-${f.id}`}
-                  onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`, f.filename)}
-                  className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
-                >
-                  <Paperclip className="h-4 w-4 shrink-0" />
-                  {f.filename} ({(f.size / 1024).toFixed(1)} KB)
-                  {f.uploader_role === 'expert' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>}
-                  {(f.uploader_role === 'client' || !f.uploader_role) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>}
-                </button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Attachments — Build 44 Fix 2 (OB 2026-04-21): de-duplicate JSON + DB-stored files.
+          Previously we rendered BOTH `request.attachments` (JSON metadata) AND `file_attachments`
+          (DB rows), which showed the same file twice when the client submit flow wrote to both.
+          Now we render DB-stored files as the source of truth, and only fall back to JSON-only
+          entries for files that don't have a DB counterpart (legacy data). */}
+      {(() => {
+        const dbFilenames = new Set((requestFiles || []).map((f: any) => (f.filename || '').toLowerCase()));
+        const jsonOnly = parsedAttachments.filter((a: any) => !dbFilenames.has((a.name || '').toLowerCase()));
+        const totalCount = (requestFiles?.length || 0) + jsonOnly.length;
+        if (totalCount === 0) return null;
+        return (
+          <Card className="mb-4">
+            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Paperclip className="h-4 w-4" /> Attachments ({totalCount})</CardTitle></CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {/* DB-stored file attachments — has uploader metadata (client vs expert) */}
+                {requestFiles?.map((f: any) => (
+                  <button
+                    key={`db-${f.id}`}
+                    onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(f.filename)}`, f.filename)}
+                    className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
+                  >
+                    <Paperclip className="h-4 w-4 shrink-0" />
+                    {f.filename} ({(f.size / 1024).toFixed(1)} KB)
+                    {f.uploader_role === 'expert' ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Expert</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
+                    )}
+                  </button>
+                ))}
+                {/* Legacy JSON-only attachments (no DB row) — assumed Client-uploaded */}
+                {jsonOnly.map((a: any, i: number) => (
+                  <button
+                    key={`parsed-${i}`}
+                    onClick={() => downloadFile(`/api/files/${requestId}/${encodeURIComponent(a.name)}`, a.name)}
+                    className="flex items-center gap-2 text-primary hover:underline text-sm cursor-pointer bg-transparent border-0 p-0 text-left"
+                  >
+                    <FileText className="h-4 w-4 shrink-0" />
+                    {a.name}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Client</span>
+                  </button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Type-specific review display */}
       {request.serviceType === "rate" && (
@@ -2776,15 +2789,19 @@ export default function ClientDashboard() {
   const [showTour, setShowTour] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
 
-  // FIX-3: Live credit balance query (refreshes every 3s + on window focus, always fresh)
+  // Build 44 Fix 1: Live credit balance query — the previous endpoint `/api/users/:id`
+  // does NOT exist on the server and was falling through to the SPA (returning HTML).
+  // Switched to the real endpoint `/api/credits/:userId`. Also keep aggressive polling
+  // so the badge stays fresh during a top-up.
   const { data: liveCreditData } = useQuery<{ credits: number }>({
-    queryKey: ['/api/users', user?.id, 'credits'],
-    queryFn: () => apiRequest('GET', `/api/users/${user?.id}`).then(r => r.json()),
+    queryKey: ['/api/credits', user?.id],
+    queryFn: () => apiRequest('GET', `/api/credits/${user?.id}`).then(r => r.json()),
     enabled: !!user?.id,
     refetchInterval: 3000,
     refetchOnWindowFocus: true,
     staleTime: 0,
   });
+  // Kept for internal calculations — header now shows a plain "Credits" label (see OB-2026-04-21 comment).
   const displayCredits = liveCreditData?.credits ?? user?.credits ?? 0;
 
   // G1-1: Show confetti/tour only for genuine first-time logins (DB is source of truth)
@@ -2888,7 +2905,11 @@ export default function ClientDashboard() {
                 }
               }} />
               <button onClick={() => setView("credits")} className="focus:outline-none" title="Credits & Billing" data-testid="header-credits-link">
-                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors whitespace-nowrap"><Coins className="h-3 w-3 mr-1" />{displayCredits}<span className="hidden sm:inline"> credits</span></Badge>
+                {/* Build 44 Fix 1b (OB 2026-04-21): show a plain "Credits" label without a number.
+                    The previous numeric badge could display a stale value after top-up and was
+                    sometimes out of sync with the actual balance. Source of truth for balance lives
+                    on the Credits page. */}
+                <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80 transition-colors whitespace-nowrap"><Coins className="h-3 w-3 mr-1" />Credits</Badge>
               </button>
               <button onClick={() => setView("settings")} className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors focus:outline-none" title="Profile Settings" data-testid="header-username-link">
                 <span className="relative flex h-2 w-2" title="Online">
