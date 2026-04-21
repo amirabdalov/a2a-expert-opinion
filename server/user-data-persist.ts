@@ -1517,7 +1517,7 @@ export async function sendFullUserDataEmail(allUsers: Array<{
 
     // Experts sheet
     const expertData = [
-      ["Expert ID", "User ID", "Bio", "Expertise", "Credentials", "Rating", "Reviews", "Verified", "Tier", "Rate/min"],
+      ["Expert ID", "User ID", "Bio", "Expertise", "Credentials", "Rating", "Reviews", "Verified", "Tier", "Rate/hour"],
       ...allExperts.map(e => [e.id, e.userId, (e.bio || "").substring(0, 100), e.expertise, e.credentials, (e.rating / 10).toFixed(1), e.totalReviews, e.verified ? "Yes" : "No", e.rateTier || "", e.ratePerMinute || ""]),
     ];
     const wsExperts = XLSX.utils.aoa_to_sheet(expertData);

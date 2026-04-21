@@ -1413,7 +1413,7 @@ function ExpertsPage() {
                 <th className="text-left px-4 py-3">Education</th>
                 <th className="text-right px-4 py-3">Yrs Exp</th>
                 <th className="text-left px-4 py-3">Categories</th>
-                <th className="text-right px-4 py-3">Rate/min</th>
+                <th className="text-right px-4 py-3">Rate/hour</th>
                 <th className="text-left px-4 py-3">Tier</th>
                 <th className="text-right px-4 py-3">Rating</th>
                 <th className="text-left px-4 py-3">Verified</th>

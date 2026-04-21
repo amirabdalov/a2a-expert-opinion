@@ -2237,10 +2237,10 @@ function ExpertProfile({ expert }: { expert: Expert }) {
   const [editRate, setEditRate] = useState<string>(expert.ratePerMinute ? String(expert.ratePerMinute) : "");
   const [tierSaving, setTierSaving] = useState(false);
 
-  // Auto-determine tier from rate per minute
+  // Auto-determine tier from hourly rate (Build 45.5)
   function getTierFromRateValue(rate: number): string {
-    if (rate > 13.00) return "guru";
-    if (rate > 1.50) return "pro";
+    if (rate >= 600) return "guru";
+    if (rate >= 60) return "pro";
     return "standard";
   }
   const editTier = getTierFromRateValue(parseFloat(editRate) || 0);
@@ -2397,7 +2397,7 @@ function ExpertProfile({ expert }: { expert: Expert }) {
         <CardContent className="space-y-4">
           <div className="space-y-3">
             <div>
-              <Label className="text-sm mb-1 block">Set your rate per minute ($)</Label>
+              <Label className="text-sm mb-1 block">Set your rate per hour ($)</Label>
               <div className="flex items-center gap-3">
                 <Input
                   type="number"
@@ -2426,7 +2426,7 @@ function ExpertProfile({ expert }: { expert: Expert }) {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                $0.01–$1.50/min = Standard &nbsp;·&nbsp; $1.51–$13.00/min = Pro &nbsp;·&nbsp; $13.01+/min = Guru
+                $0.60–$60/hour = Standard &nbsp;·&nbsp; $61–$600/hour = Pro &nbsp;·&nbsp; $601+/hour = Guru
               </p>
             </div>
           </div>
@@ -2454,7 +2454,7 @@ function ExpertProfile({ expert }: { expert: Expert }) {
           </div>
           {expert.ratePerMinute && (
             <div className="text-right">
-              <p className={`text-xl font-bold ${tierStyles.label}`}>${expert.ratePerMinute}<span className="text-sm font-medium">/min</span></p>
+              <p className={`text-xl font-bold ${tierStyles.label}`}>${expert.ratePerMinute}<span className="text-sm font-medium">/hour</span></p>
               <p className="text-xs text-muted-foreground">Your rate</p>
             </div>
           )}
@@ -2561,7 +2561,7 @@ function ExpertProfile({ expert }: { expert: Expert }) {
               <InfoTooltip text="Your average score from client feedback. Higher ratings get more requests" />
             </p>
             {expert.ratePerMinute && (
-              <p className="text-xs text-muted-foreground mt-0.5">Rate: ${expert.ratePerMinute}/min · {normalizeTier(expert.rateTier)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Rate: ${expert.ratePerMinute}/hour · {normalizeTier(expert.rateTier)}</p>
             )}
             <p className="text-xs text-muted-foreground mt-1">Click avatar to update photo</p>
           </div>

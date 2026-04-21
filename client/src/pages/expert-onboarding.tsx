@@ -378,7 +378,7 @@ function PreviewStep({ expert, onComplete }: { expert: Expert; onComplete: () =>
 function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; onComplete: () => void; onSkipToVerified: () => void }) {
   const suggestedRate = getAISuggestedExpertRate(expert.yearsExperience || 1);
   const [rate, setRate] = useState(suggestedRate);
-  const [perHour, setPerHour] = useState(false);
+  // Build 45.5: all rates are hourly.
   const { toast } = useToast();
 
   const currentTier = getTierFromRate(rate);
@@ -428,7 +428,7 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
           <TrendingUp className="h-4 w-4 text-green-600" />
         </div>
         <div className="flex-1">
-          <p className="text-sm font-medium text-green-800 dark:text-green-300">AI Suggested: ${suggestedRate.toFixed(2)}/min</p>
+          <p className="text-sm font-medium text-green-800 dark:text-green-300">AI Suggested: ${suggestedRate.toFixed(2)}/hour</p>
           <p className="text-xs text-green-600 dark:text-green-400">Based on {expert.yearsExperience} years of experience</p>
         </div>
         <Button
@@ -453,28 +453,12 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
         </Badge>
       </div>
 
-      {/* Rate display */}
-      <div className="text-center mb-2">
+      {/* Rate display — Build 45.5: always per-hour */}
+      <div className="text-center mb-4">
         <p className="text-3xl font-bold" data-testid="text-expert-rate-display">
-          ${perHour ? (rate * 60).toFixed(2) : rate.toFixed(2)}
-          <span className="text-base font-normal text-muted-foreground">/{perHour ? "hour" : "min"}</span>
+          ${rate.toFixed(2)}
+          <span className="text-base font-normal text-muted-foreground">/hour</span>
         </p>
-      </div>
-
-      {/* Toggle */}
-      <div className="flex justify-center mb-4">
-        <div className="inline-flex bg-muted rounded-lg p-1">
-          <button
-            className={`px-3 py-1 text-xs rounded-md transition ${!perHour ? "bg-background shadow text-foreground" : "text-muted-foreground"}`}
-            onClick={() => setPerHour(false)}
-            data-testid="expert-toggle-per-minute"
-          >Per Minute</button>
-          <button
-            className={`px-3 py-1 text-xs rounded-md transition ${perHour ? "bg-background shadow text-foreground" : "text-muted-foreground"}`}
-            onClick={() => setPerHour(true)}
-            data-testid="expert-toggle-per-hour"
-          >Per Hour</button>
-        </div>
       </div>
 
       {/* Slider */}

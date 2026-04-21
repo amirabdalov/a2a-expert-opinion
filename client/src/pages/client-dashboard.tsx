@@ -317,15 +317,17 @@ const SERVICE_COMPLETION_TIME: Record<string, string> = {
   full_review: "4–12 hours",
   other: "2–8 hours",
 };
+// Build 45.5: tier rates are now per-hour ($/hour), ×60 from previous per-minute defaults.
 const TIER_RATES: Record<ExpertTierOverride, number> = {
-  standard: 0.50,
-  pro: 5.00,
-  guru: 20.00,
+  standard: 30.00,   // $30/hour
+  pro: 300.00,       // $300/hour
+  guru: 1200.00,     // $1200/hour
 };
 function calcEstimatedPrice(serviceType: ServiceType, tier: ExpertTierOverride): number {
+  // baseTime is in minutes; rate is per hour. Price = rate * (baseTime / 60).
   const baseTime = SERVICE_BASE_TIMES[serviceType] || 15;
   const rate = TIER_RATES[tier];
-  return baseTime * rate;
+  return (baseTime / 60) * rate;
 }
 
 function ClientSidebar({ view, setView, onLogout, onResetDraft }: { view: ClientView; setView: (v: ClientView) => void; onLogout: () => void; onResetDraft?: () => void }) {
@@ -1777,7 +1779,7 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
       <p className="text-sm text-muted-foreground mb-4 ml-10">
         {request.category} · {request.tier} tier · ${request.creditsCost} credits
         {request.priceTier && <> · <Badge variant="secondary" className="text-[10px] ml-1">{request.priceTier.replace("_", " ")}</Badge></>}
-        {request.pricePerMinute && <> · ${request.pricePerMinute}/min</>}
+        {request.pricePerMinute && <> · ${request.pricePerMinute}/hour</>}
       </p>
 
       {/* Lifecycle Status Bar */}

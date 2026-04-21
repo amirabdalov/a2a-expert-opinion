@@ -3946,7 +3946,7 @@ export async function registerRoutes(
         verified: 1, categories: JSON.stringify(["finance", "business"]),
         availability: 1, hourlyRate: 250, responseTime: "< 12 hours",
         education: "MBA, Wharton School", yearsExperience: 15, onboardingComplete: 3, verificationScore: 100,
-        ratePerMinute: "2.50", rateTier: "pro",
+        ratePerMinute: "150.00", rateTier: "pro",
       });
       storage.createWalletTransaction({ userId: expertUser.id, amountCents: 15000, type: "earning", description: "Earnings from 12 completed reviews", createdAt: new Date(Date.now() - 7 * 86400000).toISOString(), stripePaymentId: null });
 
@@ -3964,7 +3964,7 @@ export async function registerRoutes(
         verified: 1, categories: JSON.stringify(["entrepreneurship", "business"]),
         availability: 1, hourlyRate: 200, responseTime: "< 24 hours",
         education: "MBA, Stanford Graduate School of Business", yearsExperience: 10, onboardingComplete: 3, verificationScore: 90,
-        ratePerMinute: "1.50", rateTier: "pro",
+        ratePerMinute: "90.00", rateTier: "pro",
       });
       storage.createWalletTransaction({ userId: expertUser2.id, amountCents: 8500, type: "earning", description: "Earnings from 8 completed reviews", createdAt: new Date(Date.now() - 4 * 86400000).toISOString(), stripePaymentId: null });
 
@@ -3982,7 +3982,7 @@ export async function registerRoutes(
         verified: 1, categories: JSON.stringify(["finance"]),
         availability: 1, hourlyRate: 180, responseTime: "< 8 hours",
         education: "LLM in Taxation, NYU School of Law", yearsExperience: 12, onboardingComplete: 3, verificationScore: 95,
-        ratePerMinute: "3.00", rateTier: "pro",
+        ratePerMinute: "180.00", rateTier: "pro",
       });
       storage.createWalletTransaction({ userId: expertUser3.id, amountCents: 22000, type: "earning", description: "Earnings from 15 completed reviews", createdAt: new Date(Date.now() - 10 * 86400000).toISOString(), stripePaymentId: null });
 
@@ -4025,7 +4025,7 @@ export async function registerRoutes(
         expertsNeeded: 5,
         instructions: "Please rate the AI's diversification advice on a scale of 1-10.",
         llmProvider: "groq", llmModel: "Llama 3.3 70B",
-        pricePerMinute: "0.50", priceTier: "pro",
+        pricePerMinute: "30.00", priceTier: "pro",
         clientRating: null, clientRatingComment: null, refunded: 0,
       });
       storage.createExpertReview({ requestId: req1.id, expertId: expert1.id, status: "completed", rating: 8, ratingComment: "Solid diversification strategy. Well-balanced allocation percentages.", correctPoints: null, incorrectPoints: null, suggestions: null, deliverable: null, completedAt: new Date(Date.now() - 2 * 86400000).toISOString() });
@@ -4047,7 +4047,7 @@ export async function registerRoutes(
         expertsNeeded: 1,
         instructions: "Please provide a thorough review of this pricing strategy.",
         llmProvider: "groq", llmModel: "Llama 3.3 70B",
-        pricePerMinute: "1.00", priceTier: "standard",
+        pricePerMinute: "60.00", priceTier: "standard",
         clientRating: 5, clientRatingComment: "Excellent, thorough review with actionable insights!",
         refunded: 0,
       });
@@ -4076,7 +4076,7 @@ export async function registerRoutes(
         expertsNeeded: 1,
         instructions: "Build a complete 18-month financial model with revenue projections.",
         llmProvider: null, llmModel: null,
-        pricePerMinute: "5.00", priceTier: "authority",
+        pricePerMinute: "300.00", priceTier: "authority",
         clientRating: null, clientRatingComment: null, refunded: 0,
       });
       storage.createExpertReview({ requestId: req3.id, expertId: expert2.id, status: "in_progress", rating: null, ratingComment: null, correctPoints: null, incorrectPoints: null, suggestions: null, deliverable: null, completedAt: null });
@@ -4094,7 +4094,7 @@ export async function registerRoutes(
         expertsNeeded: 3,
         instructions: "Rate the accuracy and completeness of this tax advice.",
         llmProvider: "groq", llmModel: "Llama 3.3 70B",
-        pricePerMinute: "0.25", priceTier: "intermediate",
+        pricePerMinute: "15.00", priceTier: "intermediate",
         clientRating: null, clientRatingComment: null, refunded: 0,
       });
       storage.createExpertReview({ requestId: req4.id, expertId: null, status: "pending", rating: null, ratingComment: null, correctPoints: null, incorrectPoints: null, suggestions: null, deliverable: null, completedAt: null });
