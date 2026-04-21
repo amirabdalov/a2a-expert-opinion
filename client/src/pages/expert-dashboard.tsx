@@ -3016,8 +3016,6 @@ export default function ExpertDashboard() {
                 </div>
               )}
               {expert?.verified === 1 && <Badge className="hidden sm:flex bg-green-100 text-green-800 text-xs"><Award className="h-3 w-3 mr-1" />Verified</Badge>}
-              {/* Build 45.6: Feedback button visible on every section */}
-              <div className="hidden sm:block"><FeedbackButton /></div>
               {/* Fix 7: Expert name clickable → profile; Fix 4: avatar in header */}
               <button
                 className="flex items-center gap-2 hover:opacity-80 transition-opacity"
@@ -3038,7 +3036,11 @@ export default function ExpertDashboard() {
               </button>
             </div>
           </header>
-          <main className="flex-1 overflow-auto pb-16 md:pb-0">
+          <main className="flex-1 overflow-auto pb-16 md:pb-0 relative">
+            {/* Build 45.6: Floating Feedback pill — top-right of content area, on every section */}
+            <div className="hidden sm:block absolute top-4 right-6 z-30" data-testid="feedback-floating">
+              <FeedbackButton />
+            </div>
             {expertLoading ? (
               <ExpertOverviewSkeleton />
             ) : !expert ? (

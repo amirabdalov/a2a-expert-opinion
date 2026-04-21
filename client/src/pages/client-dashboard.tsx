@@ -393,7 +393,7 @@ function Overview({ userId, setView, setSelectedRequest }: { userId: number; set
     <div className="p-6 space-y-6" data-testid="view-overview">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Dashboard</h1>
-        <FeedbackButton />
+        {/* Build 45.6: Feedback button moved to floating top-right (appears on every section) */}
       </div>
 
       {/* Build 45 — Bug #5: Permanent Action Plan card */}
@@ -2966,7 +2966,11 @@ export default function ClientDashboard() {
               </button>
             </div>
           </header>
-          <main className="flex-1 overflow-auto">
+          <main className="flex-1 overflow-auto relative">
+            {/* Build 45.6: Floating Feedback pill — top-right of content area, on every section */}
+            <div className="hidden sm:block absolute top-4 right-6 z-30" data-testid="feedback-floating">
+              <FeedbackButton />
+            </div>
             {view === "overview" && <Overview userId={user.id} setView={(v) => { if (v === "new-request") setEditDraftId(undefined); setView(v); }} setSelectedRequest={setSelectedRequest} />}
             {view === "new-request" && <NewRequest key={editDraftId ?? "new"} userId={user.id} setView={setView} setSelectedRequest={setSelectedRequest} editDraftId={editDraftId} />}
             {view === "my-requests" && <MyRequests userId={user.id} setView={setView} setSelectedRequest={setSelectedRequest} onContinueDraft={(id) => { setEditDraftId(id); setView("new-request"); }} />}
