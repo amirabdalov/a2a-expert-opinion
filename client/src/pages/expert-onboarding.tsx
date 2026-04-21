@@ -383,7 +383,7 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
 
   const currentTier = getTierFromRate(rate);
   const sliderVal = getSliderValueFromRate(rate);
-  const isUltimateTier = currentTier.id === "guru";
+  // Build 45.4: no verification test required for ANY tier (including Guru).
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -493,18 +493,11 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
         </div>
       </div>
 
-      {/* Verification notice */}
-      {isUltimateTier ? (
-        <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/30 text-amber-800 dark:text-amber-300 px-4 py-3 rounded-lg text-sm" data-testid="notice-ultimate-verification">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span>Guru tier requires a verification test assignment to confirm your expertise at this level.</span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800/30 text-green-800 dark:text-green-300 px-4 py-3 rounded-lg text-sm" data-testid="notice-auto-verify">
-          <CheckCircle className="h-4 w-4 shrink-0" />
-          <span>No additional verification required for this tier. You'll be verified immediately.</span>
-        </div>
-      )}
+      {/* Verification notice — Build 45.4: no verification test required for ANY tier (including Guru) */}
+      <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800/30 text-green-800 dark:text-green-300 px-4 py-3 rounded-lg text-sm" data-testid="notice-auto-verify">
+        <CheckCircle className="h-4 w-4 shrink-0" />
+        <span>No additional verification required. You'll be verified immediately.</span>
+      </div>
 
       {/* 5 info cards */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
@@ -570,7 +563,7 @@ function RateStep({ expert, onComplete, onSkipToVerified }: { expert: Expert; on
         className="w-full"
         data-testid="button-save-rate"
       >
-        {mutation.isPending ? "Saving..." : isUltimateTier ? "Continue to Verification Test" : "Complete Verification"}
+        {mutation.isPending ? "Saving..." : "Complete Verification"}
         <ArrowRight className="ml-2 h-4 w-4" />
       </Button>
     </div>
