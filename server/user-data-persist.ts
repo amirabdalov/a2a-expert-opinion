@@ -421,27 +421,37 @@ export async function writeUserToCloudSql(user: {
 export async function writeExpertToCloudSql(expert: {
   id: number; userId: number; bio: string; expertise: string; credentials: string;
   rating: number; totalReviews: number; verified: number; categories: string;
+  availability?: number;
   rateTier?: string | null; ratePerMinute?: string | null;
   education: string; yearsExperience: number; onboardingComplete: number;
+  verificationScore?: number | null;
   createdAt?: string | null; updatedAt?: string | null;
 }): Promise<void> {
   try {
     const pool = await getPgPool();
     if (!pool) return;
+    // Build 45.3 Fix #4: include availability + verification_score in the UPSERT.
+    // Previously these were missing, so any SQLite update was silently overwritten
+    // back to the old Cloud SQL value on the next cold-start restoreFromCloudSql.
     await pool.query(
-      `INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, rate_per_minute, rate_tier, education, years_experience, onboarding_complete, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
+      `INSERT INTO experts (id, user_id, bio, expertise, credentials, rating, total_reviews, verified, categories, availability, rate_per_minute, rate_tier, education, years_experience, onboarding_complete, verification_score, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
        ON CONFLICT (id) DO UPDATE SET
          bio=EXCLUDED.bio, expertise=EXCLUDED.expertise, credentials=EXCLUDED.credentials,
          rating=EXCLUDED.rating, total_reviews=EXCLUDED.total_reviews, verified=EXCLUDED.verified,
-         categories=EXCLUDED.categories, rate_per_minute=EXCLUDED.rate_per_minute,
+         categories=EXCLUDED.categories, availability=EXCLUDED.availability,
+         rate_per_minute=EXCLUDED.rate_per_minute,
          rate_tier=EXCLUDED.rate_tier, education=EXCLUDED.education,
          years_experience=EXCLUDED.years_experience, onboarding_complete=EXCLUDED.onboarding_complete,
+         verification_score=EXCLUDED.verification_score,
          updated_at=NOW()`,
       [expert.id, expert.userId, expert.bio, expert.expertise, expert.credentials,
        expert.rating, expert.totalReviews, expert.verified, expert.categories,
+       expert.availability ?? 0,
        expert.ratePerMinute || null, expert.rateTier || null, expert.education,
-       expert.yearsExperience, expert.onboardingComplete, expert.createdAt || new Date().toISOString()]
+       expert.yearsExperience, expert.onboardingComplete,
+       expert.verificationScore ?? null,
+       expert.createdAt || new Date().toISOString()]
     );
     console.log(`[CLOUD-SQL] ✅ Expert ${expert.id} synced`);
   } catch (err) {

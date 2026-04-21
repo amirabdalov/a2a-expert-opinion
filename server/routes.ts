@@ -448,9 +448,11 @@ export async function registerRoutes(
       id: e.id, userId: e.userId, bio: e.bio, expertise: e.expertise,
       credentials: e.credentials, rating: e.rating, totalReviews: e.totalReviews,
       verified: e.verified, categories: e.categories,
+      availability: e.availability, // Build 45.3 Fix #4
       rateTier: e.rateTier, ratePerMinute: e.ratePerMinute,
       education: e.education, yearsExperience: e.yearsExperience,
       onboardingComplete: e.onboardingComplete,
+      verificationScore: e.verificationScore, // Build 45.3 Fix #4
     }).catch(() => {});
   }
   function syncCreditTxToCloud(tx: { userId: number; amount: number; type: string; description: string; takeRatePercent?: number | null; platformFee?: number | null; expertPayout?: number | null; clientPaid?: number | null }) {
@@ -1377,7 +1379,35 @@ export async function registerRoutes(
   });
 
   app.get("/api/experts/user/:userId", async (req, res) => {
-    const expert = storage.getExpertByUserId(parseInt(req.params.userId));
+    const userId = parseInt(req.params.userId);
+    let expert = storage.getExpertByUserId(userId);
+    // Build 45.3 Fix #3: Auto-heal if the expert row is missing in SQLite but
+    // the user IS an expert. This can happen if a cold-start restore raced with
+    // the register write, or an older session created the user before Build 45.1
+    // started syncing experts to Cloud SQL. Without this, the UI permanently
+    // shows "Failed to load expert profile" and the user cannot complete signup.
+    if (!expert) {
+      const user = storage.getUser(userId);
+      if (user && user.role === "expert") {
+        try {
+          const healed = storage.createExpert({
+            userId: user.id,
+            bio: "", expertise: "", credentials: "",
+            rating: 50, totalReviews: 0, verified: 0,
+            categories: "[]", availability: 0,
+            hourlyRate: null, responseTime: null,
+            education: "", yearsExperience: 0,
+            onboardingComplete: 0, verificationScore: null,
+            ratePerMinute: null, rateTier: null,
+          });
+          syncExpertToCloud(healed.id);
+          console.warn(`[HEAL] Created missing expert row for user ${user.id} (expert_id=${healed.id})`);
+          expert = healed;
+        } catch (e) {
+          console.error(`[HEAL] Failed to create expert row for user ${user.id}`, e);
+        }
+      }
+    }
     if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
     return res.json(expert);
   });
@@ -2250,15 +2280,49 @@ export async function registerRoutes(
   app.post("/api/experts/onboarding/profile", userOrAdminAuth, async (req, res) => {
     try {
       const { expertId, education, yearsExperience, categories, bio, expertise } = req.body;
-      if (!expertId) return res.status(400).json({ error: true, message: "expertId is required" });
-      const expert = storage.getExpert(Number(expertId));
-      if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
       const authUser = (req as any).authUser;
+      // Build 45.3: be lenient with expertId — if client omits it but authUser is
+      // an expert, look up their expert row ourselves. This removes a whole class
+      // of "Error saving profile" failures caused by a stale in-memory expert
+      // object on the client.
+      let resolvedExpertId = expertId ? Number(expertId) : null;
+      if (!resolvedExpertId && authUser?.role === "expert") {
+        const own = storage.getExpertByUserId(authUser.id);
+        if (own) resolvedExpertId = own.id;
+      }
+      if (!resolvedExpertId) return res.status(400).json({ error: true, message: "expertId is required" });
+      let expert = storage.getExpert(resolvedExpertId);
+      // Build 45.3 Fix #3 (auto-heal): if the expert row vanished from SQLite but
+      // the authUser is legitimately an expert, create the row on the fly.
+      if (!expert && authUser?.role === "expert") {
+        const ownerUser = storage.getUser(authUser.id);
+        if (ownerUser && ownerUser.role === "expert") {
+          try {
+            const healed = storage.createExpert({
+              userId: ownerUser.id,
+              bio: "", expertise: "", credentials: "",
+              rating: 50, totalReviews: 0, verified: 0,
+              categories: "[]", availability: 0,
+              hourlyRate: null, responseTime: null,
+              education: "", yearsExperience: 0,
+              onboardingComplete: 0, verificationScore: null,
+              ratePerMinute: null, rateTier: null,
+            });
+            syncExpertToCloud(healed.id);
+            expert = healed;
+            resolvedExpertId = healed.id;
+            console.warn(`[ONBOARDING/PROFILE][HEAL] Created missing expert row for user ${ownerUser.id}`);
+          } catch (he) {
+            console.error("[ONBOARDING/PROFILE][HEAL] failed", he);
+          }
+        }
+      }
+      if (!expert) return res.status(404).json({ error: true, message: "Expert not found" });
       if (authUser.role !== 'admin' && expert.userId !== authUser.id) return res.status(403).json({ error: true, message: "Forbidden", code: "FORBIDDEN" });
       // Validate categories is an array
       const cats = Array.isArray(categories) ? categories : [];
       // Fix 1: XSS — sanitize expert profile fields
-      const updated = storage.updateExpert(Number(expertId), {
+      const updated = storage.updateExpert(resolvedExpertId, {
         education: sanitizeHtml((education || "").toString().trim()),
         yearsExperience: Math.max(0, parseInt(yearsExperience) || 0),
         categories: JSON.stringify(cats),

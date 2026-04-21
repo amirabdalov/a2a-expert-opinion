@@ -3,15 +3,29 @@ import { getToken } from "./auth";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
-function getAuthHeaders(): Record<string, string> {
+function getAuthHeaders(url?: string): Record<string, string> {
   const headers: Record<string, string> = {};
-  // Admin token takes priority (for admin panel), user JWT is fallback
+  // Build 45.3 Fix #1: Admin token ONLY applies to admin routes. Previously, if a
+  // founder tested expert signup in the same browser where they had an admin token
+  // in localStorage, every user-route call was signed with the admin token — which
+  // could be expired/invalid/from a different JWT_SECRET, causing the 401 handler
+  // to wipe the fresh expert session and show "Error saving profile".
+  const isAdminRoute =
+    (url && url.startsWith("/api/admin")) ||
+    (typeof window !== "undefined" && window.location.hash.startsWith("#/admin"));
   const adminToken = localStorage.getItem("adminToken");
-  if (adminToken) {
+  if (isAdminRoute && adminToken) {
     headers["Authorization"] = `Bearer ${adminToken}`;
   } else {
-    const token = getToken();
-    if (token) {
+    // Prefer in-memory token; fall back to cookie (survives hard reload).
+    let token = getToken();
+    if (!token && typeof document !== "undefined") {
+      try {
+        const m = document.cookie.match(/(?:^|;\s*)a2a_token=([^;]*)/);
+        if (m) token = decodeURIComponent(m[1]);
+      } catch {}
+    }
+    if (token && token !== "null" && token !== "undefined") {
       headers["Authorization"] = `Bearer ${token}`;
     }
   }
@@ -56,12 +70,17 @@ async function throwIfResNotOk(res: Response) {
     // auto-clear the dead session and redirect to login. We clone the response so we
     // don't consume the body before the caller can read it.
     if (res.status === 401) {
+      // Build 45.3 Fix #5: only wipe the session on REAL token failures
+      // (TOKEN_INVALID / TOKEN_EXPIRED). AUTH_REQUIRED can fire on any request
+      // that temporarily missed the Authorization header (e.g. a background
+      // poll that ran before the cookie was hydrated on hard reload); wiping
+      // cookies on that case caused "Error saving profile" mid-form even
+      // though the save itself would have succeeded.
       const isAdminRoute = typeof window !== "undefined" && window.location.hash.startsWith("#/admin");
-      const hasAdminToken = typeof localStorage !== "undefined" && !!localStorage.getItem("adminToken");
-      if (!isAdminRoute && !hasAdminToken) {
+      if (!isAdminRoute) {
         try {
           const body = await res.clone().json();
-          if (body?.code === "TOKEN_INVALID" || body?.code === "TOKEN_EXPIRED" || body?.code === "AUTH_REQUIRED") {
+          if (body?.code === "TOKEN_INVALID" || body?.code === "TOKEN_EXPIRED") {
             handleSessionInvalid(body.code, body.message || "Your session expired. Please log in again.");
           }
         } catch {}
@@ -104,7 +123,7 @@ export function getFileDownloadUrl(path: string): string {
  *  Falls back to token-in-URL approach if fetch fails. */
 export async function downloadFile(apiPath: string, filename: string): Promise<void> {
   try {
-    const res = await fetch(`${API_BASE}${apiPath}`, { headers: getAuthHeaders() });
+    const res = await fetch(`${API_BASE}${apiPath}`, { headers: getAuthHeaders(apiPath) });
     if (!res.ok) throw new Error(`${res.status}`);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -126,7 +145,7 @@ export async function apiRequest(
   data?: unknown | undefined,
 ): Promise<Response> {
   const headers: Record<string, string> = {
-    ...getAuthHeaders(),
+    ...getAuthHeaders(url),
     ...(data ? { "Content-Type": "application/json" } : {}),
   };
   const res = await fetch(`${API_BASE}${url}`, {
@@ -145,8 +164,9 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(`${API_BASE}${queryKey.join("/")}`, {
-      headers: getAuthHeaders(),
+    const path = queryKey.join("/");
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: getAuthHeaders(path),
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
