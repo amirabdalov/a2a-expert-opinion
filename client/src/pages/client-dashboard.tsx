@@ -24,7 +24,7 @@ import { useSSE } from "@/hooks/use-sse";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { NotificationBell } from "@/components/notification-bell";
 import { OnboardingTour, CLIENT_TOUR_STEPS } from "@/components/onboarding-tour";
-import { FloatingHelp } from "@/components/floating-help";
+import { FeedbackButton } from "@/components/feedback-button";
 import { getPrefillData, clearPrefillData, setPrefillData } from "@/lib/prefill-state";
 import {
   PRICING_TIERS, getTierFromRate, getSliderValueFromRate, getRateFromSliderValue,
@@ -389,7 +389,47 @@ function Overview({ userId, setView, setSelectedRequest }: { userId: number; set
 
   return (
     <div className="p-6 space-y-6" data-testid="view-overview">
-      <h1 className="text-xl font-bold">Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">Dashboard</h1>
+        <FeedbackButton />
+      </div>
+
+      {/* Build 45 — Bug #5: Permanent Action Plan card */}
+      <Card className="border-blue-200 bg-blue-50 dark:bg-blue-900/10 dark:border-blue-900/30" data-testid="card-action-plan">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <Info className="h-5 w-5 text-blue-500 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-blue-800 dark:text-blue-300 mb-2">Simple steps to get started</p>
+              <ol className="text-sm text-blue-700 dark:text-blue-400 space-y-1 list-decimal list-inside">
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setView("credits")}
+                    className="font-medium underline hover:text-blue-900 dark:hover:text-blue-200 transition-colors"
+                    data-testid="action-plan-topup"
+                  >
+                    Top up your account
+                  </button>
+                  {" "}— add credits via bank transfer in Credits &amp; Billing.
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setView("new-request")}
+                    className="font-medium underline hover:text-blue-900 dark:hover:text-blue-200 transition-colors"
+                    data-testid="action-plan-new-request"
+                  >
+                    Create New Request
+                  </button>
+                  {" "}— describe what you need an expert to review.
+                </li>
+              </ol>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* FIX-6: Clickable overview cards */}
         <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("credits")} data-testid="card-stat-credits">
@@ -2940,7 +2980,6 @@ export default function ClientDashboard() {
         </div>
         {showTour && <OnboardingTour steps={CLIENT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}
         {showConfetti && <Confetti />}
-        <FloatingHelp />
       </div>
     </SidebarProvider>
   );

@@ -13,13 +13,22 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql } from "./user-data-persist";
+import * as XLSX from "xlsx";
 
 // Bug-2 fix: Track server start time for health check grace period
 const SERVER_START_TIME = Date.now();
 
 // ─── JWT Admin Auth ───
+// Build 45 (AA bugs #1/#6 TOKEN_INVALID): JWT_SECRET MUST be explicitly set in the
+// environment. Falling back to a hardcoded default means any env-var drift between
+// deployments would invalidate every user's cookie-stored token with a confusing
+// "Invalid or expired token" error. If the env var is missing we fail fast at boot
+// rather than silently issuing tokens signed with a weak default.
 const JWT_SECRET = process.env.JWT_SECRET || "a2a-admin-jwt-secret-2026-build31";
+if (!process.env.JWT_SECRET) {
+  console.warn("[AUTH] WARNING: JWT_SECRET env var is not set — falling back to default. This is unsafe in production and causes token invalidation on env drift.");
+}
 
 function signAdminToken(admin: { id: number; email: string; name: string }): string {
   return jwt.sign({ id: admin.id, email: admin.email, name: admin.name, role: "admin" }, JWT_SECRET, { expiresIn: "24h" });
@@ -49,12 +58,20 @@ function userOrAdminAuth(req: ExpressRequest, res: ExpressResponse, next: NextFu
     return res.status(401).json({ error: true, message: "Authentication required", code: "AUTH_REQUIRED" });
   }
   const token = authHeader.substring(7);
+  // Build 45 (AA bugs #1/#6): distinguish expired vs tampered/wrong-secret tokens
+  // so the client can auto-logout and redirect to login for TOKEN_EXPIRED/TOKEN_INVALID
+  // instead of showing a dead-end red toast mid-form.
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { id: number; email: string; role: string };
     (req as any).authUser = decoded;
     next();
-  } catch {
-    return res.status(401).json({ error: true, message: "Invalid or expired token", code: "TOKEN_INVALID" });
+  } catch (err: any) {
+    const isExpired = err?.name === "TokenExpiredError";
+    return res.status(401).json({
+      error: true,
+      message: isExpired ? "Your session expired. Please log in again." : "Invalid or expired token",
+      code: isExpired ? "TOKEN_EXPIRED" : "TOKEN_INVALID",
+    });
   }
 }
 
@@ -495,7 +512,19 @@ export async function registerRoutes(
       // Check if email already exists
       const existing = storage.getUserByEmail(email);
       if (existing) {
-        // User exists — treat as login (send OTP)
+        // Build 45 (AA bug #2): if the user tried to register with a DIFFERENT role
+        // than the account already has, block it with a clear 409 — never silently
+        // log them into the wrong dashboard (the exact bug AA saw: chose Expert,
+        // landed in Client Portal because the email was already a Client account).
+        if (existing.role !== role) {
+          return res.status(409).json({
+            error: true,
+            code: "EMAIL_ROLE_MISMATCH",
+            message: `This email is already registered as ${existing.role === "expert" ? "an Expert" : "a Client"}. Please log in instead, or use a different email to register as ${role === "expert" ? "an Expert" : "a Client"}.`,
+            existingRole: existing.role,
+          });
+        }
+        // Same role — treat as login (send OTP)
         const otp = generateOtp();
         otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: existing.name });
         try { await sendOtpEmail(email, existing.name, otp); } catch (emailErr) { console.error("[OTP] Email send error:", emailErr); }
@@ -4962,6 +4991,126 @@ export async function registerRoutes(
       const aaVerify = storage.createAdminAction({ adminEmail: adminUser?.email || "unknown", actionType: "verify_bank", targetType: "verification", targetId: vId, details: `Verified bank details for expert verification #${vId}` });
       writeAdminActionToCloudSql({ id: aaVerify.id, adminEmail: aaVerify.adminEmail, actionType: aaVerify.actionType, targetType: aaVerify.targetType, targetId: aaVerify.targetId, details: aaVerify.details, createdAt: aaVerify.createdAt }).catch(() => {});
       return res.json(v);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // ─── Build 45 (AA bug #3): Feedback ──────────────────────────────
+  // Users submit from the "Feedback F" popover on client/expert dashboards.
+  // Persisted to SQLite + mirrored to Cloud SQL. Admin can list & export XLSX.
+  const feedbackLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000, // 10 min window
+    max: 20, // 20 submissions per IP per 10min — generous but not open-door
+    message: { error: true, message: "Too many feedback submissions, please try again later", code: "RATE_LIMITED" },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] as string || 'unknown',
+  });
+
+  // Reference-number generator: FDB-100000001, FDB-100000002, ...
+  // Uses the numeric primary key + 100000000 offset so the visible ref matches
+  // AA's spec starting at FDB-100000001 for row #1.
+  function buildFeedbackReference(id: number): string {
+    return `FDB-${100000000 + id}`;
+  }
+
+  // POST /api/feedback — submit user feedback (authenticated)
+  app.post("/api/feedback", feedbackLimiter, userOrAdminAuth, async (req, res) => {
+    try {
+      const authUser = (req as any).authUser;
+      const { message, pageUrl } = req.body || {};
+      if (!message || typeof message !== "string" || !message.trim()) {
+        return res.status(400).json({ error: true, message: "Feedback message is required" });
+      }
+      const trimmed = message.trim();
+      if (trimmed.length > 5000) {
+        return res.status(400).json({ error: true, message: "Feedback is too long (max 5000 characters)" });
+      }
+      // Look up the user name/role for the feedback row (so admin sees name even if user later changes email)
+      let userName: string | null = null;
+      let userRoleForRow: string | null = authUser?.role || null;
+      if (authUser?.id) {
+        const u = storage.getUser(authUser.id);
+        if (u) {
+          userName = u.name;
+          userRoleForRow = u.role;
+        }
+      }
+      const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+      const ua = (req.headers["user-agent"] as string) || "unknown";
+      const createdAt = new Date().toISOString();
+      // XSS-safe: store raw, but render-escaped on display; also bound length (done above)
+      const insert = sqlite.prepare(
+        `INSERT INTO feedback (reference_number, user_id, user_name, user_email, user_role, message, page_url, user_agent, ip_address, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      // Two-phase insert so the ref number matches the actual row id deterministically.
+      const temp = insert.run("__pending__", authUser?.id || null, userName, authUser?.email || null, userRoleForRow, trimmed, (pageUrl || "").toString().slice(0, 500), ua.slice(0, 500), ip.slice(0, 100), createdAt);
+      const newId = Number(temp.lastInsertRowid);
+      const refNum = buildFeedbackReference(newId);
+      sqlite.prepare("UPDATE feedback SET reference_number = ? WHERE id = ?").run(refNum, newId);
+      writeFeedbackToCloudSql({
+        referenceNumber: refNum,
+        userId: authUser?.id || null,
+        userName,
+        userEmail: authUser?.email || null,
+        userRole: userRoleForRow,
+        message: trimmed,
+        pageUrl: pageUrl || null,
+        userAgent: ua,
+        ipAddress: ip,
+        createdAt,
+      }).catch(() => {});
+      return res.json({
+        success: true,
+        referenceNumber: refNum,
+        createdAt,
+      });
+    } catch (e: any) {
+      console.error("[FEEDBACK/SUBMIT]", e);
+      return res.status(500).json({ error: true, message: e.message || "Failed to save feedback" });
+    }
+  });
+
+  // GET /api/admin/feedback — admin list (most recent first)
+  app.get("/api/admin/feedback", adminAuth, async (_req, res) => {
+    try {
+      const rows = sqlite.prepare(
+        `SELECT id, reference_number, user_id, user_name, user_email, user_role, message, page_url, created_at
+         FROM feedback ORDER BY id DESC`
+      ).all();
+      return res.json(rows);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // GET /api/admin/feedback/export — Excel download
+  app.get("/api/admin/feedback/export", adminAuth, async (_req, res) => {
+    try {
+      const rows = sqlite.prepare(
+        `SELECT reference_number AS "Reference Number",
+                created_at AS "Timestamp (UTC)",
+                user_name AS "User Name",
+                user_email AS "User Email",
+                user_role AS "Role",
+                page_url AS "Page URL",
+                message AS "Message"
+         FROM feedback ORDER BY id DESC`
+      ).all();
+      const ws = XLSX.utils.json_to_sheet(rows);
+      // Set reasonable column widths
+      ws["!cols"] = [
+        { wch: 18 }, { wch: 22 }, { wch: 24 }, { wch: 28 }, { wch: 10 }, { wch: 40 }, { wch: 80 },
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Feedback");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      const filename = `a2a-feedback-${new Date().toISOString().split("T")[0]}.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(buf);
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }

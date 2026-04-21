@@ -335,6 +335,29 @@ try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN uploader_role TEXT");
 try { sqlite.exec("ALTER TABLE file_attachments ADD COLUMN gcs_path TEXT"); } catch {}
 console.log("[DB] file_attachments uploader columns ensured.");
 
+// Build 45 (AA bug #3): Feedback submissions from the in-app "Feedback F" button
+// on Client and Expert dashboards. Rendered in the Admin Panel with Excel export.
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reference_number TEXT UNIQUE NOT NULL,
+    user_id INTEGER,
+    user_name TEXT,
+    user_email TEXT,
+    user_role TEXT,
+    message TEXT NOT NULL,
+    page_url TEXT,
+    user_agent TEXT,
+    ip_address TEXT,
+    created_at TEXT NOT NULL
+  )`);
+  sqlite.exec("CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC)");
+  sqlite.exec("CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id)");
+  console.log("[DB] feedback table ensured.");
+} catch (e: any) {
+  console.log("[DB] feedback migration:", e.message);
+}
+
 // Topup requests table — ensure it exists (may already be created by inline DDL)
 try {
   sqlite.exec(`CREATE TABLE IF NOT EXISTS topup_requests (

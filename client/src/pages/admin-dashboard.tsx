@@ -31,7 +31,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "@/components/ui/select";
 
-type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence" | "acquisition" | "review_queue";
+type AdminPage = "dashboard" | "users" | "experts" | "requests" | "transactions" | "withdrawals" | "notifications" | "settings" | "intelligence" | "acquisition" | "review_queue" | "feedback";
 
 const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any; badgeKey?: string }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -45,6 +45,7 @@ const NAV_ITEMS: Array<{ id: AdminPage; label: string; icon: any; badgeKey?: str
   { id: "settings", label: "Settings", icon: Settings },
   { id: "intelligence", label: "RL Core & BI", icon: Activity },
   { id: "acquisition", label: "Acquisition", icon: BarChart3 },
+  { id: "feedback", label: "Feedback", icon: MessageSquare },
 ];
 
 // Fix 12: Build chart data from real API data
@@ -300,6 +301,7 @@ export default function AdminDashboard() {
           {page === "settings" && <SettingsPage />}
           {page === "intelligence" && <IntelligencePage />}
           {page === "acquisition" && <AcquisitionPanel />}
+          {page === "feedback" && <FeedbackPage />}
         </div>
       </main>
     </div>
@@ -2882,6 +2884,92 @@ function IntelligencePage() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Feedback Page (Build 45 — Bug #3) ───
+function FeedbackPage() {
+  const { toast } = useToast();
+  const { data: feedback, isLoading, refetch } = useQuery<any[]>({
+    queryKey: ["/api/admin/feedback"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/feedback");
+      return res.json();
+    },
+  });
+
+  const rows = safeArray<any>(feedback);
+
+  const handleExport = async () => {
+    try {
+      await downloadFile(
+        "/api/admin/feedback/export",
+        `a2a-feedback-${new Date().toISOString().split("T")[0]}.xlsx`,
+      );
+      toast({ title: "Download started", description: "Excel export saved." });
+    } catch (e: any) {
+      toast({ title: "Export failed", description: e?.message || "Try again.", variant: "destructive" });
+    }
+  };
+
+  return (
+    <div data-testid="admin-feedback-page">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h1 className="text-lg font-semibold">Feedback</h1>
+          <p className="text-sm text-zinc-500 mt-1">User feedback submissions — most recent first.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="feedback-refresh">
+            <RefreshCw className="h-4 w-4 mr-1" /> Refresh
+          </Button>
+          <Button size="sm" onClick={handleExport} data-testid="feedback-export-xlsx">
+            <Download className="h-4 w-4 mr-1" /> Download Excel
+          </Button>
+        </div>
+      </div>
+
+      <Card className="bg-zinc-900 border-zinc-700">
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="p-6 text-sm text-zinc-400">Loading…</div>
+          ) : rows.length === 0 ? (
+            <div className="p-6 text-sm text-zinc-400" data-testid="feedback-empty">No feedback submitted yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="feedback-table">
+                <thead className="bg-zinc-800 text-zinc-300">
+                  <tr>
+                    <th className="text-left p-3 font-medium">Reference</th>
+                    <th className="text-left p-3 font-medium">Date</th>
+                    <th className="text-left p-3 font-medium">Name</th>
+                    <th className="text-left p-3 font-medium">Email</th>
+                    <th className="text-left p-3 font-medium">Role</th>
+                    <th className="text-left p-3 font-medium">Page</th>
+                    <th className="text-left p-3 font-medium">Message</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {rows.map((r: any) => (
+                    <tr key={r.id} className="hover:bg-zinc-800/50" data-testid={`feedback-row-${r.id}`}>
+                      <td className="p-3 font-mono text-blue-400">{r.reference_number || `FDB-${100000000 + r.id}`}</td>
+                      <td className="p-3 text-zinc-300 whitespace-nowrap">{r.created_at ? formatCentralTime(r.created_at) : "—"}</td>
+                      <td className="p-3 text-zinc-200">{r.user_name || "—"}</td>
+                      <td className="p-3 text-zinc-400">{r.user_email || "—"}</td>
+                      <td className="p-3">
+                        <Badge variant="outline" className="text-[10px]">{r.user_role || "unknown"}</Badge>
+                      </td>
+                      <td className="p-3 text-zinc-500 max-w-[200px] truncate" title={r.page_url || ""}>{r.page_url || "—"}</td>
+                      <td className="p-3 text-zinc-200 max-w-[400px] whitespace-pre-wrap break-words">{r.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

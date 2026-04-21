@@ -23,7 +23,7 @@ import { useSSE } from "@/hooks/use-sse";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { NotificationBell } from "@/components/notification-bell";
 import { OnboardingTour, EXPERT_TOUR_STEPS } from "@/components/onboarding-tour";
-import { FloatingHelp } from "@/components/floating-help";
+import { FeedbackButton } from "@/components/feedback-button";
 import {
   LayoutDashboard, Inbox, PlayCircle, History, DollarSign, UserCircle, LogOut,
   Clock, CheckCircle, Star, Award, Send, MessageSquare, Coins, TrendingUp,
@@ -169,7 +169,10 @@ function ExpertOverview({ expert, userId, setView }: { expert: Expert; userId: n
 
   return (
     <div className="p-6 space-y-6" data-testid="expert-view-overview">
-      <h1 className="text-xl font-bold">Expert Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">Expert Dashboard</h1>
+        <FeedbackButton />
+      </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="cursor-pointer hover:shadow-md transition" onClick={() => setView("earnings")} data-testid="card-stat-credits">
           <CardContent className="p-4"><div className="flex items-center gap-3"><Coins className="h-8 w-8 text-green-500" /><div><p className="text-2xl font-bold">${creditData?.credits ?? 0}</p><p className="text-xs text-muted-foreground">$ Credits Balance <InfoTooltip text="Your current available credits balance" /></p></div></div></CardContent>
@@ -3064,7 +3067,6 @@ export default function ExpertDashboard() {
         <MobileBottomTabs view={view} setView={setView} onLogout={handleLogout} />
         {showTour && <OnboardingTour steps={EXPERT_TOUR_STEPS} onComplete={() => setShowTour(false)} userId={user.id} />}
         {showConfetti && <ExpertConfetti />}
-        <FloatingHelp />
       </div>
     </SidebarProvider>
   );

@@ -30,6 +30,19 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [submitted, setSubmitted] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [existingEmailLogin, setExistingEmailLogin] = useState(false);
+  // Build 45 (AA bugs #1/#6): session-expired banner (set by queryClient.ts when a
+  // 401 TOKEN_INVALID/EXPIRED is intercepted anywhere in the app).
+  const [sessionBanner, setSessionBanner] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("a2a_session_expired");
+      if (raw) {
+        const { message } = JSON.parse(raw);
+        if (message) setSessionBanner(message);
+        sessionStorage.removeItem("a2a_session_expired");
+      }
+    } catch {}
+  }, []);
   // Resend code timer
   const [resendTimer, setResendTimer] = useState(0);
   const resendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -135,15 +148,38 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
         const utmSource = hashParams.get('utm_source') || undefined;
         const utmMedium = hashParams.get('utm_medium') || undefined;
         const utmCampaign = hashParams.get('utm_campaign') || undefined;
-        const res = await apiRequest("POST", "/api/auth/register", { 
-          name, email, role, 
-          utmSource, utmMedium, utmCampaign, 
-          referrer: document.referrer || undefined,
-          landingPage: window.location.hash.split('?')[0] || undefined
+        // Build 45 (AA bug #2): call the register endpoint directly so we can
+        // intercept the 409 EMAIL_ROLE_MISMATCH response and show a targeted error,
+        // instead of apiRequest throwing a generic "409: {...}" toast.
+        const regRes = await fetch(`/api/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name, email, role,
+            utmSource, utmMedium, utmCampaign,
+            referrer: document.referrer || undefined,
+            landingPage: window.location.hash.split('?')[0] || undefined,
+          }),
         });
-        const data = await res.json();
+        const data = await regRes.json().catch(() => ({}));
+        if (regRes.status === 409 && data?.code === "EMAIL_ROLE_MISMATCH") {
+          setFormErrors({
+            email: data.message || `This email is already registered as a different role.`,
+          });
+          toast({
+            title: "Email already registered as a different role",
+            description: data.message,
+            variant: "destructive",
+          });
+          return;
+        }
+        if (!regRes.ok) {
+          const msg = data?.message || `Registration failed (${regRes.status})`;
+          toast({ title: "Failed to send code", description: msg, variant: "destructive" });
+          return;
+        }
         if (data.existing) {
-          // Email already registered — server already sent OTP, switch to OTP step
+          // Email already registered with SAME role — server sent login OTP, switch to OTP step
           setExistingEmailLogin(true);
           setStep("otp");
           startResendTimer();
@@ -245,6 +281,12 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
         </Link>
 
         <Card>
+          {/* Build 45 (AA bugs #1/#6): one-shot banner if we got kicked here by a dead JWT */}
+          {sessionBanner && (
+            <div className="mx-4 mt-4 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800/40 p-3 text-sm text-amber-900 dark:text-amber-200" data-testid="session-expired-banner">
+              {sessionBanner}
+            </div>
+          )}
           <CardHeader className="text-center pb-4">
             <img src={logoSrc} alt="A2A Global" className="h-10 mx-auto mb-3" />
 

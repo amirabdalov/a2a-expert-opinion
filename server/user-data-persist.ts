@@ -355,6 +355,22 @@ async function ensurePgTables(pool: pg.Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
+    // Build 45 (AA bug #3): Feedback submissions persisted across deploys
+    `CREATE TABLE IF NOT EXISTS feedback (
+      id SERIAL PRIMARY KEY,
+      reference_number TEXT UNIQUE NOT NULL,
+      user_id INTEGER,
+      user_name TEXT,
+      user_email TEXT,
+      user_role TEXT,
+      message TEXT NOT NULL,
+      page_url TEXT,
+      user_agent TEXT,
+      ip_address TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id)",
     // Backfill NULLs in Cloud SQL
     "UPDATE users SET created_at = NOW() WHERE created_at IS NULL",
     "UPDATE users SET updated_at = NOW() WHERE updated_at IS NULL",
@@ -747,6 +763,31 @@ export async function writeTopupRequestToCloudSql(data: {
     );
   } catch (err) {
     console.error("[CLOUD-SQL] TopupRequest write failed:", (err as Error).message?.substring(0, 100));
+  }
+}
+
+// Build 45 (AA bug #3): Mirror every feedback submission to Cloud SQL so it
+// survives Cloud Run revision replacements and is visible in the Admin panel
+// across deploys. Uses reference_number as the idempotency key.
+export async function writeFeedbackToCloudSql(data: {
+  referenceNumber: string; userId?: number | null; userName?: string | null;
+  userEmail?: string | null; userRole?: string | null; message: string;
+  pageUrl?: string | null; userAgent?: string | null; ipAddress?: string | null;
+  createdAt: string;
+}): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    await pool.query(
+      `INSERT INTO feedback (reference_number, user_id, user_name, user_email, user_role, message, page_url, user_agent, ip_address, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (reference_number) DO NOTHING`,
+      [data.referenceNumber, data.userId ?? null, data.userName ?? null, data.userEmail ?? null,
+       data.userRole ?? null, data.message, data.pageUrl ?? null, data.userAgent ?? null,
+       data.ipAddress ?? null, data.createdAt]
+    );
+  } catch (err) {
+    console.error("[CLOUD-SQL] Feedback write failed:", (err as Error).message?.substring(0, 100));
   }
 }
 
@@ -1169,6 +1210,28 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
       }
       console.log(`[RESTORE] Topup requests: ${trInserted} inserted, ${result.rows.length - trInserted} skipped`);
     } catch (err) { console.error("[RESTORE] topup_requests failed:", (err as Error).message?.substring(0, 80)); }
+
+    // Build 45 (AA bug #3): Restore feedback so prior submissions survive redeploys
+    try {
+      const result = await pool.query("SELECT * FROM feedback ORDER BY id");
+      let fbInserted = 0;
+      for (const f of result.rows) {
+        try {
+          const existing = sqliteDb.prepare("SELECT id FROM feedback WHERE reference_number = ?").get(f.reference_number);
+          if (!existing) {
+            sqliteDb.prepare(
+              "INSERT INTO feedback (reference_number, user_id, user_name, user_email, user_role, message, page_url, user_agent, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).run(
+              f.reference_number, f.user_id || null, f.user_name || null, f.user_email || null, f.user_role || null,
+              f.message, f.page_url || null, f.user_agent || null, f.ip_address || null,
+              f.created_at ? new Date(f.created_at).toISOString() : new Date().toISOString()
+            );
+            fbInserted++;
+          }
+        } catch {}
+      }
+      console.log(`[RESTORE] Feedback: ${fbInserted} inserted, ${result.rows.length - fbInserted} skipped`);
+    } catch (err) { console.error("[RESTORE] feedback failed:", (err as Error).message?.substring(0, 80)); }
 
     // Restore admin_actions
     try {

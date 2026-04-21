@@ -18,8 +18,55 @@ function getAuthHeaders(): Record<string, string> {
   return headers;
 }
 
+// Build 45 (AA bugs #1/#6): centralized session-invalid handler. When the server
+// says the JWT is invalid/expired (TOKEN_INVALID or TOKEN_EXPIRED), we clear the
+// cookies + in-memory token and send the user back to /login with a friendly
+// message, rather than surfacing a red "401: {...}" toast from the middle of a form.
+// Skips admin routes (admin has its own auth flow).
+let sessionRedirectInFlight = false;
+function handleSessionInvalid(code: string, message: string) {
+  if (sessionRedirectInFlight) return;
+  sessionRedirectInFlight = true;
+  try {
+    // Clear user session cookies
+    document.cookie = "a2a_session=; path=/; max-age=0; SameSite=None; Secure";
+    document.cookie = "a2a_user=; path=/; max-age=0; SameSite=None; Secure";
+    document.cookie = "a2a_token=; path=/; max-age=0; SameSite=None; Secure";
+    // Stash a one-shot banner for the login page to display
+    sessionStorage.setItem(
+      "a2a_session_expired",
+      JSON.stringify({ code, message, at: Date.now() }),
+    );
+  } catch {}
+  // Redirect to login — but only if we're on an authenticated route
+  const hash = window.location.hash || "";
+  const onAuthRoute = /^#\/(login|register|$|\?|\/)/.test(hash) || hash === "";
+  if (!onAuthRoute) {
+    window.location.hash = "/login";
+    // Hard reload so any in-memory state that still thinks we're logged in is cleared
+    setTimeout(() => window.location.reload(), 50);
+  } else {
+    sessionRedirectInFlight = false;
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
+    // Build 45: for 401s with TOKEN_INVALID/TOKEN_EXPIRED on user (non-admin) routes,
+    // auto-clear the dead session and redirect to login. We clone the response so we
+    // don't consume the body before the caller can read it.
+    if (res.status === 401) {
+      const isAdminRoute = typeof window !== "undefined" && window.location.hash.startsWith("#/admin");
+      const hasAdminToken = typeof localStorage !== "undefined" && !!localStorage.getItem("adminToken");
+      if (!isAdminRoute && !hasAdminToken) {
+        try {
+          const body = await res.clone().json();
+          if (body?.code === "TOKEN_INVALID" || body?.code === "TOKEN_EXPIRED" || body?.code === "AUTH_REQUIRED") {
+            handleSessionInvalid(body.code, body.message || "Your session expired. Please log in again.");
+          }
+        } catch {}
+      }
+    }
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
   }
