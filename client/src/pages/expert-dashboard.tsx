@@ -2830,12 +2830,34 @@ export default function ExpertDashboard() {
   // SSE real-time notifications
   useSSE(user?.id);
 
-  const { data: expert, isLoading: expertLoading, error: expertError } = useQuery<Expert>({
+  const { data: expert, isLoading: expertLoading, error: expertError, refetch: refetchExpert, isFetching: expertFetching } = useQuery<Expert>({
     queryKey: ["/api/experts/user", user?.id],
     enabled: !!user,
-    retry: 3,
-    retryDelay: 500,
+    retry: 5,
+    retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 4000),
+    // Build 45.6.4: keep last successful data during background refetch so a
+    // transient blip after a mutation does not flash "Failed to load expert profile."
+    placeholderData: (prev) => prev,
   });
+
+  // Build 45.6.4: auto-recover on transient error — silently retry up to 3x.
+  const expertErrorRetriesRef = useRef(0);
+  useEffect(() => {
+    if (expertError && !expert && expertErrorRetriesRef.current < 3) {
+      const t = setTimeout(() => {
+        expertErrorRetriesRef.current += 1;
+        // eslint-disable-next-line no-console
+        console.warn("[expert-dashboard] transient expert-profile fetch error, auto-retry", {
+          attempt: expertErrorRetriesRef.current,
+          userId: user?.id,
+          errorMsg: (expertError as any)?.message,
+        });
+        refetchExpert();
+      }, 3000);
+      return () => clearTimeout(t);
+    }
+    if (expert) expertErrorRetriesRef.current = 0;
+  }, [expertError, expert, refetchExpert, user?.id]);
 
   // Sync headerAvailability from fetched expert data
   useEffect(() => {
@@ -2903,26 +2925,28 @@ export default function ExpertDashboard() {
     return null;
   }
 
-  // Show loading while expert data is being fetched
-  if (expertLoading) {
+  // Build 45.6.4: if we have expert data, NEVER block render on a background error.
+  // Only show a soft retry screen if we genuinely have no data and retries exhausted.
+  if (!expert) {
+    const autoRetriesExhausted = !!expertError && expertErrorRetriesRef.current >= 3 && !expertFetching;
+
+    if (autoRetriesExhausted) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background">
+          <div className="text-center space-y-3">
+            <p className="text-sm text-muted-foreground">Taking a moment to reach the server. This should only take a few seconds.</p>
+            <div className="flex gap-2 justify-center">
+              <Button variant="outline" size="sm" onClick={() => { expertErrorRetriesRef.current = 0; refetchExpert(); }}>Retry now</Button>
+              <Button variant="ghost" size="sm" onClick={() => { logout(); setLocation("/login"); }}>Sign in again</Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <p className="text-sm text-muted-foreground">Loading expert dashboard...</p>
-      </div>
-    );
-  }
-
-  // Handle error loading expert profile
-  if (expertError || !expert) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center space-y-3">
-          <p className="text-sm text-destructive">Failed to load expert profile.</p>
-          <div className="flex gap-2 justify-center">
-            <Button variant="outline" size="sm" onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/experts/user", user?.id] })}>Try Again</Button>
-            <Button variant="outline" size="sm" onClick={() => { logout(); setLocation("/login"); }}>Back to Login</Button>
-          </div>
-        </div>
       </div>
     );
   }

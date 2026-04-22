@@ -757,12 +757,35 @@ export default function ExpertOnboarding() {
     document.documentElement.classList.remove("dark");
   }, []);
 
-  const { data: expert, isLoading, error } = useQuery<Expert>({
+  const { data: expert, isLoading, error, refetch, isFetching } = useQuery<Expert>({
     queryKey: ["/api/experts/user", user?.id],
     enabled: !!user,
-    retry: 3,
-    retryDelay: 500,
+    retry: 5,
+    retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 4000),
+    // Build 45.6.4: keep last successful data visible during refetch so a transient
+    // network blip after save-rate does not flash "Failed to load expert profile."
+    placeholderData: (prev) => prev,
   });
+
+  // Build 45.6.4: auto-recover on transient error — silently retry every 3s
+  // (up to 3 times) if query errored but we have no stale data to fall back to.
+  const errorRetriesRef = useRef(0);
+  useEffect(() => {
+    if (error && !expert && errorRetriesRef.current < 3) {
+      const t = setTimeout(() => {
+        errorRetriesRef.current += 1;
+        // eslint-disable-next-line no-console
+        console.warn("[expert-onboarding] transient expert-profile fetch error, auto-retry", {
+          attempt: errorRetriesRef.current,
+          userId: user?.id,
+          errorMsg: (error as any)?.message,
+        });
+        refetch();
+      }, 3000);
+      return () => clearTimeout(t);
+    }
+    if (expert) errorRetriesRef.current = 0;
+  }, [error, expert, refetch, user?.id]);
 
   const [step, setStep] = useState<OnboardingStep>("profile");
   const [testResult, setTestResult] = useState<{ passed: boolean; message: string } | null>(null);
@@ -789,21 +812,26 @@ export default function ExpertOnboarding() {
     return null;
   }
 
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center space-y-3">
-          <p className="text-sm text-destructive">Failed to load expert profile.</p>
-          <div className="flex gap-2 justify-center">
-            <Button variant="outline" size="sm" onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/experts/user", user?.id] })}>Try Again</Button>
-            <Button variant="outline" size="sm" onClick={() => setLocation("/login")}>Back to Login</Button>
+  // Build 45.6.4: if we have expert data, NEVER show error screen — just render.
+  // Transient errors on background refetch after a save should not scare the user.
+  // Only show a soft retry screen if we genuinely have no data AND all auto-retries failed.
+  if (!expert) {
+    const autoRetriesExhausted = !!error && errorRetriesRef.current >= 3 && !isFetching;
+
+    if (autoRetriesExhausted) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background">
+          <div className="text-center space-y-3">
+            <p className="text-sm text-muted-foreground">Taking a moment to reach the server. This should only take a few seconds.</p>
+            <div className="flex gap-2 justify-center">
+              <Button variant="outline" size="sm" onClick={() => { errorRetriesRef.current = 0; refetch(); }}>Retry now</Button>
+              <Button variant="ghost" size="sm" onClick={() => setLocation("/login")}>Sign in again</Button>
+            </div>
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  if (isLoading || !expert) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <p className="text-sm text-muted-foreground">Loading...</p>
