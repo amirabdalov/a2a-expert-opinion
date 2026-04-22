@@ -1187,6 +1187,27 @@ export async function registerRoutes(
     }
   });
 
+  // Build 45.6.8: detailed backup status (env label, last success, consecutive failures, target path)
+  app.get("/api/admin/backup-status", adminAuth, async (_req, res) => {
+    try {
+      const { getBackupStats } = await import("./db-persistence");
+      res.json(getBackupStats());
+    } catch (err: any) {
+      res.status(500).json({ error: true, message: err.message });
+    }
+  });
+
+  // Build 45.6.8: trigger a timestamped snapshot manually
+  app.post("/api/admin/backup-snapshot", adminAuth, async (_req, res) => {
+    try {
+      const { snapshotDatabase } = await import("./db-persistence");
+      const ok = await snapshotDatabase("manual");
+      res.json({ ok, message: ok ? "Snapshot uploaded to /snapshots/manual/." : "Snapshot failed. See logs." });
+    } catch (err: any) {
+      res.status(500).json({ error: true, message: err.message });
+    }
+  });
+
   app.get("/api/health", async (_req, res) => {
     const { isBackupHealthy } = await import("./db-persistence");
     const userCount = sqlite.prepare("SELECT COUNT(*) as cnt FROM users").get() as any;
