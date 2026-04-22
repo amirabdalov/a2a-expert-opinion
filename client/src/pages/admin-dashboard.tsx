@@ -1436,6 +1436,7 @@ function ExpertsPage() {
               <tr className="border-b border-zinc-800 text-zinc-400 text-xs">
                 <th className="text-left px-4 py-3">ID</th>
                 <th className="text-left px-4 py-3">Name</th>
+                <th className="text-left px-4 py-3">Email</th>
                 <th className="text-left px-4 py-3">Education</th>
                 <th className="text-right px-4 py-3">Yrs Exp</th>
                 <th className="text-left px-4 py-3">Categories</th>
@@ -1464,6 +1465,21 @@ function ExpertsPage() {
                       >
                         {e.userName}
                       </a>
+                    </td>
+                    {/* Build 45.6.6: Email column — mailto link + copy-on-click */}
+                    <td className="px-4 py-3 text-zinc-300 text-xs">
+                      {e.userEmail ? (
+                        <a
+                          href={`mailto:${e.userEmail}`}
+                          className="hover:text-teal-400 hover:underline transition-colors break-all"
+                          data-testid={`link-expert-email-${e.id}`}
+                          title={e.userEmail}
+                        >
+                          {e.userEmail}
+                        </a>
+                      ) : (
+                        <span className="text-zinc-500">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-zinc-400 text-xs">{e.education || "—"}</td>
                     <td className="px-4 py-3 text-right text-zinc-300">{e.yearsExperience}</td>
