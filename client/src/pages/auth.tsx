@@ -20,6 +20,11 @@ type Step = "email" | "otp";
 function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [mode, setMode] = useState<Mode>(initialMode);
   const [role, setRole] = useState<Role>("client");
+  // Build 45.6.1: Track whether role was explicitly chosen (URL param or user click).
+  // If the user lands on /#/register with no ?role= param, they MUST pick one before
+  // the rest of the form renders — prevents the "silently-becomes-client" bug where
+  // users who intended to be experts got blocked by the duplicate-role guard on retry.
+  const [roleExplicit, setRoleExplicit] = useState<boolean>(false);
   const [step, setStep] = useState<Step>("email");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -98,8 +103,8 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     const searchParams = new URLSearchParams(window.location.search);
     const roleFromSearch = searchParams.get('role');
     const roleParam = roleFromHash || roleFromSearch;
-    if (roleParam === 'expert') setRole('expert');
-    else if (roleParam === 'client') setRole('client');
+    if (roleParam === 'expert') { setRole('expert'); setRoleExplicit(true); }
+    else if (roleParam === 'client') { setRole('client'); setRoleExplicit(true); }
   }, []);
 
   // Cleanup resend timer on unmount
@@ -131,6 +136,8 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
     setSubmitted(true);
     // Validate form fields
     const errors: Record<string, string> = {};
+    // Build 45.6.1: Require explicit role pick on register
+    if (isRegister && !roleExplicit) errors.role = "Please choose 'I'm a Client' or 'I'm an Expert' first";
     if (isRegister && !name.trim()) errors.name = "Full name is required";
     if (!email.trim()) errors.email = "Email address is required";
     if (isRegister && !termsAccepted) errors.terms = "Please accept the Terms to continue";
@@ -337,44 +344,56 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
               <form onSubmit={handleSendCode} className="space-y-4">
                 {/* Role toggle — only on register */}
                 {isRegister && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setRole("client")}
-                      className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
-                        role === "client"
-                          ? "border-primary bg-primary/5 shadow-sm"
-                          : "border-border hover:border-muted-foreground/40"
-                      }`}
-                      data-testid="toggle-role-client"
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <Briefcase className={`h-4 w-4 ${role === "client" ? "text-primary" : "text-muted-foreground"}`} />
-                        <span className="text-sm font-medium">I'm a Client</span>
+                  <div>
+                    {!roleExplicit && (
+                      <div className="mb-2 rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-900/10 dark:border-blue-900/30 px-3 py-2">
+                        <p className="text-xs text-blue-900 dark:text-blue-100 font-medium" data-testid="role-pick-prompt">
+                          Who are you? Please choose before continuing.
+                        </p>
                       </div>
-                      <p className="text-xs text-muted-foreground leading-snug">
-                        Get expert opinion on AI decisions. De-risk your strategies.
-                      </p>
-                    </button>
+                    )}
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => { setRole("client"); setRoleExplicit(true); }}
+                        className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
+                          roleExplicit && role === "client"
+                            ? "border-primary bg-primary/5 shadow-sm"
+                            : "border-border hover:border-muted-foreground/40"
+                        }`}
+                        data-testid="toggle-role-client"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <Briefcase className={`h-4 w-4 ${roleExplicit && role === "client" ? "text-primary" : "text-muted-foreground"}`} />
+                          <span className="text-sm font-medium">I'm a Client</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-snug">
+                          Get expert opinion on AI decisions. De-risk your strategies.
+                        </p>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setRole("expert")}
-                      className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
-                        role === "expert"
-                          ? "border-amber-500 bg-amber-50 dark:bg-amber-900/10 shadow-sm"
-                          : "border-border hover:border-muted-foreground/40"
-                      }`}
-                      data-testid="toggle-role-expert"
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <Star className={`h-4 w-4 ${role === "expert" ? "text-amber-500" : "text-muted-foreground"}`} />
-                        <span className="text-sm font-medium">I'm an Expert</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground leading-snug">
-                        Get matched with clients. Validate AI output. Get paid.
-                      </p>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => { setRole("expert"); setRoleExplicit(true); }}
+                        className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all ${
+                          roleExplicit && role === "expert"
+                            ? "border-amber-500 bg-amber-50 dark:bg-amber-900/10 shadow-sm"
+                            : "border-border hover:border-muted-foreground/40"
+                        }`}
+                        data-testid="toggle-role-expert"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <Star className={`h-4 w-4 ${roleExplicit && role === "expert" ? "text-amber-500" : "text-muted-foreground"}`} />
+                          <span className="text-sm font-medium">I'm an Expert</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-snug">
+                          Get matched with clients. Validate AI output. Get paid.
+                        </p>
+                      </button>
+                    </div>
+                    {formErrors.role && (
+                      <p className="text-xs text-destructive mt-1" data-testid="role-error">{formErrors.role}</p>
+                    )}
                   </div>
                 )}
 
