@@ -1252,6 +1252,12 @@ function UsersPage() {
     u.email?.toLowerCase().includes(search.toLowerCase())
   );
 
+  // Build 45.6.7: Totals for Users table
+  const totalUsers = filtered.length;
+  const totalCredits = filtered.reduce((s: number, u: any) => s + (u.credits || 0), 0);
+  const totalWalletCents = filtered.reduce((s: number, u: any) => s + (u.walletBalance || 0), 0);
+  const activeUsers = filtered.filter((u: any) => u.active !== 0).length;
+
   return (
     <div data-testid="admin-users-page">
       <div className="flex items-center justify-between mb-4">
@@ -1266,6 +1272,34 @@ function UsersPage() {
             className="pl-9 bg-zinc-900 border-zinc-700 text-zinc-200 placeholder:text-zinc-600"
           />
         </div>
+      </div>
+
+      {/* Build 45.6.7: Totals summary */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" data-testid="users-totals">
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-teal-400" data-testid="total-users-count">{totalUsers}</div>
+            <div className="text-xs text-zinc-500">Total Users</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-emerald-400">{activeUsers}</div>
+            <div className="text-xs text-zinc-500">Active</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-amber-400">{totalCredits.toLocaleString()}</div>
+            <div className="text-xs text-zinc-500">Total Credits</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-blue-400">${(totalWalletCents / 100).toFixed(2)}</div>
+            <div className="text-xs text-zinc-500">Total Wallet</div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
@@ -1400,6 +1434,15 @@ function ExpertsPage() {
     return true;
   });
 
+  // Build 45.6.7: Totals for Experts table
+  const totalExperts = filtered.length;
+  const verifiedCount = filtered.filter((e: any) => e.verified).length;
+  const totalReviews = filtered.reduce((s: number, e: any) => s + (e.totalReviews || 0), 0);
+  const ratingsWithReviews = filtered.filter((e: any) => (e.totalReviews || 0) > 0);
+  const avgRating = ratingsWithReviews.length > 0
+    ? (ratingsWithReviews.reduce((s: number, e: any) => s + ((e.rating || 0) / 10), 0) / ratingsWithReviews.length).toFixed(2)
+    : "—";
+
   return (
     <div data-testid="admin-experts-page">
       <div className="flex items-center justify-between mb-4">
@@ -1427,6 +1470,34 @@ function ExpertsPage() {
             </SelectContent>
           </Select>
         </div>
+      </div>
+
+      {/* Build 45.6.7: Totals summary */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" data-testid="experts-totals">
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-teal-400" data-testid="total-experts-count">{totalExperts}</div>
+            <div className="text-xs text-zinc-500">Total Experts</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-emerald-400">{verifiedCount}</div>
+            <div className="text-xs text-zinc-500">Verified</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-blue-400">{totalReviews.toLocaleString()}</div>
+            <div className="text-xs text-zinc-500">Total Reviews</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-amber-400">{avgRating}</div>
+            <div className="text-xs text-zinc-500">Avg Rating</div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
@@ -1548,6 +1619,12 @@ function RequestsPage() {
     return true;
   });
 
+  // Build 45.6.7: Totals for Requests table
+  const totalRequests = filtered.length;
+  const pendingCount = filtered.filter((r: any) => r.status === "pending").length;
+  const completedCount = filtered.filter((r: any) => r.status === "completed").length;
+  const totalCost = filtered.reduce((s: number, r: any) => s + (r.creditsCost || 0), 0);
+
   const statusColor: Record<string, string> = {
     pending: "bg-amber-500/10 text-amber-400 border-amber-500/20",
     in_progress: "bg-blue-500/10 text-blue-400 border-blue-500/20",
@@ -1593,6 +1670,34 @@ function RequestsPage() {
             </SelectContent>
           </Select>
         </div>
+      </div>
+
+      {/* Build 45.6.7: Totals summary */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" data-testid="requests-totals">
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-teal-400" data-testid="total-requests-count">{totalRequests}</div>
+            <div className="text-xs text-zinc-500">Total Requests</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-amber-400">{pendingCount}</div>
+            <div className="text-xs text-zinc-500">Pending</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-emerald-400">{completedCount}</div>
+            <div className="text-xs text-zinc-500">Completed</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-3 text-center">
+            <div className="text-lg font-bold text-blue-400">{totalCost.toLocaleString()} cr</div>
+            <div className="text-xs text-zinc-500">Total Cost</div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
@@ -2020,7 +2125,14 @@ function TransactionsPage() {
       )}
 
       {/* Summary cards with take rate data */}
-      <div className="grid grid-cols-3 gap-3 mb-3">
+      {/* Build 45.6.7: Total transaction count */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3" data-testid="transactions-totals">
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="p-4 text-center">
+            <div className="text-lg font-bold text-teal-400" data-testid="total-tx-count">{filtered.length}</div>
+            <div className="text-xs text-zinc-500">Total Transactions</div>
+          </CardContent>
+        </Card>
         <Card className="bg-zinc-900 border-zinc-800">
           <CardContent className="p-4 text-center">
             <div className="text-lg font-bold text-emerald-400">${totalIn.toFixed(2)}</div>
@@ -2035,7 +2147,7 @@ function TransactionsPage() {
         </Card>
         <Card className="bg-zinc-900 border-zinc-800">
           <CardContent className="p-4 text-center">
-            <div className="text-lg font-bold text-teal-400">${(totalIn - totalOut).toFixed(2)}</div>
+            <div className="text-lg font-bold text-cyan-400">${(totalIn - totalOut).toFixed(2)}</div>
             <div className="text-xs text-zinc-500">Net Balance</div>
           </CardContent>
         </Card>
@@ -2314,10 +2426,33 @@ function WithdrawalsPage() {
 
   const [selectedVerification, setSelectedVerification] = useState<any>(null);
 
+  // Build 45.6.7: Totals for Withdrawals page (3 tables)
+  const verificationsArr = safeArray(verifications);
+  const verificationsCount = verificationsArr.length;
+  const verificationsVerified = verificationsArr.filter((v: any) => v.verifiedByAdmin).length;
+  const withdrawalRequestsArr = safeArray(withdrawalRequests);
+  const withdrawalRequestsCount = withdrawalRequestsArr.length;
+  const withdrawalRequestsPending = withdrawalRequestsArr.filter((wr: any) => wr.status === "pending").length;
+  // `wr.amount` is a dollar number on this endpoint
+  const withdrawalRequestsTotal = withdrawalRequestsArr.reduce((s: number, wr: any) => s + (Number(wr.amount) || 0), 0);
+  const legacyWithdrawalsArr = safeArray(withdrawals);
+  const legacyWithdrawalsCount = legacyWithdrawalsArr.length;
+  const legacyWithdrawalsPending = legacyWithdrawalsArr.filter((w: any) => w.status === "pending").length;
+  // amountCents is cents
+  const legacyWithdrawalsTotalCents = legacyWithdrawalsArr.reduce((s: number, w: any) => s + (w.amountCents || 0), 0);
+
   return (
     <div data-testid="admin-withdrawals-page">
       {/* OB-J: Expert ID / Bank Verification Section */}
-      <h1 className="text-lg font-semibold mb-4">Expert ID / Bank Verification</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-semibold">Expert ID / Bank Verification</h1>
+        {/* Build 45.6.7: Totals */}
+        <div className="flex items-center gap-2 text-xs" data-testid="verifications-totals">
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Total: <span className="font-semibold text-teal-400 ml-1">{verificationsCount}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Verified: <span className="font-semibold text-emerald-400 ml-1">{verificationsVerified}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Pending: <span className="font-semibold text-amber-400 ml-1">{verificationsCount - verificationsVerified}</span></Badge>
+        </div>
+      </div>
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden mb-8">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -2473,7 +2608,15 @@ function WithdrawalsPage() {
       </Dialog>
 
       {/* OB-J: Withdrawal Requests Section */}
-      <h1 className="text-lg font-semibold mb-4">Withdrawal Requests</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-semibold">Withdrawal Requests</h1>
+        {/* Build 45.6.7: Totals */}
+        <div className="flex items-center gap-2 text-xs" data-testid="withdrawal-requests-totals">
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Total: <span className="font-semibold text-teal-400 ml-1">{withdrawalRequestsCount}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Pending: <span className="font-semibold text-amber-400 ml-1">{withdrawalRequestsPending}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Amount: <span className="font-semibold text-blue-400 ml-1">${withdrawalRequestsTotal.toFixed(2)}</span></Badge>
+        </div>
+      </div>
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden mb-8">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -2558,7 +2701,15 @@ function WithdrawalsPage() {
       </Card>
 
       {/* Legacy Withdrawals (from old system) */}
-      <h1 className="text-lg font-semibold mb-4">Legacy Withdrawals</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-semibold">Legacy Withdrawals</h1>
+        {/* Build 45.6.7: Totals */}
+        <div className="flex items-center gap-2 text-xs" data-testid="legacy-withdrawals-totals">
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Total: <span className="font-semibold text-teal-400 ml-1">{legacyWithdrawalsCount}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Pending: <span className="font-semibold text-amber-400 ml-1">{legacyWithdrawalsPending}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Amount: <span className="font-semibold text-blue-400 ml-1">${(legacyWithdrawalsTotalCents / 100).toFixed(2)}</span></Badge>
+        </div>
+      </div>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
         <div className="overflow-x-auto">
@@ -2624,9 +2775,22 @@ function WithdrawalsPage() {
 function NotificationsPage() {
   const { data: notifications } = useQuery<any[]>({ queryKey: ["/api/admin/notifications"] });
 
+  // Build 45.6.7: Totals
+  const notificationsArr = safeArray(notifications);
+  const totalNotifications = notificationsArr.length;
+  const unreadCount = notificationsArr.filter((n: any) => !n.read).length;
+
   return (
     <div data-testid="admin-notifications-page">
-      <h1 className="text-lg font-semibold mb-4">System Notifications</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-semibold">System Notifications</h1>
+        {/* Build 45.6.7: Totals */}
+        <div className="flex items-center gap-2 text-xs" data-testid="notifications-totals">
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Total: <span className="font-semibold text-teal-400 ml-1">{totalNotifications}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Unread: <span className="font-semibold text-blue-400 ml-1">{unreadCount}</span></Badge>
+          <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Read: <span className="font-semibold text-zinc-400 ml-1">{totalNotifications - unreadCount}</span></Badge>
+        </div>
+      </div>
 
       <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
         <div className="overflow-x-auto">
@@ -3041,6 +3205,10 @@ function FeedbackPage() {
           <p className="text-sm text-zinc-500 mt-1">User feedback submissions — most recent first.</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Build 45.6.7: Totals */}
+          <div className="flex items-center gap-2 text-xs mr-2" data-testid="feedback-totals">
+            <Badge className="bg-zinc-800 text-zinc-300 border-zinc-700">Total: <span className="font-semibold text-teal-400 ml-1">{rows.length}</span></Badge>
+          </div>
           <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="feedback-refresh">
             <RefreshCw className="h-4 w-4 mr-1" /> Refresh
           </Button>
