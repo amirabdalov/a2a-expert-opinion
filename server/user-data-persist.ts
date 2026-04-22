@@ -390,6 +390,27 @@ export async function initCloudSql(): Promise<void> {
   if (pool) await ensurePgTables(pool);
 }
 
+// Build 45.6.2 — hard-delete user from Cloud SQL (admin only). Also removes related rows.
+// Must be called AFTER storage.deleteUser so the periodic sync can't resurrect the row.
+export async function deleteUserFromCloudSql(userId: number): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    // Order matters — children first
+    await pool.query(`DELETE FROM credit_transactions WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM notifications WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM legal_acceptances WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM wallet_transactions WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM feedback WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM topup_requests WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM experts WHERE user_id = $1`, [userId]).catch(() => {});
+    await pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
+    console.log(`[CLOUD-SQL] 🗑️  Hard-deleted user ${userId} + related rows`);
+  } catch (err) {
+    console.error("[CLOUD-SQL] ❌ User delete failed:", (err as Error).message?.substring(0, 120));
+  }
+}
+
 export async function writeUserToCloudSql(user: {
   id: number; name: string; email: string; role: string;
   company?: string | null; credits: number;

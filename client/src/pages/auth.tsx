@@ -35,6 +35,11 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
   const [submitted, setSubmitted] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [existingEmailLogin, setExistingEmailLogin] = useState(false);
+  // Build 45.6.2: when server returns EMAIL_ROLE_MISMATCH, offer a one-click
+  // "Switch to the other role" button that hits /api/auth/register-upgrade.
+  // Only works for pristine accounts (server enforces).
+  const [roleMismatch, setRoleMismatch] = useState<{ existingRole: "client" | "expert"; targetRole: "client" | "expert" } | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
   // Build 45 (AA bugs #1/#6): session-expired banner (set by queryClient.ts when a
   // 401 TOKEN_INVALID/EXPIRED is intercepted anywhere in the app).
   const [sessionBanner, setSessionBanner] = useState<string | null>(null);
@@ -173,6 +178,11 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
           setFormErrors({
             email: data.message || `This email is already registered as a different role.`,
           });
+          // Build 45.6.2 — offer role-switch button
+          setRoleMismatch({
+            existingRole: (data.existingRole || "client") as "client" | "expert",
+            targetRole: role,
+          });
           toast({
             title: "Email already registered as a different role",
             description: data.message,
@@ -180,6 +190,8 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
           });
           return;
         }
+        // Clear mismatch state on any other response
+        setRoleMismatch(null);
         if (!regRes.ok) {
           const msg = data?.message || `Registration failed (${regRes.status})`;
           toast({ title: "Failed to send code", description: msg, variant: "destructive" });
@@ -203,6 +215,43 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
       toast({ title: "Failed to send code", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Build 45.6.2 — one-click recovery when user hit EMAIL_ROLE_MISMATCH and
+  // wants to flip their account to the chosen role. Server allows only if
+  // the account is pristine (no activity beyond the welcome bonus).
+  async function handleRoleUpgrade() {
+    if (!roleMismatch) return;
+    setUpgrading(true);
+    try {
+      const res = await fetch(`/api/auth/register-upgrade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, name, targetRole: roleMismatch.targetRole }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: data?.code === "NOT_PRISTINE" ? "Cannot switch role" : "Failed to switch role",
+          description: data?.message || `Error ${res.status}… please contact support.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({
+        title: "Role switched",
+        description: `Your account is now ${roleMismatch.targetRole === "expert" ? "an Expert" : "a Client"}. Check your email for the verification code.`,
+      });
+      setRoleMismatch(null);
+      setFormErrors({});
+      setExistingEmailLogin(true); // OTP goes to verify-login on next step
+      setStep("otp");
+      startResendTimer();
+    } catch (err: any) {
+      toast({ title: "Failed to switch role", description: err.message, variant: "destructive" });
+    } finally {
+      setUpgrading(false);
     }
   }
 
@@ -432,6 +481,27 @@ function AuthPage({ initialMode }: { initialMode: Mode }) {
                     />
                   </div>
                   {formErrors.email && <p className="text-xs text-destructive mt-1">{formErrors.email}</p>}
+                  {/* Build 45.6.2 — role-mismatch recovery: one-click switch to the chosen role */}
+                  {roleMismatch && (
+                    <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                      <p className="text-sm text-amber-900 mb-2">
+                        Was this a mistake? If you meant to register as {roleMismatch.targetRole === "expert" ? "an Expert" : "a Client"}, switch your account now.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full border-amber-500 text-amber-900 hover:bg-amber-100"
+                        onClick={handleRoleUpgrade}
+                        disabled={upgrading || !email}
+                        data-testid="btn-role-upgrade"
+                      >
+                        {upgrading ? "Switching…" : `Switch to ${roleMismatch.targetRole === "expert" ? "Expert" : "Client"}`}
+                      </Button>
+                      <p className="text-[11px] text-amber-700 mt-2">
+                        Only works if the account has no activity yet. If you already used the account, contact support.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* UX-5: "Create Account" for signup, "Send Verification Code" for login */}

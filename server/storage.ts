@@ -553,6 +553,7 @@ export interface IStorage {
   getAllUsers(): User[];
   createUser(user: InsertUser): User;
   updateUser(id: number, data: Partial<InsertUser>): User | undefined;
+  deleteUser(id: number): boolean; // Build 45.6.2 — hard-delete user from SQLite + MemStorage
   // Experts
   getExpert(id: number): Expert | undefined;
   getExpertByUserId(userId: number): Expert | undefined;
@@ -668,6 +669,12 @@ export class DatabaseStorage implements IStorage {
   }
   updateUser(id: number, data: Partial<InsertUser>): User | undefined {
     return db.update(users).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(users.id, id)).returning().get();
+  }
+  // Build 45.6.2 — hard-delete user (admin only). Removes from SQLite. Caller must also
+  // delete expert row, legal_acceptances, notifications, transactions, and Cloud SQL row.
+  deleteUser(id: number): boolean {
+    const result = db.delete(users).where(eq(users.id, id)).run();
+    return (result.changes ?? 0) > 0;
   }
 
   // Experts

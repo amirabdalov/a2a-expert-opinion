@@ -13,7 +13,7 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql, deleteUserFromCloudSql } from "./user-data-persist";
 import * as XLSX from "xlsx";
 
 // Bug-2 fix: Track server start time for health check grace period
@@ -477,9 +477,14 @@ export async function registerRoutes(
     keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] as string || 'unknown',
   });
 
+  // Build 45.6.2 — relaxed from 5/hr to 30/hr. 5/hr was blocking legitimate
+  // founder-driven tests and user retries on staging (AA report 2026-04-22).
+  // Production risk remains low: the EMAIL_ROLE_MISMATCH guard and per-email
+  // OTP expiry prevent abuse even at higher register rates. Re-evaluate before
+  // large-scale launch.
   const registerLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour window
-    max: 5, // 5 registrations per IP per hour
+    max: 30, // 30 registrations per IP per hour (was 5 pre-45.6.2)
     message: { error: true, message: "Too many registration attempts, please try again later", code: "RATE_LIMITED" },
     standardHeaders: true,
     legacyHeaders: false,
@@ -508,6 +513,14 @@ export async function registerRoutes(
   // POST /api/auth/register — send OTP to new user
   app.post("/api/auth/register", registerLimiter, async (req, res) => {
     try {
+      // Build 45.6.2 — telemetry: log EXACTLY what the client sent so we can
+      // prove whether AA's "I clicked Expert but got Client" reports are due to
+      // the client sending the wrong role or something happening server-side.
+      const ipLog = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+      const uaLog = (req.headers['user-agent'] || 'unknown').toString().substring(0, 120);
+      const originLog = (req.headers['origin'] || req.headers['referer'] || 'unknown').toString().substring(0, 120);
+      console.log(`[REGISTER] ip=${ipLog} ua="${uaLog}" origin="${originLog}" body.role=${JSON.stringify(req.body?.role)} body.email=${JSON.stringify(req.body?.email)} body.name=${JSON.stringify(req.body?.name)}`);
+
       const data = otpRegisterSchema.parse(req.body);
       const { name, email, role } = data;
 
@@ -624,6 +637,73 @@ export async function registerRoutes(
       return res.json({ message: "OTP sent", email });
     } catch (e: any) {
       return res.status(400).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 45.6.2 — POST /api/auth/register-upgrade
+  // Recovery path for the exact Sumant/AA bug: user registers as Client by mistake
+  // and wants to switch to Expert. Only allowed for PRISTINE accounts (no txns
+  // beyond welcome bonus, no requests, no reviews, no withdrawals). Sends OTP.
+  app.post("/api/auth/register-upgrade", registerLimiter, async (req, res) => {
+    try {
+      const { email, name, targetRole } = req.body || {};
+      if (!email || !targetRole || (targetRole !== "expert" && targetRole !== "client")) {
+        return res.status(400).json({ error: true, code: "BAD_INPUT", message: "email and targetRole (expert|client) required" });
+      }
+      const ipLog = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+      console.log(`[REGISTER-UPGRADE] ip=${ipLog} email=${email} targetRole=${targetRole}`);
+      const user = storage.getUserByEmail(email);
+      if (!user) return res.status(404).json({ error: true, code: "NOT_FOUND", message: "No account with that email" });
+      if (user.role === targetRole) {
+        // No-op — already correct role, just send OTP so they can log in
+        const otp = generateOtp();
+        otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: user.name });
+        try { await sendOtpEmail(email, user.name, otp); } catch {}
+        return res.json({ message: "OTP sent", email, alreadyRole: true });
+      }
+      // Pristine check — no activity beyond welcome bonus
+      const txns = storage.getTransactionsByUser(user.id);
+      const nonWelcome = txns.filter((t: any) => t.type !== "bonus");
+      if (nonWelcome.length > 0) {
+        return res.status(409).json({ error: true, code: "NOT_PRISTINE", message: "Account has activity — contact support to change role" });
+      }
+      const userRequests = storage.getRequestsByUser(user.id);
+      if (userRequests.length > 0) {
+        return res.status(409).json({ error: true, code: "NOT_PRISTINE", message: "Account has requests — contact support" });
+      }
+      // Flip role in MemStorage + SQLite
+      storage.updateUser(user.id, { role: targetRole } as any);
+      // Create/delete expert row as needed
+      if (targetRole === "expert") {
+        const existingExpert = storage.getExpertByUserId(user.id);
+        if (!existingExpert) {
+          const newExpert = storage.createExpert({
+            userId: user.id,
+            bio: "", expertise: "", credentials: "",
+            rating: 50, totalReviews: 0, verified: 0,
+            categories: "[]", availability: 0,
+            hourlyRate: null, responseTime: null,
+            education: "", yearsExperience: 0,
+            onboardingComplete: 0, verificationScore: null,
+            ratePerMinute: null, rateTier: null,
+          });
+          try { syncExpertToCloud(newExpert.id); } catch {}
+        }
+      }
+      // Sync role change to Cloud SQL immediately so periodic sync doesn't revert
+      writeUserToCloudSql({
+        id: user.id, name: user.name, email: user.email, role: targetRole,
+        company: user.company, credits: user.credits,
+        walletBalance: user.walletBalance ?? 0, active: user.active ?? 1,
+      }).catch(() => {});
+      // Send OTP so they can verify + log in
+      const otp = generateOtp();
+      otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: user.name });
+      try { await sendOtpEmail(email, user.name, otp); } catch {}
+      console.log(`[REGISTER-UPGRADE] ✅ Flipped user ${user.id} (${email}) → ${targetRole}`);
+      return res.json({ message: "Role changed and OTP sent", email, newRole: targetRole });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
     }
   });
 
@@ -1307,6 +1387,86 @@ export async function registerRoutes(
       if (!user) return res.status(404).json({ error: true, message: "User not found" });
       syncUserToCloud(user.id);
       return res.json(user);
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 45.6.2 — admin change-role endpoint for support recovery.
+  // Fixes the Sumant/AA scenario where a user ends up in the wrong role.
+  app.post("/api/admin/users/:id/change-role", adminAuth, async (req, res) => {
+    try {
+      const userId = parseInt(String(req.params.id));
+      const { newRole } = req.body || {};
+      if (newRole !== "expert" && newRole !== "client") {
+        return res.status(400).json({ error: true, message: "newRole must be 'expert' or 'client'" });
+      }
+      const user = storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: true, message: "User not found" });
+      const oldRole = user.role;
+      if (oldRole === newRole) return res.json({ message: "Already that role", user });
+      storage.updateUser(userId, { role: newRole } as any);
+      if (newRole === "expert") {
+        const existingExpert = storage.getExpertByUserId(userId);
+        if (!existingExpert) {
+          const newExpert = storage.createExpert({
+            userId, bio: "", expertise: "", credentials: "",
+            rating: 50, totalReviews: 0, verified: 0,
+            categories: "[]", availability: 0, hourlyRate: null, responseTime: null,
+            education: "", yearsExperience: 0, onboardingComplete: 0, verificationScore: null,
+            ratePerMinute: null, rateTier: null,
+          });
+          try { syncExpertToCloud(newExpert.id); } catch {}
+        }
+      }
+      // Sync user row immediately so periodic sync can't revert
+      writeUserToCloudSql({
+        id: user.id, name: user.name, email: user.email, role: newRole,
+        company: user.company, credits: user.credits,
+        walletBalance: user.walletBalance ?? 0, active: user.active ?? 1,
+      }).catch(() => {});
+      const adminEmail = (req as any).admin?.email || "unknown";
+      try {
+        storage.createAdminAction({
+          adminEmail, actionType: "change_role", targetType: "user", targetId: userId,
+          details: JSON.stringify({ from: oldRole, to: newRole }),
+        });
+      } catch {}
+      console.log(`[ADMIN] Role change: user ${userId} ${oldRole} → ${newRole} by ${adminEmail}`);
+      return res.json({ message: "Role changed", userId, oldRole, newRole });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 45.6.2 — admin hard-delete user endpoint. Removes from MemStorage/SQLite
+  // AND Cloud SQL so the periodic sync cannot resurrect the user.
+  // Dangerous — only use for clearly stuck pristine accounts.
+  app.delete("/api/admin/users/:id", adminAuth, async (req, res) => {
+    try {
+      const userId = parseInt(String(req.params.id));
+      const user = storage.getUser(userId);
+      if (!user) return res.status(404).json({ error: true, message: "User not found" });
+      const adminEmail = (req as any).admin?.email || "unknown";
+      // 1. Delete from Cloud SQL first (children + user row)
+      await deleteUserFromCloudSql(userId);
+      // 2. Delete from SQLite (which is MemStorage backend)
+      try {
+        sqlite.prepare(`DELETE FROM credit_transactions WHERE user_id = ?`).run(userId);
+        sqlite.prepare(`DELETE FROM notifications WHERE user_id = ?`).run(userId);
+        sqlite.prepare(`DELETE FROM legal_acceptances WHERE user_id = ?`).run(userId);
+        sqlite.prepare(`DELETE FROM wallet_transactions WHERE user_id = ?`).run(userId);
+        sqlite.prepare(`DELETE FROM experts WHERE user_id = ?`).run(userId);
+      } catch (e) { console.error("[ADMIN-DELETE] children cleanup warn:", (e as Error).message); }
+      const deleted = storage.deleteUser(userId);
+      try {
+        storage.createAdminAction({
+          adminEmail, actionType: "hard_delete_user", targetType: "user", targetId: userId,
+          details: JSON.stringify({ email: user.email, role: user.role }),
+        });
+      } catch {}
+      console.log(`[ADMIN] Hard-deleted user ${userId} (${user.email}) by ${adminEmail}`);
+      return res.json({ message: "User deleted", userId, email: user.email, deleted });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
     }
