@@ -161,7 +161,18 @@ function ExpertSidebar({ view, setView, onLogout }: { view: ExpertView; setView:
 function ExpertOverview({ expert, userId, setView }: { expert: Expert; userId: number; setView: (v: ExpertView) => void }) {
   const { data: creditData } = useQuery<{ credits: number; transactions: CreditTransaction[] }>({ queryKey: ["/api/credits", userId] });
   const { data: myReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/expert", expert.id] });
-  const { data: pendingReviews } = useQuery<ExpertReview[]>({ queryKey: ["/api/reviews/pending"] });
+  // Build 45.6.5: scope the Overview "Pending Queue" counter to THIS expert's
+  // matching categories, not system-wide. Previously the card showed total pending
+  // system-wide while the Available Queue page (which also uses ?expertId=) showed
+  // only category-matched requests — the two numbers could diverge (e.g. card says
+  // "2" but queue page is empty). Sumant hit this today.
+  const { data: pendingReviews } = useQuery<ExpertReview[]>({
+    queryKey: ["/api/reviews/pending", `?expertId=${expert.id}`],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/reviews/pending?expertId=${expert.id}`);
+      return res.json();
+    },
+  });
 
   const active = myReviews?.filter((r) => r.status === "in_progress").length ?? 0;
   const completed = myReviews?.filter((r) => r.status === "completed").length ?? 0;
