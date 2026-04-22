@@ -13,7 +13,15 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql, deleteUserFromCloudSql } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql, deleteUserFromCloudSql, getPgPool } from "./user-data-persist";
+import {
+  emitRegistrationEvent,
+  ensureRegistrationEventsSqlite,
+  ensureRegistrationEventsCloudSql,
+  recomputeRegistrationLabels,
+  getRegistrationFunnel,
+  REGISTRATION_POLICY_VERSION,
+} from "./rl-registration-fabric";
 import * as XLSX from "xlsx";
 
 // Bug-2 fix: Track server start time for health check grace period
@@ -419,6 +427,11 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Build 45.6.3 — RL registration fabric: ensure schema exists in both stores.
+  // SQLite runs synchronously on boot; Cloud SQL is async and best-effort.
+  try { ensureRegistrationEventsSqlite(); } catch {}
+  (async () => { try { ensureRegistrationEventsCloudSql(await getPgPool()); } catch {} })();
+
   // ─── Cloud SQL sync helper — fire-and-forget after SQLite mutations ───
   function syncUserToCloud(userId: number) {
     const u = storage.getUser(userId);
@@ -477,14 +490,15 @@ export async function registerRoutes(
     keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] as string || 'unknown',
   });
 
-  // Build 45.6.2 — relaxed from 5/hr to 30/hr. 5/hr was blocking legitimate
-  // founder-driven tests and user retries on staging (AA report 2026-04-22).
-  // Production risk remains low: the EMAIL_ROLE_MISMATCH guard and per-email
-  // OTP expiry prevent abuse even at higher register rates. Re-evaluate before
-  // large-scale launch.
+  // Build 45.6.3 — env-driven cap. Staging default 500/hr (founder & investor
+  // onboarding demos need headroom); production should stay tighter via env.
+  // Set REGISTER_RATE_LIMIT_PER_HOUR to override. Abuse still blocked by
+  // EMAIL_ROLE_MISMATCH guard, per-email OTP expiry, and registration_events
+  // telemetry (IP/UA/device fingerprint captured for every attempt, fuels fraud GNN).
+  const REGISTER_RATE_LIMIT = parseInt(process.env.REGISTER_RATE_LIMIT_PER_HOUR || "500", 10);
   const registerLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour window
-    max: 30, // 30 registrations per IP per hour (was 5 pre-45.6.2)
+    max: REGISTER_RATE_LIMIT, // 500/hr staging default (was 5 pre-45.6.2, 30 in 45.6.2)
     message: { error: true, message: "Too many registration attempts, please try again later", code: "RATE_LIMITED" },
     standardHeaders: true,
     legacyHeaders: false,
@@ -512,16 +526,38 @@ export async function registerRoutes(
 
   // POST /api/auth/register — send OTP to new user
   app.post("/api/auth/register", registerLimiter, async (req, res) => {
+    const _t0 = Date.now();
+    // Build 45.6.2/3 — telemetry context shared across every branch below.
+    const ipLog = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+    const uaLog = (req.headers['user-agent'] || 'unknown').toString();
+    const originLog = (req.headers['origin'] || req.headers['referer'] || 'unknown').toString();
+    const { utmSource: _utmSource, utmMedium: _utmMedium, utmCampaign: _utmCampaign, utmContent: _utmContent, utmTerm: _utmTerm, referrer: _referrer, landingPage: _landingPage, deviceFingerprint: _deviceFp, sessionId: _sessionId } = (req.body || {}) as any;
+    const _pool = await getPgPool().catch(() => null);
+    const _emitCtx = {
+      ip: ipLog, userAgent: uaLog.substring(0, 400),
+      referrer: _referrer || originLog, landingPage: _landingPage,
+      utmSource: _utmSource, utmMedium: _utmMedium, utmCampaign: _utmCampaign,
+      utmContent: _utmContent, utmTerm: _utmTerm,
+      deviceFingerprint: _deviceFp, sessionId: _sessionId,
+    };
     try {
-      // Build 45.6.2 — telemetry: log EXACTLY what the client sent so we can
-      // prove whether AA's "I clicked Expert but got Client" reports are due to
-      // the client sending the wrong role or something happening server-side.
-      const ipLog = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
-      const uaLog = (req.headers['user-agent'] || 'unknown').toString().substring(0, 120);
-      const originLog = (req.headers['origin'] || req.headers['referer'] || 'unknown').toString().substring(0, 120);
-      console.log(`[REGISTER] ip=${ipLog} ua="${uaLog}" origin="${originLog}" body.role=${JSON.stringify(req.body?.role)} body.email=${JSON.stringify(req.body?.email)} body.name=${JSON.stringify(req.body?.name)}`);
+      console.log(`[REGISTER] ip=${ipLog} ua="${uaLog.substring(0, 120)}" origin="${originLog.substring(0, 120)}" body.role=${JSON.stringify(req.body?.role)} body.email=${JSON.stringify(req.body?.email)} body.name=${JSON.stringify(req.body?.name)}`);
 
-      const data = otpRegisterSchema.parse(req.body);
+      let data;
+      try {
+        data = otpRegisterSchema.parse(req.body);
+      } catch (zerr: any) {
+        emitRegistrationEvent({
+          ..._emitCtx,
+          email: req.body?.email || null,
+          intendedRole: req.body?.role || null,
+          outcome: "validation_error",
+          outcomeCode: "ZOD_PARSE_FAIL",
+          errorMessage: zerr?.message?.substring(0, 300),
+          latencyMs: Date.now() - _t0,
+        }, _pool);
+        throw zerr;
+      }
       const { name, email, role } = data;
 
       // Check if email already exists
@@ -529,9 +565,15 @@ export async function registerRoutes(
       if (existing) {
         // Build 45 (AA bug #2): if the user tried to register with a DIFFERENT role
         // than the account already has, block it with a clear 409 — never silently
-        // log them into the wrong dashboard (the exact bug AA saw: chose Expert,
-        // landed in Client Portal because the email was already a Client account).
+        // log them into the wrong dashboard.
         if (existing.role !== role) {
+          emitRegistrationEvent({
+            ..._emitCtx, userId: existing.id, email,
+            intendedRole: role, finalRole: existing.role,
+            outcome: "role_mismatch", outcomeCode: "EMAIL_ROLE_MISMATCH",
+            latencyMs: Date.now() - _t0,
+            features: { existing_user_id: existing.id, existing_created_at: (existing as any).createdAt },
+          }, _pool);
           return res.status(409).json({
             error: true,
             code: "EMAIL_ROLE_MISMATCH",
@@ -542,7 +584,16 @@ export async function registerRoutes(
         // Same role — treat as login (send OTP)
         const otp = generateOtp();
         otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: existing.name });
-        try { await sendOtpEmail(email, existing.name, otp); } catch (emailErr) { console.error("[OTP] Email send error:", emailErr); }
+        let otpErr: string | null = null;
+        try { await sendOtpEmail(email, existing.name, otp); } catch (emailErr: any) { otpErr = emailErr?.message || "send_fail"; console.error("[OTP] Email send error:", emailErr); }
+        emitRegistrationEvent({
+          ..._emitCtx, userId: existing.id, email,
+          intendedRole: role, finalRole: existing.role,
+          outcome: otpErr ? "otp_send_failed" : "otp_resent_existing",
+          outcomeCode: otpErr ? "RESEND_FAIL" : "RESEND_OK",
+          errorMessage: otpErr || null,
+          latencyMs: Date.now() - _t0,
+        }, _pool);
         return res.json({ message: "OTP sent", email, existing: true });
       }
 
@@ -632,10 +683,42 @@ export async function registerRoutes(
       // Generate and send OTP
       const otp = generateOtp();
       otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name });
-      try { await sendOtpEmail(email, name, otp); } catch (emailErr) { console.error("[OTP] Email send error:", emailErr); }
+      let _createOtpErr: string | null = null;
+      try { await sendOtpEmail(email, name, otp); } catch (emailErr: any) { _createOtpErr = emailErr?.message || "send_fail"; console.error("[OTP] Email send error:", emailErr); }
+
+      // Build 45.6.3 — RL fabric: emit on successful creation.
+      // This row becomes training data for the pricing bandit, fraud GNN, and
+      // lookalike expert-recruiting model once outcome labels are back-filled.
+      emitRegistrationEvent({
+        ..._emitCtx, userId: user.id, email,
+        intendedRole: role, finalRole: user.role,
+        outcome: _createOtpErr ? "otp_send_failed" : "created",
+        outcomeCode: _createOtpErr ? "OTP_SEND_FAIL" : "CREATED_OK",
+        errorMessage: _createOtpErr || null,
+        latencyMs: Date.now() - _t0,
+        features: {
+          welcome_credits: 5,
+          is_expert: role === "expert",
+          has_utm: !!(utmSource || utmMedium || utmCampaign),
+          has_referrer: !!referrer,
+        },
+      }, _pool);
 
       return res.json({ message: "OTP sent", email });
     } catch (e: any) {
+      // Final-fallback emit (zod/unexpected). Zod already emitted above; this
+      // catches anything that slipped through the inner branches.
+      try {
+        emitRegistrationEvent({
+          ..._emitCtx,
+          email: req.body?.email || null,
+          intendedRole: req.body?.role || null,
+          outcome: "validation_error",
+          outcomeCode: "UNEXPECTED",
+          errorMessage: e?.message?.substring(0, 300),
+          latencyMs: Date.now() - _t0,
+        }, _pool);
+      } catch {}
       return res.status(400).json({ error: true, message: e.message });
     }
   });
@@ -645,32 +728,83 @@ export async function registerRoutes(
   // and wants to switch to Expert. Only allowed for PRISTINE accounts (no txns
   // beyond welcome bonus, no requests, no reviews, no withdrawals). Sends OTP.
   app.post("/api/auth/register-upgrade", registerLimiter, async (req, res) => {
+    const _t0 = Date.now();
+    const _ipLog = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+    const _uaLog = (req.headers['user-agent'] || 'unknown').toString();
+    const _originLog = (req.headers['origin'] || req.headers['referer'] || 'unknown').toString();
+    const { utmSource: _utmSource, utmMedium: _utmMedium, utmCampaign: _utmCampaign, utmContent: _utmContent, utmTerm: _utmTerm, referrer: _referrer, landingPage: _landingPage, deviceFingerprint: _deviceFp, sessionId: _sessionId } = (req.body || {}) as any;
+    const _pool = await getPgPool().catch(() => null);
+    const _emitCtx = {
+      ip: _ipLog, userAgent: _uaLog.substring(0, 400),
+      referrer: _referrer || _originLog, landingPage: _landingPage,
+      utmSource: _utmSource, utmMedium: _utmMedium, utmCampaign: _utmCampaign,
+      utmContent: _utmContent, utmTerm: _utmTerm,
+      deviceFingerprint: _deviceFp, sessionId: _sessionId,
+    };
     try {
       const { email, name, targetRole } = req.body || {};
       if (!email || !targetRole || (targetRole !== "expert" && targetRole !== "client")) {
+        emitRegistrationEvent({
+          ..._emitCtx, email: email || null, intendedRole: targetRole || null,
+          outcome: "validation_error", outcomeCode: "BAD_INPUT",
+          errorMessage: "email and targetRole required",
+          latencyMs: Date.now() - _t0,
+        }, _pool);
         return res.status(400).json({ error: true, code: "BAD_INPUT", message: "email and targetRole (expert|client) required" });
       }
-      const ipLog = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
-      console.log(`[REGISTER-UPGRADE] ip=${ipLog} email=${email} targetRole=${targetRole}`);
+      console.log(`[REGISTER-UPGRADE] ip=${_ipLog} email=${email} targetRole=${targetRole}`);
       const user = storage.getUserByEmail(email);
-      if (!user) return res.status(404).json({ error: true, code: "NOT_FOUND", message: "No account with that email" });
+      if (!user) {
+        emitRegistrationEvent({
+          ..._emitCtx, email, intendedRole: targetRole,
+          outcome: "validation_error", outcomeCode: "UPGRADE_NO_USER",
+          errorMessage: "No account for this email",
+          latencyMs: Date.now() - _t0,
+        }, _pool);
+        return res.status(404).json({ error: true, code: "NOT_FOUND", message: "No account with that email" });
+      }
       if (user.role === targetRole) {
         // No-op — already correct role, just send OTP so they can log in
         const otp = generateOtp();
         otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: user.name });
-        try { await sendOtpEmail(email, user.name, otp); } catch {}
+        let _otpErr: string | null = null;
+        try { await sendOtpEmail(email, user.name, otp); } catch (e: any) { _otpErr = e?.message || "send_fail"; }
+        emitRegistrationEvent({
+          ..._emitCtx, userId: user.id, email,
+          intendedRole: targetRole, finalRole: user.role,
+          outcome: _otpErr ? "otp_send_failed" : "login_otp_sent",
+          outcomeCode: _otpErr ? "RESEND_FAIL" : "UPGRADE_NOOP_SAME_ROLE",
+          errorMessage: _otpErr || null,
+          latencyMs: Date.now() - _t0,
+          features: { upgrade_noop: true },
+        }, _pool);
         return res.json({ message: "OTP sent", email, alreadyRole: true });
       }
       // Pristine check — no activity beyond welcome bonus
       const txns = storage.getTransactionsByUser(user.id);
       const nonWelcome = txns.filter((t: any) => t.type !== "bonus");
       if (nonWelcome.length > 0) {
+        emitRegistrationEvent({
+          ..._emitCtx, userId: user.id, email,
+          intendedRole: targetRole, finalRole: user.role,
+          outcome: "upgrade_blocked_nonpristine", outcomeCode: "HAS_TRANSACTIONS",
+          latencyMs: Date.now() - _t0,
+          features: { non_welcome_txn_count: nonWelcome.length, current_role: user.role },
+        }, _pool);
         return res.status(409).json({ error: true, code: "NOT_PRISTINE", message: "Account has activity — contact support to change role" });
       }
       const userRequests = storage.getRequestsByUser(user.id);
       if (userRequests.length > 0) {
+        emitRegistrationEvent({
+          ..._emitCtx, userId: user.id, email,
+          intendedRole: targetRole, finalRole: user.role,
+          outcome: "upgrade_blocked_nonpristine", outcomeCode: "HAS_REQUESTS",
+          latencyMs: Date.now() - _t0,
+          features: { request_count: userRequests.length, current_role: user.role },
+        }, _pool);
         return res.status(409).json({ error: true, code: "NOT_PRISTINE", message: "Account has requests — contact support" });
       }
+      const _oldRole = user.role;
       // Flip role in MemStorage + SQLite
       storage.updateUser(user.id, { role: targetRole } as any);
       // Create/delete expert row as needed
@@ -699,36 +833,65 @@ export async function registerRoutes(
       // Send OTP so they can verify + log in
       const otp = generateOtp();
       otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: user.name });
-      try { await sendOtpEmail(email, user.name, otp); } catch {}
+      let _upOtpErr: string | null = null;
+      try { await sendOtpEmail(email, user.name, otp); } catch (e: any) { _upOtpErr = e?.message || "send_fail"; }
       console.log(`[REGISTER-UPGRADE] ✅ Flipped user ${user.id} (${email}) → ${targetRole}`);
+      emitRegistrationEvent({
+        ..._emitCtx, userId: user.id, email,
+        intendedRole: targetRole, finalRole: targetRole,
+        outcome: _upOtpErr ? "otp_send_failed" : "role_upgraded",
+        outcomeCode: _upOtpErr ? "OTP_SEND_FAIL" : "ROLE_UPGRADED",
+        errorMessage: _upOtpErr || null,
+        latencyMs: Date.now() - _t0,
+        features: { old_role: _oldRole, new_role: targetRole, pristine: true },
+      }, _pool);
       return res.json({ message: "Role changed and OTP sent", email, newRole: targetRole });
     } catch (e: any) {
+      try {
+        emitRegistrationEvent({
+          ..._emitCtx,
+          email: req.body?.email || null,
+          intendedRole: req.body?.targetRole || null,
+          outcome: "validation_error", outcomeCode: "UPGRADE_UNEXPECTED",
+          errorMessage: e?.message?.substring(0, 300),
+          latencyMs: Date.now() - _t0,
+        }, _pool);
+      } catch {}
       return res.status(500).json({ error: true, message: e.message });
     }
   });
 
   // POST /api/auth/verify-otp — verify OTP after registration
   app.post("/api/auth/verify-otp", authLimiter, async (req, res) => {
+    const _t0 = Date.now();
+    const _ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+    const _ua = (req.headers['user-agent'] || 'unknown').toString().substring(0, 400);
+    const _pool = await getPgPool().catch(() => null);
     try {
       const { email, otp } = otpVerifySchema.parse(req.body);
       const entry = otpStore.get(email);
       if (!entry) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "OTP_NOT_FOUND", latencyMs: Date.now() - _t0, features: { flow: "register" } }, _pool);
         return res.status(400).json({ error: true, message: "No OTP pending for this email", code: "OTP_NOT_FOUND" });
       }
       if (Date.now() > entry.expiry) {
         otpStore.delete(email);
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_expired", outcomeCode: "OTP_EXPIRED", latencyMs: Date.now() - _t0, features: { flow: "register" } }, _pool);
         return res.status(400).json({ error: true, message: "OTP has expired", code: "OTP_EXPIRED" });
       }
       if (hashOtp(otp) !== entry.hash) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "OTP_MISMATCH", latencyMs: Date.now() - _t0, features: { flow: "register" } }, _pool);
         return res.status(400).json({ error: true, message: "Invalid verification code", code: "OTP_INVALID" });
       }
       otpStore.delete(email);
 
       const user = storage.getUserByEmail(email);
       if (!user) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "USER_NOT_FOUND_AFTER_OTP", latencyMs: Date.now() - _t0, features: { flow: "register" } }, _pool);
         return res.status(404).json({ error: true, message: "User not found" });
       }
       if (user.active === 0) {
+        emitRegistrationEvent({ userId: user.id, email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "ACCOUNT_DISABLED", finalRole: user.role, latencyMs: Date.now() - _t0, features: { flow: "register" } }, _pool);
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
       // OB-B: Increment login count
@@ -738,19 +901,32 @@ export async function registerRoutes(
       const { password: _, ...safeUser } = updatedUser;
       const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
       syncUserToCloud(user.id);
+      emitRegistrationEvent({
+        userId: user.id, email, ip: _ip, userAgent: _ua,
+        finalRole: user.role,
+        outcome: "otp_verified_register", outcomeCode: "VERIFIED",
+        latencyMs: Date.now() - _t0,
+        features: { flow: "register", login_count: newLoginCount },
+      }, _pool);
       return res.json({ ...safeUser, token });
     } catch (e: any) {
+      try { emitRegistrationEvent({ email: req.body?.email || null, ip: _ip, userAgent: _ua, outcome: "validation_error", outcomeCode: "VERIFY_OTP_UNEXPECTED", errorMessage: e?.message?.substring(0, 300), latencyMs: Date.now() - _t0, features: { flow: "register" } }, _pool); } catch {}
       return res.status(400).json({ error: true, message: e.message });
     }
   });
 
   // POST /api/auth/login — send OTP for existing user
   app.post("/api/auth/login", authLimiter, async (req, res) => {
+    const _t0 = Date.now();
+    const _ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+    const _ua = (req.headers['user-agent'] || 'unknown').toString().substring(0, 400);
+    const _pool = await getPgPool().catch(() => null);
     try {
       const { email } = otpLoginSchema.parse(req.body);
       // Try by email first, then by username (users are stored with username=email)
       const user = storage.getUserByEmail(email) || storage.getUserByUsername(email);
       if (!user) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "validation_error", outcomeCode: "LOGIN_USER_NOT_FOUND", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(404).json({
           error: true,
           message: "No account found with this email. Please register first.",
@@ -758,39 +934,60 @@ export async function registerRoutes(
         });
       }
       if (user.active === 0) {
+        emitRegistrationEvent({ userId: user.id, email, ip: _ip, userAgent: _ua, finalRole: user.role, outcome: "validation_error", outcomeCode: "LOGIN_ACCOUNT_DISABLED", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
       const otp = generateOtp();
       otpStore.set(email, { hash: hashOtp(otp), expiry: Date.now() + 10 * 60 * 1000, name: user.name });
-      try { await sendOtpEmail(email, user.name, otp); } catch (emailErr) { console.error("[OTP] Email send error:", emailErr); }
+      let _loginOtpErr: string | null = null;
+      try { await sendOtpEmail(email, user.name, otp); } catch (emailErr: any) { _loginOtpErr = emailErr?.message || "send_fail"; console.error("[OTP] Email send error:", emailErr); }
+      emitRegistrationEvent({
+        userId: user.id, email, ip: _ip, userAgent: _ua,
+        finalRole: user.role,
+        outcome: _loginOtpErr ? "otp_send_failed" : "login_otp_sent",
+        outcomeCode: _loginOtpErr ? "LOGIN_OTP_SEND_FAIL" : "LOGIN_OTP_SENT",
+        errorMessage: _loginOtpErr || null,
+        latencyMs: Date.now() - _t0,
+        features: { flow: "login" },
+      }, _pool);
       return res.json({ message: "OTP sent" });
     } catch (e: any) {
+      try { emitRegistrationEvent({ email: req.body?.email || null, ip: _ip, userAgent: _ua, outcome: "validation_error", outcomeCode: "LOGIN_UNEXPECTED", errorMessage: e?.message?.substring(0, 300), latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool); } catch {}
       return res.status(400).json({ error: true, message: e.message });
     }
   });
 
   // POST /api/auth/verify-login — verify OTP for login
   app.post("/api/auth/verify-login", authLimiter, async (req, res) => {
+    const _t0 = Date.now();
+    const _ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
+    const _ua = (req.headers['user-agent'] || 'unknown').toString().substring(0, 400);
+    const _pool = await getPgPool().catch(() => null);
     try {
       const { email, otp } = otpVerifySchema.parse(req.body);
       const entry = otpStore.get(email);
       if (!entry) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "OTP_NOT_FOUND", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(400).json({ error: true, message: "No OTP pending for this email", code: "OTP_NOT_FOUND" });
       }
       if (Date.now() > entry.expiry) {
         otpStore.delete(email);
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_expired", outcomeCode: "OTP_EXPIRED", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(400).json({ error: true, message: "OTP has expired", code: "OTP_EXPIRED" });
       }
       if (hashOtp(otp) !== entry.hash) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "OTP_MISMATCH", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(400).json({ error: true, message: "Invalid verification code", code: "OTP_INVALID" });
       }
       otpStore.delete(email);
 
       const user = storage.getUserByEmail(email);
       if (!user) {
+        emitRegistrationEvent({ email, ip: _ip, userAgent: _ua, outcome: "otp_invalid", outcomeCode: "USER_NOT_FOUND_AFTER_OTP", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(404).json({ error: true, message: "User not found" });
       }
       if (user.active === 0) {
+        emitRegistrationEvent({ userId: user.id, email, ip: _ip, userAgent: _ua, finalRole: user.role, outcome: "otp_invalid", outcomeCode: "ACCOUNT_DISABLED", latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool);
         return res.status(403).json({ error: true, message: "Account deactivated", code: "ACCOUNT_DISABLED" });
       }
       // OB-B: Increment login count
@@ -800,8 +997,16 @@ export async function registerRoutes(
       const { password: _, ...safeUser } = updatedUser;
       const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
       syncUserToCloud(user.id);
+      emitRegistrationEvent({
+        userId: user.id, email, ip: _ip, userAgent: _ua,
+        finalRole: user.role,
+        outcome: "otp_verified_login", outcomeCode: "VERIFIED",
+        latencyMs: Date.now() - _t0,
+        features: { flow: "login", login_count: newLoginCount },
+      }, _pool);
       return res.json({ ...safeUser, token });
     } catch (e: any) {
+      try { emitRegistrationEvent({ email: req.body?.email || null, ip: _ip, userAgent: _ua, outcome: "validation_error", outcomeCode: "VERIFY_LOGIN_UNEXPECTED", errorMessage: e?.message?.substring(0, 300), latencyMs: Date.now() - _t0, features: { flow: "login" } }, _pool); } catch {}
       return res.status(400).json({ error: true, message: e.message });
     }
   });
@@ -1433,6 +1638,17 @@ export async function registerRoutes(
         });
       } catch {}
       console.log(`[ADMIN] Role change: user ${userId} ${oldRole} → ${newRole} by ${adminEmail}`);
+      try {
+        const _pool = await getPgPool().catch(() => null);
+        emitRegistrationEvent({
+          userId, email: user.email,
+          intendedRole: newRole, finalRole: newRole,
+          outcome: "admin_role_changed", outcomeCode: "ADMIN_FORCE_ROLE",
+          ip: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'admin',
+          userAgent: (req.headers['user-agent'] || 'admin').toString().substring(0, 400),
+          features: { old_role: oldRole, new_role: newRole, admin_email: adminEmail },
+        }, _pool);
+      } catch {}
       return res.json({ message: "Role changed", userId, oldRole, newRole });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -1466,6 +1682,17 @@ export async function registerRoutes(
         });
       } catch {}
       console.log(`[ADMIN] Hard-deleted user ${userId} (${user.email}) by ${adminEmail}`);
+      try {
+        const _pool = await getPgPool().catch(() => null);
+        emitRegistrationEvent({
+          userId, email: user.email,
+          finalRole: user.role,
+          outcome: "admin_user_deleted", outcomeCode: "ADMIN_HARD_DELETE",
+          ip: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'admin',
+          userAgent: (req.headers['user-agent'] || 'admin').toString().substring(0, 400),
+          features: { admin_email: adminEmail, deleted_role: user.role },
+        }, _pool);
+      } catch {}
       return res.json({ message: "User deleted", userId, email: user.email, deleted });
     } catch (e: any) {
       return res.status(500).json({ error: true, message: e.message });
@@ -4711,6 +4938,37 @@ RULES:
     } catch (e: any) {
       console.error("[RL-INSIGHTS] refresh failed:", e);
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Build 45.6.3 — RL registration-fabric admin endpoints.
+  // GET /api/admin/rl/registration-funnel?hours=24 — outcome/utm/role/fraud breakdown
+  // POST /api/admin/rl/recompute-labels — back-fill outcome labels (first_request_at, gmv_30d, churned_30d)
+  // ---------------------------------------------------------------------------
+  app.get("/api/admin/rl/registration-funnel", adminAuth, async (req, res) => {
+    try {
+      const hoursRaw = parseInt(String((req.query.hours as string) || "24"), 10);
+      const hours = Number.isFinite(hoursRaw) && hoursRaw > 0 && hoursRaw <= 24 * 60 ? hoursRaw : 24;
+      const pool = await getPgPool().catch(() => null);
+      const funnel = await getRegistrationFunnel(pool, hours);
+      res.json(funnel);
+    } catch (e: any) {
+      console.error("[RL-FABRIC] funnel failed:", e);
+      res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  app.post("/api/admin/rl/recompute-labels", adminAuth, async (req, res) => {
+    try {
+      const pool = await getPgPool().catch(() => null);
+      const result = await recomputeRegistrationLabels(pool);
+      const adminEmail = (req as any).admin?.email || "unknown";
+      console.log(`[RL-FABRIC] label recompute by ${adminEmail} → updated=${result.updated}`);
+      res.json({ ...result, policyVersion: REGISTRATION_POLICY_VERSION });
+    } catch (e: any) {
+      console.error("[RL-FABRIC] recompute-labels failed:", e);
+      res.status(500).json({ error: true, message: e.message });
     }
   });
 
