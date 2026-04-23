@@ -1609,12 +1609,19 @@ export async function registerRoutes(
       const report: Array<{ userId: number; email: string; refund: number; chargedTxIds: number[] }> = [];
       for (const u of allUsers) {
         const txs = storage.getTransactionsByUser(u.id) || [];
-        // Already-reconciled source tx ids (recorded in description)
+        // Already-reconciled source tx ids (recorded in description as comma-separated list)
+        // Build 45.6.9 fix: previous regex /source_tx_id=(\d+)/ captured only the FIRST id,
+        // causing re-refund on subsequent runs. Capture the full comma-separated group now.
         const alreadyReconciledSourceIds = new Set<number>();
         for (const t of txs as any[]) {
           if (t.type === "admin_reconcile" && typeof t.description === "string") {
-            const m = t.description.match(/source_tx_id=(\d+)/);
-            if (m) alreadyReconciledSourceIds.add(parseInt(m[1]));
+            const m = t.description.match(/source_tx_id=([\d,]+)/);
+            if (m) {
+              for (const idStr of m[1].split(",")) {
+                const parsed = parseInt(idStr);
+                if (!isNaN(parsed)) alreadyReconciledSourceIds.add(parsed);
+              }
+            }
           }
         }
         // Find legacy double-deductions: 'charged' with a negative amount
@@ -1644,6 +1651,74 @@ export async function registerRoutes(
         dryRun,
         affectedUserCount: report.length,
         totalRefundedCredits: report.reduce((s, r) => s + r.refund, 0),
+        users: report,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 45.6.9 hotfix: Reverse accidental duplicate reconciliations.
+  // Scans admin_reconcile txs and, for each user, detects when the same source_tx_id
+  // appears in multiple admin_reconcile rows (i.e. it was refunded twice because the
+  // first regex only captured the leading id). Emits a compensating admin_reconcile_reverse
+  // tx (negative amount) and deducts the over-refund from the balance. Idempotent.
+  app.post("/api/admin/reverse-duplicate-reconciles", adminAuth, async (req, res) => {
+    try {
+      const dryRun = String((req.query as any).dryRun || "") === "1";
+      const allUsers = storage.getAllUsers();
+      const report: Array<{ userId: number; email: string; deduct: number; duplicateSourceIds: number[] }> = [];
+      for (const u of allUsers) {
+        const txs = storage.getTransactionsByUser(u.id) || [];
+        // Skip users who already have a reversal tx (idempotency).
+        const hasReversal = (txs as any[]).some(t => t.type === "admin_reconcile_reverse");
+        if (hasReversal) continue;
+        // Collect the ordered list of admin_reconcile rows.
+        const reconciles = (txs as any[])
+          .filter(t => t.type === "admin_reconcile" && typeof t.description === "string")
+          .sort((a, b) => (a.id || 0) - (b.id || 0));
+        if (reconciles.length < 2) continue;
+        // Walk reconciles in creation order. Track which source ids the FIRST reconcile
+        // row would have covered (i.e. full comma list). Any later reconcile referencing
+        // any of those source ids is a duplicate.
+        const seenSourceIds = new Set<number>();
+        const duplicateRows: Array<{ tx: any; dupSrcIds: number[] }> = [];
+        for (const rec of reconciles) {
+          const m = rec.description.match(/source_tx_id=([\d,]+)/);
+          if (!m) continue;
+          const srcIds = m[1].split(",").map((s: string) => parseInt(s)).filter((n: number) => !isNaN(n));
+          const dup = srcIds.filter((id: number) => seenSourceIds.has(id));
+          if (dup.length > 0) {
+            duplicateRows.push({ tx: rec, dupSrcIds: dup });
+          }
+          for (const id of srcIds) seenSourceIds.add(id);
+        }
+        if (duplicateRows.length === 0) continue;
+        // For each duplicate row, we over-refunded by the amount of that row.
+        // (This works because reconcile amount == sum of its source_tx_id amounts, and
+        // the regex-bug case refunded exactly the same source txs again.)
+        const totalDeduct = duplicateRows.reduce((sum, d) => sum + (d.tx.amount || 0), 0);
+        const allDupIds = duplicateRows.flatMap(d => d.dupSrcIds);
+        report.push({ userId: u.id, email: u.email, deduct: totalDeduct, duplicateSourceIds: allDupIds });
+        if (!dryRun) {
+          const fresh = storage.getUser(u.id);
+          if (!fresh) continue;
+          storage.updateUser(u.id, { credits: Math.max(0, fresh.credits - totalDeduct) });
+          const reverseTx = {
+            userId: u.id,
+            amount: -totalDeduct,
+            type: "admin_reconcile_reverse",
+            description: `Build 45.6.9 hotfix: reverse duplicate reconcile; dup_source_tx_id=${allDupIds.join(",")}`,
+          };
+          storage.createTransaction(reverseTx as any);
+          syncUserToCloud(u.id);
+          syncCreditTxToCloud(reverseTx as any);
+        }
+      }
+      return res.json({
+        dryRun,
+        affectedUserCount: report.length,
+        totalDeductedCredits: report.reduce((s, r) => s + r.deduct, 0),
         users: report,
       });
     } catch (e: any) {
