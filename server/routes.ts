@@ -1596,6 +1596,61 @@ export async function registerRoutes(
     }
   });
 
+  // Build 45.6.9 (OB bug fix): One-shot reconciliation endpoint.
+  // For every user, find legacy 'charged' transactions with a non-zero negative amount
+  // (symptom of the hold+charged double-deduction bug in Builds 31 through 45.6.8) and
+  // refund the balance, inserting a corresponding 'admin_reconcile' transaction.
+  // Idempotent: a user who already has the reconcile tx for a given source charged-tx id
+  // is skipped. Safe to run multiple times. Dry-run mode supported via ?dryRun=1.
+  app.post("/api/admin/reconcile-double-charges", adminAuth, async (req, res) => {
+    try {
+      const dryRun = String((req.query as any).dryRun || "") === "1";
+      const allUsers = storage.getAllUsers();
+      const report: Array<{ userId: number; email: string; refund: number; chargedTxIds: number[] }> = [];
+      for (const u of allUsers) {
+        const txs = storage.getTransactionsByUser(u.id) || [];
+        // Already-reconciled source tx ids (recorded in description)
+        const alreadyReconciledSourceIds = new Set<number>();
+        for (const t of txs as any[]) {
+          if (t.type === "admin_reconcile" && typeof t.description === "string") {
+            const m = t.description.match(/source_tx_id=(\d+)/);
+            if (m) alreadyReconciledSourceIds.add(parseInt(m[1]));
+          }
+        }
+        // Find legacy double-deductions: 'charged' with a negative amount
+        const doubleCharged = (txs as any[]).filter(t =>
+          t.type === "charged" && typeof t.amount === "number" && t.amount < 0 && !alreadyReconciledSourceIds.has(t.id)
+        );
+        if (doubleCharged.length === 0) continue;
+        const totalRefund = doubleCharged.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+        const sourceIds = doubleCharged.map(t => t.id);
+        report.push({ userId: u.id, email: u.email, refund: totalRefund, chargedTxIds: sourceIds });
+        if (!dryRun) {
+          const fresh = storage.getUser(u.id);
+          if (!fresh) continue;
+          storage.updateUser(u.id, { credits: fresh.credits + totalRefund });
+          const reconcileTx = {
+            userId: u.id,
+            amount: totalRefund,
+            type: "admin_reconcile",
+            description: `Build 45.6.9 double-charge refund; source_tx_id=${sourceIds.join(",")}`,
+          };
+          storage.createTransaction(reconcileTx as any);
+          syncUserToCloud(u.id);
+          syncCreditTxToCloud(reconcileTx as any);
+        }
+      }
+      return res.json({
+        dryRun,
+        affectedUserCount: report.length,
+        totalRefundedCredits: report.reduce((s, r) => s + r.refund, 0),
+        users: report,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
   app.post("/api/admin/users/:id/deactivate", adminAuth, async (req, res) => {
     try {
       const user = storage.updateUser(parseInt(String(req.params.id)), { active: 0 } as any);
@@ -3035,22 +3090,33 @@ export async function registerRoutes(
       const allCompleted = allReviews.every((r) => r.status === "completed");
       if (allCompleted) {
         storage.updateRequest(review.requestId, { status: "completed" });
-        // FEAT-011: Mark held credits as charged when all reviews are completed
+        // Build 45.6.9 (OB bug fix): Avoid creating a duplicate 'charged' tx here.
+        // If admin approval path already ran, a 'charged' tx exists (amount=0, status flip).
+        // Only emit the status-flip tx if none exists yet, and always with amount=0
+        // so we never double-deduct balance (already deducted at hold time).
         const completedRequest = storage.getRequest(review.requestId);
         if (completedRequest) {
-          const chargeTakeRate = TAKE_RATES[(completedRequest.priceTier || completedRequest.tier || "standard").toLowerCase()] ?? 0.50;
-          const chargeExpertPayout = Math.max(1, Math.floor(completedRequest.creditsCost * (1 - chargeTakeRate)));
-          const chargePlatformFee = completedRequest.creditsCost - chargeExpertPayout;
-          const chargeTx = {
-            userId: completedRequest.userId, amount: completedRequest.creditsCost, type: "charged",
-            description: `Credits charged for completed request: ${completedRequest.title}`,
-            takeRatePercent: Math.round(chargeTakeRate * 100),
-            platformFee: chargePlatformFee,
-            expertPayout: chargeExpertPayout,
-            clientPaid: completedRequest.creditsCost,
-          };
-          storage.createTransaction(chargeTx);
-          syncCreditTxToCloud(chargeTx); // Build 45.2
+          const existingTxs = storage.getTransactionsByUser(completedRequest.userId) || [];
+          const alreadyCharged = existingTxs.some((t: any) =>
+            t.type === "charged" &&
+            typeof t.description === "string" &&
+            t.description.includes(completedRequest.title)
+          );
+          if (!alreadyCharged) {
+            const chargeTakeRate = TAKE_RATES[(completedRequest.priceTier || completedRequest.tier || "standard").toLowerCase()] ?? 0.50;
+            const chargeExpertPayout = Math.max(1, Math.floor(completedRequest.creditsCost * (1 - chargeTakeRate)));
+            const chargePlatformFee = completedRequest.creditsCost - chargeExpertPayout;
+            const chargeTx = {
+              userId: completedRequest.userId, amount: 0, type: "charged",
+              description: `Credits charged for completed request: ${completedRequest.title}`,
+              takeRatePercent: Math.round(chargeTakeRate * 100),
+              platformFee: chargePlatformFee,
+              expertPayout: chargeExpertPayout,
+              clientPaid: completedRequest.creditsCost,
+            };
+            storage.createTransaction(chargeTx);
+            syncCreditTxToCloud(chargeTx);
+          }
         }
       }
 
@@ -3323,17 +3389,18 @@ export async function registerRoutes(
         followup_deadline: followupDeadline,
       } as any);
 
-      // OB-I: Charge client NOW on admin verification (not on completion)
+      // Build 45.6.9 (OB bug fix): Charged ledger entry ONLY flips hold -> charged status.
+      // The actual balance deduction happened at hold-time (submit). Do NOT deduct again.
+      // Amount on the charged tx is 0 so ledger sum stays consistent; metadata preserved.
       const clientUser = storage.getUser(request.userId);
       if (clientUser) {
-        storage.updateUser(request.userId, { credits: Math.max(0, clientUser.credits - request.creditsCost) });
         const approveTakeRate = TAKE_RATES[(request.priceTier || request.tier || "standard").toLowerCase()] ?? 0.50;
         const approveExpertPayout = Math.max(1, Math.floor(request.creditsCost * (1 - approveTakeRate)));
         const approvePlatformFee = request.creditsCost - approveExpertPayout;
         const approveTakeRatePercent = Math.round(approveTakeRate * 100);
         storage.createTransaction({
           userId: request.userId,
-          amount: -request.creditsCost,
+          amount: 0,
           type: "charged",
           description: `Credits charged for verified response: ${request.title}`,
           takeRatePercent: approveTakeRatePercent,
@@ -3341,9 +3408,9 @@ export async function registerRoutes(
           expertPayout: approveExpertPayout,
           clientPaid: request.creditsCost,
         });
-        syncUserToCloud(request.userId);
-        syncCreditTxToCloud({ userId: request.userId, amount: -request.creditsCost, type: "charged", description: `Credits charged: ${request.title}`, takeRatePercent: approveTakeRatePercent, platformFee: approvePlatformFee, expertPayout: approveExpertPayout, clientPaid: request.creditsCost });
-        writeUserToBigQuery({ id: clientUser.id, name: clientUser.name, email: clientUser.email, role: clientUser.role, company: clientUser.company, credits: Math.max(0, clientUser.credits - request.creditsCost), createdAt: clientUser.createdAt || undefined }).catch(() => {});
+        // NOTE: No storage.updateUser here — balance already deducted at hold time.
+        syncCreditTxToCloud({ userId: request.userId, amount: 0, type: "charged", description: `Credits charged: ${request.title}`, takeRatePercent: approveTakeRatePercent, platformFee: approvePlatformFee, expertPayout: approveExpertPayout, clientPaid: request.creditsCost });
+        writeUserToBigQuery({ id: clientUser.id, name: clientUser.name, email: clientUser.email, role: clientUser.role, company: clientUser.company, credits: clientUser.credits, createdAt: clientUser.createdAt || undefined }).catch(() => {});
       }
 
       // Log timeline event

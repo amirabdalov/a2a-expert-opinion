@@ -2374,7 +2374,19 @@ function Credits({ userId, onContinueDraft }: { userId: number; onContinueDraft?
                 <td className="p-3 text-xs text-muted-foreground"><span title="US Central time zone">{formatCentralTime(tx.createdAt)}</span></td>
                 <td className="p-3 text-sm">{tx.description}</td>
                 <td className="p-3"><Badge variant="secondary" className="text-xs capitalize">{tx.type}</Badge></td>
-                <td className={`p-3 text-right text-sm font-medium ${["charged", "hold", "debit", "withdrawal"].includes(tx.type) ? "text-red-600" : tx.amount < 0 ? "text-red-600" : "text-green-600"}`}>{["charged", "hold", "debit", "withdrawal"].includes(tx.type) || tx.amount < 0 ? "-" : "+"}${Math.abs(tx.amount)} credits</td>
+                <td className={`p-3 text-right text-sm font-medium ${
+                  tx.type === "charged"
+                    ? "text-muted-foreground"
+                    : ["hold", "debit", "withdrawal"].includes(tx.type) || tx.amount < 0
+                      ? "text-red-600"
+                      : "text-green-600"
+                }`}>{
+                  tx.type === "charged"
+                    // Build 45.6.9: Charged is a status flip of an existing hold, not a new deduction.
+                    // Show the amount as info-only so the user sees the true cost without double-counting.
+                    ? <span title="Held funds finalized — no new deduction">${(tx as any).clientPaid ?? Math.abs(tx.amount)} (from hold)</span>
+                    : <>{["hold", "debit", "withdrawal"].includes(tx.type) || tx.amount < 0 ? "-" : "+"}${Math.abs(tx.amount)} credits</>
+                }</td>
               </tr>
             ))}
           </tbody>
