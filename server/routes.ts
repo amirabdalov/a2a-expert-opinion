@@ -3236,6 +3236,10 @@ export async function registerRoutes(
       // Build 44 Fix 4 (OB 2026-04-21): pre-fetch file attachments with Cloud SQL fallback
       // so admin review queue always sees them (even on a fresh container after deploy).
       const cloudSqlFilesByReq = new Map<number, any[]>();
+      // Build 45.6.10 (2026-04-25): pre-fetch deliverables from Cloud SQL too — SQLite gets
+      // NULLed by the periodic full-sync rehydration, so admin queue showed "No response text
+      // found" even when the deliverable was safely persisted in Postgres.
+      const cloudSqlDeliverableByReq = new Map<number, string>();
       try {
         const { getPgPool } = await import("./user-data-persist");
         const pool = await getPgPool();
@@ -3249,6 +3253,14 @@ export async function registerRoutes(
             const arr = cloudSqlFilesByReq.get(row.request_id) || [];
             arr.push(row);
             cloudSqlFilesByReq.set(row.request_id, arr);
+          }
+          // Build 45.6.10: pull latest completed deliverable per request from Postgres.
+          const { rows: erRows } = await pool.query(
+            "SELECT DISTINCT ON (request_id) request_id, deliverable, completed_at FROM expert_reviews WHERE request_id = ANY($1::int[]) AND status = 'completed' AND deliverable IS NOT NULL AND length(deliverable) > 0 ORDER BY request_id, completed_at DESC NULLS LAST, id DESC",
+            [ids]
+          );
+          for (const row of erRows as any[]) {
+            if (row.deliverable) cloudSqlDeliverableByReq.set(row.request_id, row.deliverable);
           }
         }
       } catch (e: any) {
@@ -3265,7 +3277,14 @@ export async function registerRoutes(
             const eu = userMap.get(expert.userId);
             expertName = eu?.name || "Unknown";
           }
-          // Get the latest completed review for this request
+        }
+        // Build 45.6.10: deliverable lookup is INDEPENDENT of r.expertId because
+        // some review rows have NULL expert_id but a valid deliverable (e.g. review 8).
+        // Prefer Postgres (durable) over SQLite (gets NULLed by full-sync).
+        const pgDeliverable = cloudSqlDeliverableByReq.get(r.id);
+        if (pgDeliverable) {
+          expertResponse = pgDeliverable;
+        } else {
           const reviews = storage.getReviewsByRequest(r.id);
           const completedReview = reviews.find((rev) => rev.status === "completed" && rev.deliverable);
           expertResponse = completedReview?.deliverable || "";
