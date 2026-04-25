@@ -992,10 +992,24 @@ export async function restoreFromCloudSql(sqliteDb: any): Promise<void> {
           } else {
             const existingUpdatedAt = (existing as any).updated_at || '';
             if (incomingUpdatedAt > existingUpdatedAt) {
+              // Build 45.6.10 (2026-04-25): NON-DESTRUCTIVE SYNC.
+              // Previously this UPDATE blindly overwrote SQLite columns with whatever PG returned,
+              // including writing NULL into `deliverable` when the SQLite copy had the real text.
+              // Symptom: admin queue showed "No response text found" minutes after expert submit.
+              // Fix: read the existing SQLite row and use COALESCE-style preservation — if PG has
+              // NULL for a critical text field but SQLite has a value, KEEP the SQLite value.
+              const existingRow = sqliteDb.prepare("SELECT deliverable, expert_id, rating, rating_comment, correct_points, incorrect_points, suggestions FROM expert_reviews WHERE id = ?").get(r.id) as any;
+              const safeDeliverable = (r.deliverable && r.deliverable.length > 0) ? r.deliverable : (existingRow?.deliverable || null);
+              const safeExpertId = r.expert_id ?? existingRow?.expert_id ?? null;
+              const safeRating = r.rating ?? existingRow?.rating ?? null;
+              const safeRatingComment = r.rating_comment ?? existingRow?.rating_comment ?? null;
+              const safeCorrect = r.correct_points ?? existingRow?.correct_points ?? null;
+              const safeIncorrect = r.incorrect_points ?? existingRow?.incorrect_points ?? null;
+              const safeSuggestions = r.suggestions ?? existingRow?.suggestions ?? null;
               sqliteDb.prepare(`UPDATE expert_reviews SET request_id=?, expert_id=?, status=?, rating=?, rating_comment=?, correct_points=?, incorrect_points=?, suggestions=?, deliverable=?, completed_at=?, invoiced=?, updated_at=? WHERE id=?`).run(
-                r.request_id, r.expert_id || null, r.status || 'pending', r.rating || null,
-                r.rating_comment || null, r.correct_points || null, r.incorrect_points || null,
-                r.suggestions || null, r.deliverable || null, r.completed_at || null, r.invoiced || 0,
+                r.request_id, safeExpertId, r.status || 'pending', safeRating,
+                safeRatingComment, safeCorrect, safeIncorrect,
+                safeSuggestions, safeDeliverable, r.completed_at || null, r.invoiced || 0,
                 r.updated_at || null, r.id
               );
               erUpdated++;
