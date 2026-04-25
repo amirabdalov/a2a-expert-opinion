@@ -1360,16 +1360,28 @@ export async function syncAllToCloudSql(allUsers: any[], allExperts: any[], allR
 }
 
 // ─── BigQuery Dual-Write ───
+// Build 45.6.10: 10s timeout + 3 retries + cached token (was: 3s, no retry, no cache)
+let _udpCachedGcpToken: { value: string; expiresAt: number } | null = null;
 async function getGcpToken(): Promise<string | null> {
-  try {
-    const res = await fetch(
-      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-      { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(3000) }
-    );
-    if (!res.ok) return null;
-    const json = await res.json() as { access_token: string };
-    return json.access_token;
-  } catch { return null; }
+  if (_udpCachedGcpToken && Date.now() < _udpCachedGcpToken.expiresAt - 600_000) {
+    return _udpCachedGcpToken.value;
+  }
+  const url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt)); continue; }
+      const json = await res.json() as { access_token: string; expires_in?: number };
+      _udpCachedGcpToken = { value: json.access_token, expiresAt: Date.now() + (json.expires_in || 3600) * 1000 };
+      return json.access_token;
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt));
+    }
+  }
+  console.error(`[GCP-TOKEN user-data-persist.ts] All attempts failed:`, lastErr?.message || lastErr);
+  return null;
 }
 
 export async function writeUserToBigQuery(user: {

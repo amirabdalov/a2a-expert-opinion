@@ -45,18 +45,47 @@ async function sendBackupAlert(subject: string, body: string): Promise<void> {
   }
 }
 
+// Build 45.6.10 (2026-04-25): The metadata token fetch was failing intermittently with a
+// 3-second timeout and zero retries on both PROD and UAT, causing hourly "No GCP token"
+// emails. The IAM is fine — the SA has roles/storage.admin on the bucket. The fetch just
+// occasionally takes longer than 3s during cold-starts or scaling events.
+//
+// Fix: 10s timeout, 2 retries with exponential backoff, full error logging so future
+// failures aren't silent. Cache the token for ~50 min (tokens are valid 60 min).
+let cachedToken: { value: string; expiresAt: number } | null = null;
+
 async function getGcpToken(): Promise<string | null> {
-  try {
-    const res = await fetch(
-      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-      { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(3000) },
-    );
-    if (!res.ok) return null;
-    const json = (await res.json()) as { access_token: string };
-    return json.access_token;
-  } catch {
-    return null;
+  // Token cache — refresh 10 min before expiry
+  if (cachedToken && Date.now() < cachedToken.expiresAt - 600_000) {
+    return cachedToken.value;
   }
+
+  const url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { "Metadata-Flavor": "Google" },
+        signal: AbortSignal.timeout(10_000), // 10s, was 3s
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        lastErr = new Error(`metadata server returned HTTP ${res.status}: ${body.substring(0, 200)}`);
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 500 * attempt));
+        continue;
+      }
+      const json = (await res.json()) as { access_token: string; expires_in?: number };
+      const expiresIn = (json.expires_in || 3600) * 1000;
+      cachedToken = { value: json.access_token, expiresAt: Date.now() + expiresIn };
+      if (attempt > 1) console.log(`[GCP-TOKEN] Recovered on attempt ${attempt}`);
+      return json.access_token;
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 500 * attempt));
+    }
+  }
+  console.error(`[GCP-TOKEN] All 3 attempts failed. Last error:`, lastErr?.message || lastErr);
+  return null;
 }
 
 let lastBackupSuccess = false;

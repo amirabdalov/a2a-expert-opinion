@@ -117,18 +117,28 @@ const attachmentUpload = multer({
 });
 
 // ─── GCS helpers for attachments ───
+// Build 45.6.10: 10s timeout + 3 attempts + cached token (was: 3s, no retry, no cache)
+let _cachedGcpToken: { value: string; expiresAt: number } | null = null;
 async function getGcpToken(): Promise<string | null> {
-  try {
-    const res = await fetch(
-      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-      { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(3000) }
-    );
-    if (!res.ok) return null;
-    const json = await res.json() as { access_token: string };
-    return json.access_token;
-  } catch {
-    return null;
+  if (_cachedGcpToken && Date.now() < _cachedGcpToken.expiresAt - 600_000) {
+    return _cachedGcpToken.value;
   }
+  const url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt)); continue; }
+      const json = await res.json() as { access_token: string; expires_in?: number };
+      _cachedGcpToken = { value: json.access_token, expiresAt: Date.now() + (json.expires_in || 3600) * 1000 };
+      return json.access_token;
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt));
+    }
+  }
+  console.error(`[GCP-TOKEN routes.ts] All attempts failed:`, lastErr?.message || lastErr);
+  return null;
 }
 
 const GCS_BUCKET = process.env.GCS_BUCKET || "a2a-global-data";
