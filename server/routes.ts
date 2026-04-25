@@ -3781,34 +3781,56 @@ export async function registerRoutes(
         "INSERT INTO file_attachments (request_id, filename, content_type, data, size, uploader_id, uploader_role, created_at) VALUES (?,?,?,?,?,?,?,?)"
       ).run(Number(requestId), file.originalname, file.mimetype, base64Data, file.size, uploaderId, uploaderRole, now);
 
-      // Also upload to GCS for redundancy (fire-and-forget)
+      // Build 45.6.10 (2026-04-25): UPLOAD DURABILITY FIX.
+      // Previously: GCS upload + Cloud SQL write were both fire-and-forget (.catch(()=>{}))
+      // → a failed upload returned 200 OK and the user thought their file was saved, but it
+      // existed only in SQLite which is wiped on container restart. That's the oleg+bz bug.
+      // Now: await both writes; if EITHER fails, ROLL BACK the SQLite row and return 500.
       const gcsPath = `attachments/${requestId}/${file.originalname}`;
-      uploadToGcs(gcsPath, file.buffer, file.mimetype)
-        .then(() => {
-          // Update gcs_path in SQLite
-          sqlite.prepare("UPDATE file_attachments SET gcs_path = ? WHERE id = ?").run(gcsPath, Number(result.lastInsertRowid));
-          console.log(`[FILE-GCS] Backed up to gs://a2a-global-data/${gcsPath}`);
-        })
-        .catch((err) => console.error(`[FILE-GCS] GCS backup failed for ${file.originalname}:`, err.message));
+      let gcsOk = false;
+      try {
+        await uploadToGcs(gcsPath, file.buffer, file.mimetype);
+        sqlite.prepare("UPDATE file_attachments SET gcs_path = ? WHERE id = ?").run(gcsPath, Number(result.lastInsertRowid));
+        console.log(`[FILE-GCS] Backed up to gs://a2a-global-data/${gcsPath}`);
+        gcsOk = true;
+      } catch (gcsErr: any) {
+        console.error(`[FILE-GCS] FAILED for ${file.originalname}:`, gcsErr.message);
+      }
 
       // Persist metadata to Cloud SQL (no blob data)
-      // Build 44 Fix 3 (OB 2026-04-21): include uploader_id/uploader_role so the client vs
-      // expert tag survives across deploys (previously dropped on Cloud SQL restore).
-      writeFileAttachmentToCloudSql({
-        id: Number(result.lastInsertRowid),
-        requestId: Number(requestId),
-        filename: file.originalname,
-        contentType: file.mimetype,
-        size: file.size,
-        gcsPath: gcsPath,
-        uploaderId: uploaderId,
-        uploaderRole: uploaderRole,
-        createdAt: now,
-      }).catch(() => {});
+      let pgOk = false;
+      try {
+        await writeFileAttachmentToCloudSql({
+          id: Number(result.lastInsertRowid),
+          requestId: Number(requestId),
+          filename: file.originalname,
+          contentType: file.mimetype,
+          size: file.size,
+          gcsPath: gcsPath,
+          uploaderId: uploaderId,
+          uploaderRole: uploaderRole,
+          createdAt: now,
+        });
+        pgOk = true;
+      } catch (pgErr: any) {
+        console.error(`[FILE-PG] FAILED for ${file.originalname}:`, pgErr.message);
+      }
+
+      // Durability requirement: SQLite alone is NOT durable (container restart wipes it).
+      // We need either GCS (bytes) OR Cloud SQL (metadata pointing to GCS) to survive.
+      // If BOTH failed, roll back SQLite and tell the user to retry.
+      if (!gcsOk && !pgOk) {
+        try {
+          sqlite.prepare("DELETE FROM file_attachments WHERE id = ?").run(Number(result.lastInsertRowid));
+        } catch {}
+        console.error(`[FILE-DB] Upload not durable — GCS and Cloud SQL both failed. Rolled back SQLite. file=${file.originalname}`);
+        return res.status(500).json({ error: true, message: "Upload failed: storage backend unavailable. Please retry in a moment." });
+      }
 
       triggerBackup();
-      console.log(`[FILE-DB] Uploaded ${file.originalname} (${file.size} bytes) for request ${requestId} by user ${uploaderId} (${uploaderRole})`);
-      return res.json({ ok: true, id: Number(result.lastInsertRowid), filename: file.originalname, size: file.size, uploaderId, uploaderRole });
+      const durabilityMode = gcsOk && pgOk ? "GCS+PG+SQLite" : (gcsOk ? "GCS+SQLite" : "PG+SQLite");
+      console.log(`[FILE-DB] Uploaded ${file.originalname} (${file.size} bytes) for request ${requestId} by user ${uploaderId} (${uploaderRole}) [${durabilityMode}]`);
+      return res.json({ ok: true, id: Number(result.lastInsertRowid), filename: file.originalname, size: file.size, uploaderId, uploaderRole, durability: durabilityMode });
     } catch (e: any) {
       console.error("[FILE-DB] Upload error:", e.message);
       return res.status(500).json({ error: true, message: e.message });
@@ -3817,7 +3839,10 @@ export async function registerRoutes(
 
   // FIX-5: Download file — serves from DB
   // BUG-1 fix: Accept ?token=JWT query param so <a href> downloads work (browser links don't send Authorization headers)
-  app.get("/api/files/:requestId/:filename", (req, res) => {
+  // Build 45.6.10 (2026-04-25): Add Cloud SQL + GCS fallback. Previously this was SQLite-only, so any
+  // upload that landed in PG/GCS but lost its SQLite row (fresh container, sync issue, race) returned
+  // 404 "File not found" — exactly what Jayesh and oleg+bz hit today.
+  app.get("/api/files/:requestId/:filename", async (req, res) => {
     try {
       // Authenticate via Authorization header OR ?token query param
       const authHeader = req.headers.authorization;
@@ -3834,21 +3859,86 @@ export async function registerRoutes(
       }
 
       const { requestId, filename } = req.params;
+      const decodedName = decodeURIComponent(filename);
+
+      // Tier 1: SQLite (fastest, has the base64 blob inline)
       const file = sqlite.prepare(
         "SELECT * FROM file_attachments WHERE request_id = ? AND filename = ?"
-      ).get(Number(requestId), decodeURIComponent(filename)) as any;
+      ).get(Number(requestId), decodedName) as any;
 
-      if (!file) {
-        console.log(`[FILE-DB] Not found: request=${requestId} file=${filename}`);
-        return res.status(404).json({ error: true, message: "File not found" });
+      if (file && file.data) {
+        const buffer = Buffer.from(file.data, "base64");
+        res.setHeader("Content-Type", file.content_type);
+        res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+        res.setHeader("Content-Length", buffer.length);
+        console.log(`[FILE-DB] Serving ${file.filename} (${buffer.length} bytes) from SQLite`);
+        return res.send(buffer);
       }
 
-      const buffer = Buffer.from(file.data, "base64");
-      res.setHeader("Content-Type", file.content_type);
-      res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
-      res.setHeader("Content-Length", buffer.length);
-      console.log(`[FILE-DB] Serving ${file.filename} (${buffer.length} bytes)`);
-      return res.send(buffer);
+      // Tier 2: Cloud SQL (durable metadata) → GCS (durable bytes)
+      // This is the path that fixes oleg+bz's mobile-uploaded file and Jayesh's "File not found".
+      try {
+        const pool = await getPgPool();
+        if (pool) {
+          const { rows } = await pool.query(
+            "SELECT id, request_id, filename, content_type, size, gcs_path FROM file_attachments WHERE request_id = $1 AND filename = $2 ORDER BY id DESC LIMIT 1",
+            [Number(requestId), decodedName]
+          );
+          const pgFile = rows[0] as any;
+          if (pgFile && pgFile.gcs_path) {
+            console.log(`[FILE-GCS] SQLite miss — falling back to GCS: ${pgFile.gcs_path}`);
+            const gcsResp: any = await downloadFromGcs(pgFile.gcs_path);
+            if (gcsResp.ok) {
+              const arrBuf = await gcsResp.arrayBuffer();
+              const buffer = Buffer.from(arrBuf);
+              res.setHeader("Content-Type", pgFile.content_type || "application/octet-stream");
+              res.setHeader("Content-Disposition", `attachment; filename="${pgFile.filename}"`);
+              res.setHeader("Content-Length", buffer.length);
+              console.log(`[FILE-GCS] Served ${pgFile.filename} (${buffer.length} bytes) from GCS via Cloud SQL fallback`);
+              return res.send(buffer);
+            } else {
+              console.error(`[FILE-GCS] GCS returned ${gcsResp.status} for ${pgFile.gcs_path}`);
+            }
+          }
+          // Tier 3: Cloud SQL knows about the file but no gcs_path — try the conventional path anyway
+          if (pgFile && !pgFile.gcs_path) {
+            const guessPath = `attachments/${requestId}/${decodedName}`;
+            console.log(`[FILE-GCS] No gcs_path stored — trying conventional path ${guessPath}`);
+            const gcsResp: any = await downloadFromGcs(guessPath);
+            if (gcsResp.ok) {
+              const arrBuf = await gcsResp.arrayBuffer();
+              const buffer = Buffer.from(arrBuf);
+              res.setHeader("Content-Type", pgFile.content_type || "application/octet-stream");
+              res.setHeader("Content-Disposition", `attachment; filename="${pgFile.filename}"`);
+              res.setHeader("Content-Length", buffer.length);
+              console.log(`[FILE-GCS] Served ${pgFile.filename} (${buffer.length} bytes) from GCS conventional path`);
+              return res.send(buffer);
+            }
+          }
+        }
+      } catch (fallbackErr: any) {
+        console.error(`[FILE-FALLBACK] Cloud SQL/GCS fallback failed for request=${requestId} file=${decodedName}:`, fallbackErr.message);
+      }
+
+      // Tier 4: try GCS conventional path even if Cloud SQL had no row (last-ditch)
+      try {
+        const guessPath = `attachments/${requestId}/${decodedName}`;
+        const gcsResp: any = await downloadFromGcs(guessPath);
+        if (gcsResp.ok) {
+          const arrBuf = await gcsResp.arrayBuffer();
+          const buffer = Buffer.from(arrBuf);
+          res.setHeader("Content-Type", "application/octet-stream");
+          res.setHeader("Content-Disposition", `attachment; filename="${decodedName}"`);
+          res.setHeader("Content-Length", buffer.length);
+          console.log(`[FILE-GCS] Served ${decodedName} (${buffer.length} bytes) from GCS last-ditch path`);
+          return res.send(buffer);
+        }
+      } catch (lastDitchErr: any) {
+        console.error(`[FILE-LAST-DITCH] GCS direct path also failed:`, lastDitchErr.message);
+      }
+
+      console.log(`[FILE-DB] Not found in SQLite, Cloud SQL, or GCS: request=${requestId} file=${decodedName}`);
+      return res.status(404).json({ error: true, message: "File not found" });
     } catch (e: any) {
       console.error("[FILE-DB] Download error:", e.message);
       return res.status(500).json({ error: true, message: e.message });
