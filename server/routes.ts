@@ -458,11 +458,13 @@ export async function registerRoutes(
   function syncRequestToCloud(requestId: number) {
     const r = storage.getRequest(requestId);
     if (!r) return;
-    writeRequestToCloudSql({
-      id: r.id, userId: r.userId, expertId: r.expertId, title: r.title,
-      description: r.description, category: r.category, tier: r.tier,
-      status: r.status, creditsCost: r.creditsCost, serviceType: r.serviceType,
-    }).catch(() => {});
+    // Build 45.6.10.1: pass the FULL request object so expert_response,
+    // ai_response, attachments, ratings, refund, deadlines, completed_at, etc.
+    // are durably persisted to Postgres. Previously, this fire-and-forget call
+    // only passed 10 fields and silently dropped expert_response — meaning
+    // /api/requests/:id/respond (the legacy expert-response endpoint) was
+    // writing the deliverable to SQLite only, and a destructive sync could lose it.
+    writeRequestToCloudSql(r as any).catch(() => {});
   }
   function syncExpertToCloud(expertId: number) {
     const e = storage.getExpert(expertId);
@@ -3046,7 +3048,37 @@ export async function registerRoutes(
       ...(suggestions !== undefined && { suggestions }),
       ...(deliverable !== undefined && { deliverable }),
     });
-    if (updated) writeExpertReviewToCloudSql(updated).catch(() => {});
+    // Build 45.6.10.1: AWAIT PG write and roll back SQLite on failure so we
+    // never return success on lost data. Previously fire-and-forget meant the
+    // deliverable could be lost if PG was down and the periodic sync ran.
+    if (updated) {
+      try {
+        await writeExpertReviewToCloudSql(updated);
+      } catch (pgErr: any) {
+        console.error("[REVIEW-PATCH] PG write FAILED \u2014 rolling back SQLite:", pgErr?.message);
+        storage.updateExpertReview(review.id, {
+          status: review.status,
+          completedAt: review.completedAt,
+          rating: review.rating,
+          ratingComment: review.ratingComment,
+          correctPoints: review.correctPoints,
+          incorrectPoints: review.incorrectPoints,
+          suggestions: review.suggestions,
+          deliverable: review.deliverable,
+        } as any);
+        return res.status(500).json({ error: true, message: "Failed to persist review. Please try again." });
+      }
+    }
+    // Build 45.6.10.1: ALSO mirror the deliverable onto the request row for redundancy.
+    if (updated && deliverable) {
+      storage.updateRequest(review.requestId, { expertResponse: deliverable } as any);
+      try {
+        const refreshed = storage.getRequest(review.requestId);
+        if (refreshed) await writeRequestToCloudSql(refreshed as any);
+      } catch (e: any) {
+        console.error("[REVIEW-PATCH] Request mirror to PG failed (non-fatal):", e?.message);
+      }
+    }
 
     if (updated) {
       const allReviews = storage.getReviewsByRequest(review.requestId);
@@ -3198,10 +3230,32 @@ export async function registerRoutes(
         status: "completed",
         completedAt: new Date().toISOString(),
       });
-      if (updated) writeExpertReviewToCloudSql(updated).catch(() => {});
+      // Build 45.6.10.1: AWAIT PG write so we never return success on lost data.
+      // Previous fire-and-forget meant if PG write failed and the periodic sync ran
+      // before the next manual write, the SQLite row would be wiped from PG-side state
+      // and the deliverable would be lost forever (e.g. requests 47 + 65 affected today).
+      if (updated) {
+        try {
+          await writeExpertReviewToCloudSql(updated);
+        } catch (pgErr: any) {
+          console.error("[EXPERT-RESPOND] PG write FAILED — rolling back SQLite to keep data consistent:", pgErr?.message);
+          // Roll SQLite back so client retries instead of seeing false success.
+          storage.updateExpertReview(reviewId, { deliverable: review.deliverable, status: review.status, completedAt: review.completedAt } as any);
+          return res.status(500).json({ error: true, message: "Failed to persist response. Please try again." });
+        }
+      }
 
-      // Mark the REQUEST as under_review (not yet visible to client)
-      storage.updateRequest(review.requestId, { status: "under_review" });
+      // Build 45.6.10.1: ALSO mirror the deliverable onto the request row itself.
+      // This gives us a second durable copy and matches the data model expected by
+      // /api/admin/reviews/:requestId/approve and finalizeRequest. If the expert_reviews
+      // row ever gets wiped, requests.expert_response is still intact.
+      storage.updateRequest(review.requestId, { status: "under_review", expertResponse: deliverable } as any);
+      try {
+        const refreshed = storage.getRequest(review.requestId);
+        if (refreshed) await writeRequestToCloudSql(refreshed);
+      } catch (e: any) {
+        console.error("[EXPERT-RESPOND] Request mirror to PG failed (non-fatal, expert_reviews still has it):", e?.message);
+      }
 
       // Log timeline event
       if (updated?.expertId) {
@@ -3288,16 +3342,35 @@ export async function registerRoutes(
             expertName = eu?.name || "Unknown";
           }
         }
-        // Build 45.6.10: deliverable lookup is INDEPENDENT of r.expertId because
-        // some review rows have NULL expert_id but a valid deliverable (e.g. review 8).
-        // Prefer Postgres (durable) over SQLite (gets NULLed by full-sync).
+        // Build 45.6.10.1: deliverable lookup with 4-tier fallback.
+        // Prior to 45.6.10.1, expert response submissions used fire-and-forget PG writes
+        // and did NOT mirror the deliverable onto requests.expert_response. If the
+        // expert_reviews row was lost (sync race) before admin viewed the queue, the
+        // deliverable disappeared entirely. We now check every persistence layer.
         const pgDeliverable = cloudSqlDeliverableByReq.get(r.id);
         if (pgDeliverable) {
           expertResponse = pgDeliverable;
+        } else if ((r as any).expertResponse && String((r as any).expertResponse).trim().length > 0) {
+          // Tier 2: deliverable mirrored onto the request row (45.6.10.1+ writes here)
+          expertResponse = String((r as any).expertResponse);
         } else {
           const reviews = storage.getReviewsByRequest(r.id);
           const completedReview = reviews.find((rev) => rev.status === "completed" && rev.deliverable);
-          expertResponse = completedReview?.deliverable || "";
+          if (completedReview?.deliverable) {
+            expertResponse = completedReview.deliverable;
+          } else {
+            // Tier 4: last resort — mine the timeline for an expert message text.
+            // Helps recover requests that pre-date 45.6.10.1 where the deliverable
+            // is lost but the expert may have typed it as a follow-up message.
+            const events = safeArray(storage.getRequestEventsByRequest?.(r.id) || []);
+            const expertMsgs = events.filter((e: any) => e.type === "message" && e.actorId != null && e.actorId !== r.userId && e.message);
+            if (expertMsgs.length > 0) {
+              const last = expertMsgs.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+              expertResponse = `[recovered from timeline] ${(last as any).message || ""}`;
+            } else {
+              expertResponse = "";
+            }
+          }
         }
         // BUG-2 fix: Include file attachments for admin review queue
         // Build 44: prefer SQLite (fresh), fall back to Cloud SQL (persistent across deploys)

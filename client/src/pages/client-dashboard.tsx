@@ -1745,6 +1745,23 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
     },
   });
 
+  // Build 45.6.10.1: For requests that have been CLAIMED but not yet COMPLETED,
+  // there is no review row to populate expertIdByUserId, so the expert's name in
+  // the timeline (e.g. "Claimed by Jayesh Panpaliya") falls back to a non-clickable
+  // <span>. Fetch the claiming expert's record by request.expertId so we can map
+  // their userId → expertId and render the public-profile link.
+  // NOTE: This hook MUST be declared before any early `return` to satisfy React's
+  // rules of hooks (consistent hook order across renders).
+  const claimingExpertId = request?.expertId ?? null;
+  const { data: claimingExpert } = useQuery<Expert & { userName?: string | null }>({
+    queryKey: ["/api/experts", claimingExpertId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/experts/${claimingExpertId}`);
+      return res.json();
+    },
+    enabled: !!claimingExpertId,
+  });
+
   if (!request) return <div className="p-6"><p className="text-sm text-muted-foreground">Loading...</p></div>;
 
   const parsedAttachments: Array<{ name: string; content: string }> = (() => {
@@ -1765,6 +1782,12 @@ function RequestDetail({ requestId, userId, setView }: { requestId: number; user
       expertIdByUserId[dRev.expert.userId] = dRev.expert.id;
     }
   });
+  // Build 45.6.10.1: also include the claiming expert (covers "claimed but not
+  // yet completed" requests where no review row exists yet — e.g. timeline event
+  // "Claimed by Jayesh Panpaliya" should be a clickable link to the public profile).
+  if (claimingExpert?.userId && claimingExpert?.id) {
+    expertIdByUserId[claimingExpert.userId] = claimingExpert.id;
+  }
 
   return (
     <div className="p-6" data-testid="view-request-detail">
