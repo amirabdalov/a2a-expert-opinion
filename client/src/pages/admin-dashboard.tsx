@@ -335,6 +335,21 @@ export default function AdminDashboard() {
   );
 }
 
+// Build 45.6.11 (OB 2026-04-26): Map serviceType code to the same label
+// the client sees when submitting the request, so admin reviewers see the
+// same wording as the client. Mirrors `serviceTypeLabel` in client-dashboard.tsx.
+function adminServiceTypeLabel(t?: string): string {
+  switch ((t || "").toLowerCase()) {
+    case "sense_check": return "Sense Check";
+    case "prompt_calibration": return "Prompt Calibration";
+    case "full_review": return "Full Review";
+    case "other": return "Other";
+    case "rate": return "Rate";
+    case "review": return "Review";
+    default: return t ? t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "Not specified";
+  }
+}
+
 // ─── Review Queue Panel ───
 function ReviewQueuePanel() {
   const { toast } = useToast();
@@ -423,8 +438,63 @@ function ReviewQueuePanel() {
                 </div>
               </div>
 
+              {/* Build 45.6.11 (OB 2026-04-26): Original client request fields,
+                  shown to admin reviewers so they can verify the expert's response
+                  against the question, AI output, and any expert instructions.
+                  Each field renders only when populated to keep the card compact. */}
+              {(item.serviceType || item.serviceCategory || (item.description && String(item.description).trim()) || (item.aiResponse && String(item.aiResponse).trim()) || item.llmProvider || item.llmModel || (item.instructions && String(item.instructions).trim())) && (
+                <div className="px-5 py-4 border-t border-zinc-800 bg-zinc-900/40">
+                  <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5" /> Original Client Request
+                  </p>
+                  <div className="space-y-3">
+                    {(item.serviceType || item.serviceCategory) && (
+                      <div data-testid={`review-${item.id}-service-type`}>
+                        <p className="text-[11px] font-medium text-zinc-500 uppercase tracking-wide mb-1">Service type</p>
+                        <p className="text-sm text-zinc-200">
+                          {adminServiceTypeLabel(item.serviceType)}
+                          {item.serviceCategory ? <span className="text-zinc-500"> &middot; <span className="capitalize">{item.serviceCategory}</span></span> : null}
+                        </p>
+                      </div>
+                    )}
+                    {item.description && String(item.description).trim() && (
+                      <div data-testid={`review-${item.id}-description`}>
+                        <p className="text-[11px] font-medium text-zinc-500 uppercase tracking-wide mb-1">My question</p>
+                        <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 max-h-40 overflow-y-auto">
+                          <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">{item.description}</pre>
+                        </div>
+                      </div>
+                    )}
+                    {item.aiResponse && String(item.aiResponse).trim() && (
+                      <div data-testid={`review-${item.id}-ai-response`}>
+                        <p className="text-[11px] font-medium text-zinc-500 uppercase tracking-wide mb-1">AI response submitted for verification</p>
+                        <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 max-h-40 overflow-y-auto">
+                          <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">{item.aiResponse}</pre>
+                        </div>
+                      </div>
+                    )}
+                    {(item.llmProvider || item.llmModel) && (
+                      <div data-testid={`review-${item.id}-llm`}>
+                        <p className="text-[11px] font-medium text-zinc-500 uppercase tracking-wide mb-1">Which AI generated this</p>
+                        <p className="text-sm text-zinc-200">
+                          {[item.llmProvider, item.llmModel].filter(Boolean).join(" \u00B7 ") || <span className="text-zinc-500 italic">Not specified</span>}
+                        </p>
+                      </div>
+                    )}
+                    {item.instructions && String(item.instructions).trim() && (
+                      <div data-testid={`review-${item.id}-instructions`}>
+                        <p className="text-[11px] font-medium text-zinc-500 uppercase tracking-wide mb-1">Instructions for expert</p>
+                        <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 max-h-40 overflow-y-auto">
+                          <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">{item.instructions}</pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Expert Response */}
-              <div className="px-5 py-4">
+              <div className="px-5 py-4 border-t border-zinc-800">
                 <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
                   <MessageSquare className="h-3.5 w-3.5" /> Expert Response
                 </p>
