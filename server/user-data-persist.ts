@@ -390,6 +390,25 @@ export async function initCloudSql(): Promise<void> {
   if (pool) await ensurePgTables(pool);
 }
 
+// Build 45.6.12 — hard-delete request from Cloud SQL (admin only). Also removes related rows.
+// Must be called AFTER storage.deleteRequest so the periodic sync can't resurrect the row.
+// Cleans up: messages, expert_reviews, file_attachments, request_events, then the request itself.
+export async function deleteRequestFromCloudSql(requestId: number): Promise<void> {
+  try {
+    const pool = await getPgPool();
+    if (!pool) return;
+    // Order matters — children first
+    await pool.query(`DELETE FROM messages WHERE request_id = $1`, [requestId]).catch(() => {});
+    await pool.query(`DELETE FROM expert_reviews WHERE request_id = $1`, [requestId]).catch(() => {});
+    await pool.query(`DELETE FROM file_attachments WHERE request_id = $1`, [requestId]).catch(() => {});
+    await pool.query(`DELETE FROM request_events WHERE request_id = $1`, [requestId]).catch(() => {});
+    await pool.query(`DELETE FROM requests WHERE id = $1`, [requestId]);
+    console.log(`[CLOUD-SQL] 🗑️  Hard-deleted request ${requestId} + related rows`);
+  } catch (err) {
+    console.error("[CLOUD-SQL] ❌ Request delete failed:", (err as Error).message?.substring(0, 120));
+  }
+}
+
 // Build 45.6.2 — hard-delete user from Cloud SQL (admin only). Also removes related rows.
 // Must be called AFTER storage.deleteUser so the periodic sync can't resurrect the row.
 export async function deleteUserFromCloudSql(userId: number): Promise<void> {

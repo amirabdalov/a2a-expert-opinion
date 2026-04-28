@@ -13,7 +13,7 @@ import { sendOtpEmail, sendInvoiceEmail, sendVerificationEmail } from "./email";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 import { triggerBackup } from "./db-persistence";
-import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql, deleteUserFromCloudSql, getPgPool } from "./user-data-persist";
+import { writeUserToBigQuery, sendUserRegistrationEmail, sendFullUserDataEmail, writeUserToCloudSql, writeRequestToCloudSql, writeExpertToCloudSql, writeCreditTransactionToCloudSql, writeExpertReviewToCloudSql, writeMessageToCloudSql, writeNotificationToCloudSql, writeRequestEventToCloudSql, writeWalletTransactionToCloudSql, writeWithdrawalToCloudSql, writeInvoiceToCloudSql, writeVerificationTestToCloudSql, writeExpertVerificationToCloudSql, writeWithdrawalRequestToCloudSql, writeFileAttachmentToCloudSql, writeExpertPassportToCloudSql, writeAdminActionToCloudSql, writeTopupRequestToCloudSql, writeFeedbackToCloudSql, deleteUserFromCloudSql, deleteRequestFromCloudSql, getPgPool } from "./user-data-persist";
 import {
   emitRegistrationEvent,
   ensureRegistrationEventsSqlite,
@@ -1740,6 +1740,123 @@ export async function registerRoutes(
     }
   });
 
+  // Build 45.6.12 — soft-delete (hide) a request from end-user views.
+  // Sets status='deleted' in BOTH MemStorage/SQLite AND Cloud SQL synchronously.
+  // Why soft-delete:
+  //   - Expert queue (/api/reviews/pending) filters status='pending' → hidden from experts
+  //   - Client dashboard already filters status !== 'deleted' → hidden from owning client
+  //   - Admin /api/admin/requests still returns row → recoverable
+  //   - All children (messages, file_attachments, request_events, expert_reviews) preserved
+  //   - Resurrection bug (5-min UPSERT sync) can't undo this — both sides have status='deleted'
+  // Designed to clean up zombie requests (stuck in pending with broken claim path) without
+  // losing the data. Reversible by flipping status back via /api/admin/requests/:id/restore.
+  app.post("/api/admin/requests/:id/hide", adminAuth, async (req, res) => {
+    try {
+      const requestId = parseInt(String(req.params.id));
+      if (!Number.isFinite(requestId) || requestId <= 0) {
+        return res.status(400).json({ error: true, message: "Invalid request id" });
+      }
+      const request = storage.getRequest(requestId);
+      if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+      if (request.status === "deleted") {
+        return res.status(400).json({ error: true, message: "Request is already hidden", currentStatus: request.status });
+      }
+      const adminEmail = (req as any).admin?.email || "unknown";
+      const previousStatus = request.status;
+
+      // 1. Flip status in MemStorage/SQLite (writes through Drizzle so MemStorage stays consistent)
+      const updated = storage.updateRequest(requestId, { status: "deleted" } as any);
+
+      // 2. Mirror to Cloud SQL synchronously (otherwise next 5-min sync would re-write
+      //    MemStorage's deleted status — but defensive sync now closes the loop immediately)
+      try {
+        const pool = await getPgPool();
+        if (pool) {
+          await pool.query(
+            `UPDATE requests SET status = 'deleted', updated_at = NOW() WHERE id = $1`,
+            [requestId]
+          );
+        }
+      } catch (e) {
+        console.error("[ADMIN-HIDE] Cloud SQL mirror warn:", (e as Error).message);
+      }
+
+      // 3. Audit log
+      try {
+        storage.createAdminAction({
+          adminEmail,
+          actionType: "hide_request",
+          targetType: "request",
+          targetId: requestId,
+          details: JSON.stringify({
+            title: request.title,
+            previousStatus,
+            newStatus: "deleted",
+            userId: request.userId,
+            expertId: request.expertId ?? null,
+            reason: req.body?.reason || "admin hide (zombie cleanup)",
+          }),
+        });
+      } catch {}
+      console.log(`[ADMIN] Hidden request ${requestId} ("${request.title}") status: ${previousStatus} → deleted by ${adminEmail}`);
+
+      return res.json({
+        message: "Request hidden (soft-delete). Data preserved; not visible to client or experts.",
+        requestId,
+        title: request.title,
+        previousStatus,
+        newStatus: "deleted",
+        updated: !!updated,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
+  // Build 45.6.12 — un-hide a previously soft-deleted request. Restores to specified status.
+  app.post("/api/admin/requests/:id/restore", adminAuth, async (req, res) => {
+    try {
+      const requestId = parseInt(String(req.params.id));
+      if (!Number.isFinite(requestId) || requestId <= 0) {
+        return res.status(400).json({ error: true, message: "Invalid request id" });
+      }
+      const request = storage.getRequest(requestId);
+      if (!request) return res.status(404).json({ error: true, message: "Request not found" });
+      const targetStatus = String(req.body?.status || "pending");
+      const allowed = ["pending", "in_progress", "under_review", "completed", "awaiting_followup"];
+      if (!allowed.includes(targetStatus)) {
+        return res.status(400).json({ error: true, message: `Invalid target status. Allowed: ${allowed.join(", ")}` });
+      }
+      const adminEmail = (req as any).admin?.email || "unknown";
+      const previousStatus = request.status;
+      const updated = storage.updateRequest(requestId, { status: targetStatus } as any);
+      try {
+        const pool = await getPgPool();
+        if (pool) {
+          await pool.query(
+            `UPDATE requests SET status = $1, updated_at = NOW() WHERE id = $2`,
+            [targetStatus, requestId]
+          );
+        }
+      } catch (e) {
+        console.error("[ADMIN-RESTORE] Cloud SQL mirror warn:", (e as Error).message);
+      }
+      try {
+        storage.createAdminAction({
+          adminEmail,
+          actionType: "restore_request",
+          targetType: "request",
+          targetId: requestId,
+          details: JSON.stringify({ title: request.title, previousStatus, newStatus: targetStatus }),
+        });
+      } catch {}
+      console.log(`[ADMIN] Restored request ${requestId} status: ${previousStatus} → ${targetStatus} by ${adminEmail}`);
+      return res.json({ message: "Request restored", requestId, previousStatus, newStatus: targetStatus, updated: !!updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: true, message: e.message });
+    }
+  });
+
   app.post("/api/admin/requests/:id/refund", adminAuth, async (req, res) => {
     try {
       const request = storage.getRequest(parseInt(String(req.params.id)));
@@ -1928,8 +2045,15 @@ export async function registerRoutes(
     return res.json(reqs);
   });
 
+  // Build 45.6.12 — zombie ignore-list. Requests #1,2,3,9 are stuck in pending
+  // due to a broken claim path (review-id collision in /api/reviews/:id/claim).
+  // Filtering them at the API layer hides them from experts immediately without
+  // touching the database. Remove this list once the sync resurrection bug is
+  // fixed (Build 45.6.13) and these rows can be soft-deleted permanently.
+  const ZOMBIE_REQUEST_IDS = new Set([1, 2, 3, 9]);
+
   app.get("/api/requests/pending", userOrAdminAuth, async (_req, res) => {
-    const reqs = storage.getPendingRequests();
+    const reqs = storage.getPendingRequests().filter((r: any) => !ZOMBIE_REQUEST_IDS.has(r.id));
     return res.json(reqs);
   });
 
@@ -2892,10 +3016,11 @@ export async function registerRoutes(
   });
 
   app.get("/api/reviews/pending", userOrAdminAuth, async (req, res) => {
-    let reviews = storage.getPendingReviews();
+    // Build 45.6.12 — filter zombies (see ZOMBIE_REQUEST_IDS above)
+    let reviews = storage.getPendingReviews().filter((r: any) => !ZOMBIE_REQUEST_IDS.has(r.requestId));
     // Fallback: synthesize from pending requests if no expert_reviews exist
     if (reviews.length === 0) {
-      const pendingRequests = storage.getPendingRequests();
+      const pendingRequests = storage.getPendingRequests().filter((r: any) => !ZOMBIE_REQUEST_IDS.has(r.id));
       reviews = pendingRequests.map((r: any) => synthesizeReviewFromRequest(r)) as any;
     }
     // Expert matching: filter by expert's categories if expertId is provided

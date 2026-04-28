@@ -569,6 +569,7 @@ export interface IStorage {
   getPendingRequests(): ExpertRequest[];
   createRequest(request: InsertRequest): ExpertRequest;
   updateRequest(id: number, data: Partial<InsertRequest>): ExpertRequest | undefined;
+  deleteRequest(id: number): boolean; // Build 45.6.12 — hard-delete request from SQLite + MemStorage
   // Messages
   getMessagesByRequest(requestId: number): Message[];
   createMessage(message: InsertMessage): Message;
@@ -724,6 +725,14 @@ export class DatabaseStorage implements IStorage {
   }
   updateRequest(id: number, data: Partial<InsertRequest>): ExpertRequest | undefined {
     return db.update(requests).set({ ...data, updatedAt: new Date().toISOString() } as any).where(eq(requests.id, id)).returning().get();
+  }
+  // Build 45.6.12 — hard-delete request (admin only). Removes from SQLite/MemStorage.
+  // Caller must also delete child rows (expert_reviews, messages, request_events, file_attachments)
+  // and the Cloud SQL row via deleteRequestFromCloudSql. Otherwise the 5-min periodic sync
+  // (server/index.ts:202) will resurrect the row from MemStorage.
+  deleteRequest(id: number): boolean {
+    const result = db.delete(requests).where(eq(requests.id, id)).run();
+    return (result.changes ?? 0) > 0;
   }
 
   // Messages
