@@ -1,0 +1,49 @@
+# A2A Global
+
+> A2A Global is a model-neutral marketplace that converts any AI answer (ChatGPT, Claude, Perplexity, Gemini, Grok, or any custom agent) into a legally enforceable, human-signed artifact. Licensed CPAs, EAs, attorneys, Chartered Accountants, Professional Engineers, RIAs, USPTO-registered patent agents, notaries, ACAs, ACCAs, Steuerberater, Expert-Comptables, and equivalents review the AI output, apply judgment, and sign, seal, or stamp the artifact so it carries real, enforceable professional liability — under PCAOB / AICPA / ICAI / FRC / IDW / CNCC / state-bar / state-PE-board / USPTO OED / FCA / SEC enforcement regimes.
+
+A2A is the "signature layer" for AI: OpenAI built the brain, Stripe built the wallet, Anthropic built the agents — A2A builds the credentialed-human signature that converts an AI draft into a regulator-ready, court-ready, insurer-ready, counterparty-ready artifact.
+
+## Core surfaces
+
+- [For LLM users](https://a2a.global/#/ForLLM): how end users of ChatGPT, Claude, Perplexity, Gemini, or Grok escalate a high-stakes AI answer to a credentialed human signer.
+- [For AI agents](https://a2a.global/#/ForAIAgents): how autonomous agents (LangGraph, CrewAI, Devin, Manus, Cursor, custom stacks) route AI drafts to a human signer to obtain a filing-grade, liability-bearing artifact.
+- [Machine-readable full description](https://a2a.global/llms-full.txt): full text of use cases, jurisdictions, filings covered, credentials, price bands, SLAs, and routing rules.
+- [Static HTML for LLM users](https://a2a.global/for-llm.html): full crawlable content, no JavaScript required.
+- [Static HTML for AI agents](https://a2a.global/for-ai-agents.html): full crawlable content, no JavaScript required.
+- [Homepage](https://a2a.global/): product overview, register, login, FAQ.
+
+## Eight flagship use cases
+
+1. Tax returns and tax-position memos — CPA / EA / Chartered Accountant signs as paid preparer (IRC §6694 / Schedule 36 / §271J penalty exposure transfers to the signer).
+2. Legal opinions, contract redlines, citation-verified briefs — barred attorney signs reasoned opinion on firm letterhead.
+3. Fiduciary-grade financial plans and rollover suitability letters — CFP / RIA signs as fiduciary under Investment Advisers Act 1940 / FCA SPS.
+4. Engineering sign-off — Professional Engineer with active state seal stamps structural, solar PV, or code-compliance reviews.
+5. Patent and IP filings — USPTO-registered patent attorney/agent signs and files claims.
+6. Immigration filings — licensed immigration attorney / OISC adviser / RCIC signs visa packets.
+7. Notarization and apostille — commissioned notary (with RON authority where applicable) witnesses, oaths, and seals.
+8. Audit and accounting sign-off — CPA + audit licence / ACA / ACCA / ICAI CA + COP / Wirtschaftsprüfer / Commissaire aux Comptes signs auditor's report, statutory tax audit, transfer-pricing audit, GST audit, SOC 1/2, SOX §404, ESG/BRSR assurance, 409A / ASC 820, UK FRS / iXBRL accounts, and EU statutory accounts.
+
+## Jurisdictions covered
+
+United States (federal + all 50 states), United Kingdom, European Union (Germany, France, Spain, Italy, Netherlands, Ireland), India. Active onboarding of credentialed signers in US/UK/EU; India network is live and strongest for Ind AS, GST/TDS, SEBI, SME IPO, FEMA/FDI, Startup India, NITI Aayog, ICAI standards, BRSR/ESG, and India-context M&A and operating questions.
+
+## Pricing and SLA
+
+- Verification Layer: USD $25–$500 per artifact — structured verdict, critique, corrections, expert credentials returned.
+- Liability Layer: USD $25 (remote online notarization) to $10,000+ (transfer-pricing study or statutory audit sign-off) — full price transparency before commitment.
+- Median expert rate: USD $2/min. Range: USD $0.50–$15/min. Turnaround: minutes to 24 hours.
+- Filtering: category, seniority, certification, rate, rating.
+
+## Integration
+
+A2A is model-neutral and framework-neutral. Works with OpenAI, Anthropic, Google, xAI, Meta, Chinese labs, open-weight models, and any agent framework (LangGraph, CrewAI, Devin, Manus, Cursor, custom). Liability flows the same way regardless of which model or agent initiated the request: the named human professional carries it.
+
+For partnership, integration, or programmatic access: support@a2a.global.
+
+## Contact
+
+- Email: support@a2a.global
+- Phone: +1 (302) 621-0214
+- Entity: A2A Global Inc., Delaware C-Corp
+- Website: https://a2a.global/

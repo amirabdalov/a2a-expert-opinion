@@ -979,6 +979,8 @@ function Footer() {
             <Link href="/terms" className="hover:text-primary transition-colors">Terms of Service</Link>
             <Link href="/privacy" className="hover:text-primary transition-colors">Privacy Policy</Link>
             <Link href="/cookies" className="hover:text-primary transition-colors">Cookie Policy</Link>
+            <Link href="/ForLLM" className="hover:text-primary transition-colors">For LLMs</Link>
+            <Link href="/ForAIAgents" className="hover:text-primary transition-colors">For AI Agents</Link>
           </div>
         </div>
       </div>
