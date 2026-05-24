@@ -28,6 +28,7 @@ import { TermsPage, PrivacyPage, CookiesPage } from "@/pages/legal";
 import PaymentsPage from "@/pages/payments";
 import ExpertPublicProfile from "@/pages/expert-public-profile";
 import NewsPage from "@/pages/news";
+import { ForLLMPage, ForAIAgentsPage } from "@/pages/for-llm";
 
 // BUG-3 / Item 18: Redirect /faq to landing page FAQ section
 function FaqRedirect() {
@@ -61,6 +62,9 @@ function AppRouter() {
       {/* BUG-3: /faq redirects to landing page FAQ section */}
       <Route path="/faq" component={FaqRedirect} />
       <Route path="/news" component={NewsPage} />
+      {/* Build 45.6.14: AI search optimization landing pages (case-sensitive) */}
+      <Route path="/ForLLM" component={ForLLMPage} />
+      <Route path="/ForAIAgents" component={ForAIAgentsPage} />
       {/* Payments page removed from public nav for Stripe submission — standby access only */}
       <Route path="/payments-standby" component={PaymentsPage} />
       <Route component={NotFound} />

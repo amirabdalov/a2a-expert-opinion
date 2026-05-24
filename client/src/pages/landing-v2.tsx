@@ -62,12 +62,13 @@ function LandingNavV2() {
           </Link>
           <Link href="/login">
             <span
-              className="inline-flex items-center justify-center w-11 h-11 rounded-full bg-[#0F3DD1] text-white cursor-pointer hover:opacity-90 transition"
+              className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-full bg-[#0F3DD1] text-white cursor-pointer hover:opacity-90 transition text-[15px] font-medium whitespace-nowrap"
               data-testid="v2-nav-login"
               aria-label="Login"
               title="Login"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+              Login
             </span>
           </Link>
         </div>
@@ -126,7 +127,7 @@ function HowA2AHelped() {
       domain: "FINANCE",
       pillBg: "#0F4D52",
       question: "Should I sign this Series A term sheet — what's market for fintech in 2026?",
-      verifier: "Verified by Ex-PE investor, CFA L2",
+      verifier: "Verified by Ex-PE investor, CFA",
     },
     {
       domain: "TAX & COMPLIANCE",
@@ -167,7 +168,7 @@ function HowA2AHelped() {
     >
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-10">
-          <p className="text-[clamp(0.75rem,1vw,0.875rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
+          <p className="text-[clamp(0.9375rem,1.4vw,1.125rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
             How A2A Global helped other clients
           </p>
         </div>
@@ -250,7 +251,7 @@ function AiVsExpertTable() {
     >
       <div className="max-w-5xl mx-auto">
         <div className="text-center mb-10">
-          <p className="text-[clamp(0.75rem,1vw,0.875rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
+          <p className="text-[clamp(0.9375rem,1.4vw,1.125rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
             What exclusive knowledge you get with A2A experts
           </p>
           <h2 className="font-display text-[clamp(1.5rem,3.5vw,2.25rem)] font-bold leading-tight">
@@ -297,7 +298,7 @@ function AiVsExpertTable() {
               </div>
               <div className="px-1 sm:px-4 py-4 flex justify-center">
                 {r.expert ? (
-                  <CheckCircle2 className="h-5 w-5 text-[#0F3DD1]" />
+                  <CheckCircle2 className="h-5 w-5 text-emerald-600" />
                 ) : (
                   <XCircle className="h-5 w-5 text-muted-foreground/40" />
                 )}
@@ -407,8 +408,8 @@ function ExpertEmployers() {
       `}</style>
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-10">
-          <p className="text-[clamp(0.75rem,1vw,0.875rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
-            Where our experts have worked
+          <p className="text-[clamp(0.9375rem,1.4vw,1.125rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
+            Where our experts work
           </p>
           <h2 className="font-display text-[clamp(1.5rem,3.5vw,2.25rem)] font-bold mb-3 leading-tight">
             From Goldman Sachs to Flipkart — experts who've seen it from the inside.
@@ -471,7 +472,7 @@ function CredentialsAndExperience() {
     >
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-12">
-          <p className="text-[clamp(0.75rem,1vw,0.875rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
+          <p className="text-[clamp(0.9375rem,1.4vw,1.125rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
             Meet the experts behind every review
           </p>
           <h2 className="font-display text-[clamp(1.5rem,3.5vw,2.25rem)] font-bold leading-tight">
@@ -747,20 +748,6 @@ function FooterV2() {
                 <Link href="/news" className="block hover:text-primary transition-colors">
                   News & Insights
                 </Link>
-                <a
-                  href="/.well-known/ai-agent"
-                  className="block hover:text-primary transition-colors"
-                  data-testid="footer-link-llms"
-                >
-                  For LLMs
-                </a>
-                <a
-                  href="/.well-known/ai-agent"
-                  className="block hover:text-primary transition-colors"
-                  data-testid="footer-link-ai-agents"
-                >
-                  For AI agents
-                </a>
               </div>
             </div>
             <div>
@@ -793,6 +780,20 @@ function FooterV2() {
             </Link>
             <Link href="/cookies" className="hover:text-primary transition-colors">
               Cookie Policy
+            </Link>
+            <Link
+              href="/ForLLM"
+              className="hover:text-primary transition-colors"
+              data-testid="footer-link-llms"
+            >
+              For LLMs
+            </Link>
+            <Link
+              href="/ForAIAgents"
+              className="hover:text-primary transition-colors"
+              data-testid="footer-link-ai-agents"
+            >
+              For AI Agents
             </Link>
           </div>
         </div>
