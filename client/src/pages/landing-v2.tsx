@@ -65,6 +65,7 @@ function LandingNavV2() {
               className="inline-flex items-center justify-center w-11 h-11 rounded-full bg-[#0F3DD1] text-white cursor-pointer hover:opacity-90 transition"
               data-testid="v2-nav-login"
               aria-label="Login"
+              title="Login"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
             </span>
@@ -94,16 +95,13 @@ function HeroV2() {
             className="font-display text-[clamp(1.875rem,6vw,4.5rem)] font-bold leading-[1.1] text-white mb-6 w-full"
             data-testid="hero-headline-v2"
           >
-            From pitch deck to term sheet — reviewed by those who've done it.
+            When the stakes are too high for AI alone — validate with a real expert.
           </h1>
           <p
             className="text-[clamp(1rem,1.8vw,1.5rem)] text-white/90 leading-relaxed mb-8 w-full"
             data-testid="hero-subhead-v2"
           >
-            Upload your pitch deck, financial model, or term sheet. Get
-            brutally honest feedback from professionals who've closed $100bn+
-            in deals — not an AI, not a consultant, someone who's actually
-            been on the other side of the table.
+            Upload your request (pitch deck, IT backlog, financial model, business plan, go-to-market strategy, tax returns, audit reports, team restructuring, AI transformation plan). Get brutally honest feedback from professionals who have 12+yrs of real life experience in top class companies globally.
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
             <Button
@@ -121,44 +119,44 @@ function HeroV2() {
   );
 }
 
-// ─── 2. How A2A helped other founders — artifact + matched testimonial pairs ───
+// ─── 2. How A2A helped other clients — 6 use-case cards by domain ───
 function HowA2AHelped() {
-  const items = [
+  const cards = [
     {
-      icon: FileText,
-      title: "Pitch deck",
-      body:
-        "Catch the slide your VC will roast 30 seconds in. Reviewed by founders and partners who've sat on both sides of the deck.",
-      testimonial: {
-        quote:
-          "Asked for a pitch-deck red-team. Got back 20 questions I had no answer for. Practised them. Closed my Series A 5 weeks later.",
-        name: "Series A founder · Cleantech",
-        city: "Pune",
-      },
+      domain: "FINANCE",
+      pillBg: "#0F4D52",
+      question: "Should I sign this Series A term sheet — what's market for fintech in 2026?",
+      verifier: "Verified by Ex-PE investor, CFA L2",
     },
     {
-      icon: TrendingUp,
-      title: "Financial model",
-      body:
-        "Stress-test your assumptions before your VC does it for free. Unit economics, sensitivities, and the question you forgot to model.",
-      testimonial: {
-        quote:
-          "The model review forced me to re-cut the LTV/CAC slide. My next VC opened with 'this is the cleanest unit-economics page I've seen this quarter.'",
-        name: "Seed-stage founder · Fintech",
-        city: "Pune",
-      },
+      domain: "TAX & COMPLIANCE",
+      pillBg: "#9E3F1F",
+      question: "I just got a $50K tax notice from the IRS — is the assessment correct?",
+      verifier: "Verified by Chartered Accountant, 18+ yrs",
     },
     {
-      icon: FileSignature,
-      title: "Term sheet",
-      body:
-        "Clause-by-clause read. Spot the liquidation preference, anti-dilution, and control terms that will cost you on the next round.",
-      testimonial: {
-        quote:
-          "Spent $500 on the term-sheet review. Caught a 2x participating-preferred clause buried on page 4. Saved me ~$3.2M at exit.",
-        name: "Pre-Series A founder · SaaS",
-        city: "Pune",
-      },
+      domain: "AI / ML",
+      pillBg: "#1E8FA8",
+      question: "Our RAG system is hallucinating 15% of answers. How do we fix it?",
+      verifier: "Verified by MLOps Principal, AWS",
+    },
+    {
+      domain: "PRODUCT STRATEGY",
+      pillBg: "#6C3CE0",
+      question: "Should we launch this feature or kill it? Here's our analysis.",
+      verifier: "Verified by Ex-Big-Tech B2B SaaS PM",
+    },
+    {
+      domain: "CONSULTING / OPS",
+      pillBg: "#0F3DD1",
+      question: "How do I restructure my 50-person team for the new operating model?",
+      verifier: "Verified by Ex-McKinsey strategy partner",
+    },
+    {
+      domain: "LEGAL / SIGNOFF",
+      pillBg: "#9E3F1F",
+      question: "Can someone licensed actually sign off on my audit report?",
+      verifier: "Verified by Licensed CA, India",
     },
   ];
   return (
@@ -168,39 +166,30 @@ function HowA2AHelped() {
       data-testid="section-how-a2a-helped"
     >
       <div className="max-w-6xl mx-auto">
-        <div className="text-center mb-12">
+        <div className="text-center mb-10">
           <p className="text-[clamp(0.75rem,1vw,0.875rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-3">
-            How A2A Global helped other founders
+            How A2A Global helped other clients
           </p>
-          <h2 className="font-display text-[clamp(1.5rem,3.5vw,2.25rem)] font-bold leading-tight">
-            Invest $300-$700. Save millions in fundraising.
-          </h2>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {items.map((a) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+          {cards.map((c) => (
             <div
-              key={a.title}
-              className="flex flex-col gap-4"
-              data-testid={`artifact-${a.title.toLowerCase().replace(/ /g, "-")}`}
+              key={c.domain + c.question}
+              className="bg-white border border-border rounded-xl p-6 sm:p-7 shadow-sm flex flex-col min-h-[260px]"
+              data-testid={`usecase-${c.domain.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
             >
-              <div className="border border-border rounded-lg p-6 hover:border-[#0F3DD1] transition-colors">
-                <a.icon className="h-8 w-8 text-[#0F3DD1] mb-4" />
-                <h3 className="font-semibold text-[clamp(1rem,1.4vw,1.125rem)] mb-2">{a.title}</h3>
-                <p className="text-[clamp(0.8125rem,1.1vw,0.875rem)] text-muted-foreground leading-relaxed">
-                  {a.body}
-                </p>
-              </div>
               <div
-                className="bg-muted/30 border border-border rounded-lg p-6"
-                data-testid={`testimonial-${a.title.toLowerCase().replace(/ /g, "-")}`}
+                className="inline-flex self-start items-center px-3 py-1 rounded-md text-[11px] font-semibold uppercase tracking-wider text-white mb-5"
+                style={{ backgroundColor: c.pillBg }}
               >
-                <Quote className="h-5 w-5 text-[#0F3DD1]/40 mb-3" />
-                <p className="text-[clamp(0.8125rem,1.1vw,0.875rem)] leading-relaxed mb-4 italic">
-                  "{a.testimonial.quote}"
-                </p>
-                <p className="text-xs font-semibold">{a.testimonial.name}</p>
-                <p className="text-xs text-muted-foreground">{a.testimonial.city}</p>
+                {c.domain}
               </div>
+              <p className="font-semibold text-[clamp(0.9375rem,1.2vw,1.0625rem)] leading-snug flex-1">
+                “{c.question}”
+              </p>
+              <p className="text-[clamp(0.75rem,1vw,0.8125rem)] text-muted-foreground mt-6">
+                {c.verifier}
+              </p>
             </div>
           ))}
         </div>
@@ -209,26 +198,46 @@ function HowA2AHelped() {
   );
 }
 
-// ─── 3. AI vs A2A Expert comparison (top 3 rows only) ───
+// ─── 3. AI vs A2A Expert comparison — multi-domain matrix ───
 function AiVsExpertTable() {
   const rows = [
     {
-      capability: "Non-public VC insights",
-      detail: "Mandate changes, internal fund dynamics, partner-specific theses",
+      domain: "Fundraising & Finance",
+      capability: "Non-public VC insights and stress-tested numbers",
+      detail:
+        "Mandate shifts, partner-specific theses, what's getting funded this quarter — and whether your unit economics, working-capital model, or cash-burn curve survives contact with a real CFO",
       ai: false,
       expert: true,
     },
     {
-      capability: "Pattern recognition at partner level",
+      domain: "Tax",
+      capability: "Jurisdiction-specific structuring",
       detail:
-        "Gut-feel read on what's wrong with your pitch — the kind only earned over hundreds of decks",
+        "Delaware C-Corp vs LLC, GST/VAT treatment, transfer-pricing risk, latest rulings the model hasn't seen yet",
       ai: false,
       expert: true,
     },
     {
-      capability: "Real-time VC trends — this quarter, not last",
+      domain: "IT, Infrastructure & AI/ML",
+      capability: "Production-grade trade-offs and model choice",
       detail:
-        "What's actually getting funded right now, not last-quarter TechCrunch headlines",
+        "Scale, cost, vendor lock-in, security posture — plus when fine-tuning beats prompting, when an open model beats GPT-class, and evals that map to revenue impact",
+      ai: false,
+      expert: true,
+    },
+    {
+      domain: "Product Strategy & Consulting",
+      capability: "What customers actually pay for, framed right",
+      detail:
+        "Feature vs roadmap vs positioning calls grounded in real funnel data — MECE structure applied to your actual problem, not a recycled 2x2 the model pattern-matched",
+      ai: false,
+      expert: true,
+    },
+    {
+      domain: "Legal",
+      capability: "Risk-weighted clause review",
+      detail:
+        "What's market vs aggressive in your contract, regulatory exposure by jurisdiction, deal-breakers vs noise",
       ai: false,
       expert: true,
     },
@@ -251,7 +260,7 @@ function AiVsExpertTable() {
         <div className="bg-white border border-border rounded-lg overflow-hidden shadow-sm">
           <div className="grid grid-cols-[1fr_70px_100px] sm:grid-cols-[1fr_120px_160px] bg-muted/40 border-b border-border">
             <div className="px-3 sm:px-6 py-3 text-[clamp(0.6875rem,1vw,0.875rem)] font-semibold uppercase tracking-wider">
-              Capability
+              Domain &amp; capability
             </div>
             <div className="px-1 sm:px-4 py-3 text-[clamp(0.625rem,0.9vw,0.875rem)] font-semibold uppercase tracking-wider text-center">
               AI alone
@@ -269,6 +278,9 @@ function AiVsExpertTable() {
               data-testid={`row-comparison-${i}`}
             >
               <div className="px-3 sm:px-6 py-4">
+                <p className="text-[clamp(0.625rem,0.85vw,0.75rem)] font-semibold uppercase tracking-wider text-[#0F3DD1] mb-0.5">
+                  {r.domain}
+                </p>
                 <p className="font-semibold text-[clamp(0.8125rem,1.2vw,1rem)]">
                   {r.capability}
                 </p>
@@ -416,14 +428,28 @@ function ExpertEmployers() {
 }
 
 // ─── 5. Credentials & Education + Experience Chart ───
-const CREDENTIALS = ["CFA", "CA", "CAIA", "ACCA", "IFRS"];
+const CREDENTIALS: { code: string; label: string }[] = [
+  { code: "CA", label: "Chartered Accountant" },
+  { code: "CFA", label: "Chartered Financial Analyst" },
+  { code: "CAIA", label: "Alt Investment Analyst" },
+  { code: "ACCA", label: "Chartered Certified Acc." },
+  { code: "IFRS", label: "IFRS Diploma" },
+  { code: "SAFe", label: "SAFe Program Consultant" },
+  { code: "CSM", label: "Certified Scrum Master" },
+  { code: "ICP", label: "Agile Coach (ICP-ACC)" },
+  { code: "PRIN2", label: "PRINCE2 PM" },
+  { code: "UiPath", label: "UiPath Developer" },
+  { code: "PhD", label: "Computer Engineering" },
+  { code: "IIM", label: "IIM MBA" },
+  { code: "IIT", label: "IIT BTech / MTech" },
+];
 const EDUCATION = [
-  "Indian Institute of Science",
+  "Harvard University",
+  "Stanford University",
+  "University of California, Los Angeles (UCLA)",
+  "Indian Institute of Technology Madras (IIT Madras)",
   "Jawaharlal Nehru University (JNU)",
   "University of Delhi",
-  "Indian Institute of Technology Madras (IIT Madras)",
-  "Manipal Academy of Higher Education",
-  "Jamia Millia Islamia (JMI)",
 ];
 // Experience-band distribution (illustrative cohort shape — coded, not image)
 const EXPERIENCE_BUCKETS = [
@@ -465,14 +491,21 @@ function CredentialsAndExperience() {
                   Credentials our experts hold
                 </h3>
               </div>
-              <div className="flex flex-wrap gap-2 sm:gap-3">
+              <div className="grid grid-cols-4 sm:grid-cols-5 gap-3 sm:gap-4">
                 {CREDENTIALS.map((c) => (
                   <div
-                    key={c}
-                    className="bg-[#0F3DD1] text-white rounded-full px-4 py-2 text-sm font-semibold shadow-sm"
-                    data-testid={`credential-${c.toLowerCase()}`}
+                    key={c.code}
+                    className="flex flex-col items-center text-center"
+                    data-testid={`credential-${c.code.toLowerCase()}`}
                   >
-                    {c}
+                    <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-[#0F3DD1] text-white flex items-center justify-center shadow-sm mb-1.5">
+                      <span className="text-[clamp(0.625rem,1vw,0.8125rem)] font-bold leading-none">
+                        {c.code}
+                      </span>
+                    </div>
+                    <span className="text-[clamp(0.5625rem,0.85vw,0.6875rem)] text-muted-foreground leading-tight">
+                      {c.label}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -550,9 +583,9 @@ function CredentialsAndExperience() {
 // ─── 6. Key stats — light squares, 2 lines each ───
 function KeyStats() {
   const stats = [
-    { value: "$120bn+", label: "Deals done by experts" },
-    { value: "$12.4M", label: "Real savings for founders" },
-    { value: "300+", label: "Years of combined experience" },
+    { value: "1,000+", label: "Access to experts" },
+    { value: "12+", label: "Average years of experience" },
+    { value: "6", label: "Industry domains" },
   ];
   return (
     <section
@@ -591,12 +624,9 @@ function FinalCTA() {
       data-testid="section-final-cta-v2"
     >
       <div className="max-w-3xl mx-auto text-center">
-        <h2 className="font-display text-[clamp(1.5rem,3.5vw,2.25rem)] font-bold mb-4 leading-tight">
-          Send your deck. Get your review in 24 hours.
+        <h2 className="font-display text-[clamp(1.5rem,3.5vw,2.25rem)] font-bold mb-8 leading-tight">
+          Upload your request. Get your qualified review shortly.
         </h2>
-        <p className="text-[clamp(0.9375rem,1.3vw,1rem)] text-muted-foreground mb-8">
-          $300-700 fixed-price. No retainer. No subscription.
-        </p>
         <Button
           size="lg"
           onClick={() => setLocation("/register")}
@@ -629,7 +659,7 @@ function FooterV2() {
               <span className="font-display font-bold text-base">Expert Opinion</span>
             </div>
             <p className="text-xs text-muted-foreground">
-              From pitch deck to term sheet — reviewed by those who've done it.
+              When the stakes are too high for AI alone — validate with a real expert.
             </p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-8 text-xs">
@@ -717,6 +747,20 @@ function FooterV2() {
                 <Link href="/news" className="block hover:text-primary transition-colors">
                   News & Insights
                 </Link>
+                <a
+                  href="/.well-known/ai-agent"
+                  className="block hover:text-primary transition-colors"
+                  data-testid="footer-link-llms"
+                >
+                  For LLMs
+                </a>
+                <a
+                  href="/.well-known/ai-agent"
+                  className="block hover:text-primary transition-colors"
+                  data-testid="footer-link-ai-agents"
+                >
+                  For AI agents
+                </a>
               </div>
             </div>
             <div>
@@ -768,9 +812,9 @@ export default function LandingV2Page() {
     <div className="min-h-screen" data-testid="page-landing-v2">
       <LandingNavV2 />
       <HeroV2 />
+      <ExpertEmployers />
       <HowA2AHelped />
       <AiVsExpertTable />
-      <ExpertEmployers />
       <CredentialsAndExperience />
       <KeyStats />
       <FinalCTA />
