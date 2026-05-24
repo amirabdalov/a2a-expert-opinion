@@ -46,7 +46,8 @@ function FaqRedirect() {
 function AppRouter() {
   return (
     <Switch>
-      <Route path="/" component={LandingPage} />
+      <Route path="/" component={LandingV2Page} />
+      <Route path="/v1" component={LandingPage} />
       <Route path="/v2" component={LandingV2Page} />
       <Route path="/login" component={LoginPage} />
       <Route path="/register" component={RegisterPage} />
