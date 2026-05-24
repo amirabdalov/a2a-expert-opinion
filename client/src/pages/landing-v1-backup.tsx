@@ -76,7 +76,7 @@ function Hero() {
 }
 
 // ─── Video Section ───
-export function VideoSection() {
+function VideoSection() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isMuted, setIsMuted] = useState(true);
 
@@ -834,7 +834,7 @@ function CitationCard({ cite }: { cite: typeof PRESS_CITATIONS[0] }) {
 }
 
 // ─── FAQ ───
-export function FAQ() {
+function FAQ() {
   const faqs = [
     { q: "How does A2A Expert Opinion work?", a: "You submit a question, our AI generates an initial analysis, then a verified human expert reviews, validates, and enhances the response. You get the best of both AI speed and human judgment." },
     { q: "Who are the experts?", a: "Our experts are vetted professionals with proven credentials in their fields — former executives, consultants, PhDs, and industry leaders. Each expert undergoes a rigorous verification process." },
@@ -928,7 +928,7 @@ function BecomeExpert() {
 }
 
 // ─── Footer ───
-export function Footer() {
+function Footer() {
   return (
     <footer className="py-8 sm:py-10 px-4 sm:px-6 border-t bg-background" data-testid="section-footer">
       <div className="max-w-5xl mx-auto">
@@ -992,7 +992,7 @@ function scrollTo(id: string) {
 }
 
 // ─── Landing Nav (Fixed white header with sandwich menu, matching UPI payments style) ───
-export function LandingNav() {
+function LandingNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [hoveredBtn, setHoveredBtn] = useState<"register" | "login" | null>(null);

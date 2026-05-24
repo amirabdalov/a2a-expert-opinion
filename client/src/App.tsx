@@ -16,6 +16,7 @@ function useCleanHashLocation(): [string, (to: string) => void] {
   return [cleanPath, setLocation];
 }
 import LandingPage from "@/pages/landing";
+import LandingV2Page from "@/pages/landing-v2";
 import { LoginPage, RegisterPage } from "@/pages/auth";
 import ClientDashboard from "@/pages/client-dashboard";
 import ExpertDashboard from "@/pages/expert-dashboard";
@@ -45,6 +46,7 @@ function AppRouter() {
   return (
     <Switch>
       <Route path="/" component={LandingPage} />
+      <Route path="/v2" component={LandingV2Page} />
       <Route path="/login" component={LoginPage} />
       <Route path="/register" component={RegisterPage} />
       <Route path="/dashboard" component={ClientDashboard} />
