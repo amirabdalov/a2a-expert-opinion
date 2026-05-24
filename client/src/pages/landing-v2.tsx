@@ -39,6 +39,42 @@ import logoKotak from "@assets/v2-logos/kotak-life.png";
 import logoInfosys from "@assets/v2-logos/infosys.svg";
 import { LandingNav } from "./landing";
 
+// ─── V2-specific slim nav (logo + Sign Up + login icon only) ───
+function LandingNavV2() {
+  return (
+    <nav className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-gray-100">
+      <div className="max-w-[1600px] mx-auto px-6 sm:px-10 lg:px-16 h-16 sm:h-20 flex items-center justify-between gap-4">
+        <a href="/" className="flex items-center flex-shrink-0 gap-2">
+          <img src={logoSrc} alt="A2A Global" className="h-8 sm:h-10 w-auto" />
+          <span className="font-semibold text-[#0F3DD1] text-sm md:text-base hidden sm:inline">Expert Opinion</span>
+        </a>
+        <div className="flex items-center gap-2">
+          <Link href="/register">
+            <span
+              className="inline-flex items-center justify-center h-11 px-5 rounded-full border border-gray-300 hover:border-[#0F3DD1] text-[#686868] hover:text-[#0F3DD1] text-[15px] font-medium cursor-pointer transition-colors whitespace-nowrap"
+              data-testid="v2-nav-signup"
+            >
+              <span className="flex items-center gap-2">
+                Sign Up
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              </span>
+            </span>
+          </Link>
+          <Link href="/login">
+            <span
+              className="inline-flex items-center justify-center w-11 h-11 rounded-full bg-[#0F3DD1] text-white cursor-pointer hover:opacity-90 transition"
+              data-testid="v2-nav-login"
+              aria-label="Login"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+            </span>
+          </Link>
+        </div>
+      </div>
+    </nav>
+  );
+}
+
 // ─── 1. Hero ───
 function HeroV2() {
   const [, setLocation] = useLocation();
@@ -52,16 +88,16 @@ function HeroV2() {
         <img src={heroMapPath} alt="" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-br from-[#0F3DD1]/85 via-[#0F3DD1]/70 to-[#171717]/85" />
       </div>
-      <div className="relative z-10 max-w-5xl mx-auto px-4 sm:px-6 py-20 sm:py-24 w-full">
-        <div className="max-w-3xl">
+      <div className="relative z-10 w-full max-w-[1600px] mx-auto px-6 sm:px-10 lg:px-16 py-20 sm:py-24">
+        <div className="w-full">
           <h1
-            className="font-display text-[clamp(1.875rem,5.5vw,3.75rem)] font-bold leading-[1.1] text-white mb-6"
+            className="font-display text-[clamp(1.875rem,6vw,4.5rem)] font-bold leading-[1.1] text-white mb-6 w-full"
             data-testid="hero-headline-v2"
           >
             From pitch deck to term sheet — reviewed by those who've done it.
           </h1>
           <p
-            className="text-[clamp(1rem,1.6vw,1.25rem)] text-white/90 leading-relaxed mb-8 max-w-2xl"
+            className="text-[clamp(1rem,1.8vw,1.5rem)] text-white/90 leading-relaxed mb-8 w-full"
             data-testid="hero-subhead-v2"
           >
             Upload your pitch deck, financial model, or term sheet. Get
@@ -307,7 +343,7 @@ function LogoMarqueeRow({
         {doubled.map((logo, i) => (
           <div
             key={`${logo.name}-${i}`}
-            className="flex-shrink-0 h-12 sm:h-16 w-28 sm:w-36 flex items-center justify-center grayscale hover:grayscale-0 transition-all opacity-70 hover:opacity-100"
+            className="flex-shrink-0 h-12 sm:h-16 w-28 sm:w-36 flex items-center justify-center transition-all opacity-100"
             title={logo.name}
           >
             <img
@@ -698,14 +734,6 @@ function FooterV2() {
                 >
                   support@a2a.global
                 </a>
-                <a
-                  href="https://a2a.global"
-                  target="_blank"
-                  rel="noopener"
-                  className="block hover:text-primary transition-colors"
-                >
-                  A2A Global
-                </a>
               </div>
             </div>
           </div>
@@ -738,7 +766,7 @@ export default function LandingV2Page() {
   }, []);
   return (
     <div className="min-h-screen" data-testid="page-landing-v2">
-      <LandingNav />
+      <LandingNavV2 />
       <HeroV2 />
       <HowA2AHelped />
       <AiVsExpertTable />
